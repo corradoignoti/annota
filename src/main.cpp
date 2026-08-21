@@ -13,10 +13,10 @@ void setup() {
     // Must run before display_init_input(): SD and touch share the one
     // spare SPI peripheral the display isn't already using full-time (see
     // storage.cpp).
-    const char *source_label = load_mp3_catalog();
+    bool sd_present = load_mp3_catalog();
 
     display_init_input();
-    build_main_screen(source_label);
+    build_main_screen(sd_present);
 }
 
 void loop() {

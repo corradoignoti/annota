@@ -1,12 +1,11 @@
 #include "storage.h"
 
 #include <Arduino.h>
-#include <LittleFS.h>
 #include <SD.h>
 #include <SPI.h>
 
 // -----------------------------------------------------------------------
-// MP3 catalog: SD card first, internal flash (LittleFS) if no card
+// MP3 catalog: SD card only - no card, no list, no fallback
 //
 // The CYD's SD slot is wired to its own SPI pins (18/19/23), distinct from
 // both the display bus (12/13/14, see User_Setup.h) and the touch bus
@@ -71,24 +70,16 @@ static size_t scan_mp3_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries) {
     return count;
 }
 
-const char *load_mp3_catalog() {
+bool load_mp3_catalog() {
     sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     bool sdOk = SD.begin(SD_CS, sdSPI);
     if (sdOk) {
         mp3FileCount = scan_mp3_files(SD, mp3Files, MAX_MP3_FILES);
+    } else {
+        mp3FileCount = 0;
     }
     SD.end();
     sdSPI.end(); // release the SPI peripheral - display_init_input() needs it next for touch
 
-    if (sdOk) {
-        return "SD card";
-    }
-
-    if (LittleFS.begin(true)) {
-        mp3FileCount = scan_mp3_files(LittleFS, mp3Files, MAX_MP3_FILES);
-        return "internal flash";
-    }
-
-    mp3FileCount = 0;
-    return "no storage found";
+    return sdOk;
 }

@@ -12,7 +12,7 @@ struct Mp3Entry {
 extern Mp3Entry mp3Files[MAX_MP3_FILES];
 extern size_t mp3FileCount;
 
-// Tries the SD card first, falls back to internal flash (LittleFS) if no
-// card is present. Fills mp3Files/mp3FileCount and returns a short label
-// for whichever source ended up in use.
-const char *load_mp3_catalog();
+// Scans the SD card's root for .mp3 files into mp3Files/mp3FileCount.
+// Returns false if no SD card is present - the caller should invite the
+// user to insert one instead of showing a file list.
+bool load_mp3_catalog();

@@ -5,12 +5,26 @@
 #include "storage.h"
 
 // -----------------------------------------------------------------------
-// Main screen: title + scrollable list of rounded file cards
+// Main screen: title + scrollable list of rounded file cards, or an
+// "insert an SD card" prompt when there's no card to read from.
 // -----------------------------------------------------------------------
 
 static lv_style_t style_card;
 
-void build_main_screen(const char *source_label) {
+static void show_insert_card_message(lv_obj_t *scr) {
+    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *msg = lv_label_create(scr);
+    lv_label_set_text(msg, "Insert an SD card to see your audio files");
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(80));
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+}
+
+void build_main_screen(bool sd_present) {
     lv_style_init(&style_card);
     lv_style_set_radius(&style_card, 12);
     lv_style_set_bg_color(&style_card, lv_color_hex(0x2A2E3A));
@@ -23,10 +37,16 @@ void build_main_screen(const char *source_label) {
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x14161C), 0);
     lv_obj_set_style_pad_all(scr, 8, 0);
     lv_obj_set_style_pad_row(scr, 8, 0);
+
+    if (!sd_present) {
+        show_insert_card_message(scr);
+        return;
+    }
+
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text_fmt(title, "MP3 Files (%s)", source_label);
+    lv_label_set_text(title, "Audio Files");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
@@ -42,7 +62,7 @@ void build_main_screen(const char *source_label) {
 
     if (mp3FileCount == 0) {
         lv_obj_t *empty = lv_label_create(list);
-        lv_label_set_text(empty, "No MP3 files found");
+        lv_label_set_text(empty, "No audio files found");
         lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(empty, lv_color_hex(0x9AA0AC), 0);
         return;
