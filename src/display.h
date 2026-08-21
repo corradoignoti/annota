@@ -16,3 +16,13 @@ void display_init_panel();
 // peripheral (the display panel occupies the other one full-time), so SD
 // needs to finish with it first. See storage.cpp for why.
 void display_init_input();
+
+// Releases touch's hold on the shared SPI peripheral so storage.h's
+// sd_begin() can borrow it (e.g. for a web_server.cpp file operation after
+// boot). Touch reads return no-press while suspended. Pair with
+// display_resume_touch() once the SD operation is done - don't leave touch
+// suspended, the UI reads garbage until resumed.
+void display_suspend_touch();
+
+// Reclaims the shared SPI peripheral for touch after display_suspend_touch().
+void display_resume_touch();

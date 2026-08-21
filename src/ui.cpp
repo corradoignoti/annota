@@ -3,16 +3,19 @@
 #include <cstdio>
 #include <lvgl.h>
 
+#include "display.h"
 #include "storage.h"
 
 // -----------------------------------------------------------------------
 // Main screen: title + scrollable list of rounded file cards, or an
-// "insert an SD card" prompt when there's no card to read from.
+// "insert an SD card" prompt when there's no card to read from. A Refresh
+// button pinned below the list re-scans the SD card without a reboot.
 // -----------------------------------------------------------------------
 
 static lv_style_t style_card;
 static lv_obj_t *wifi_status_label = nullptr;
 static lv_obj_t *wifi_dialog = nullptr;
+static lv_obj_t *file_list = nullptr;
 
 static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
@@ -25,6 +28,63 @@ static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+}
+
+// Wipes and repopulates `list` from mp3Files/mp3FileCount. Used both for
+// the initial build and for the Refresh button.
+static void render_file_list(lv_obj_t *list) {
+    lv_obj_clean(list);
+
+    if (mp3FileCount == 0) {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_label_set_text(empty, "No audio files found");
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x9AA0AC), 0);
+        return;
+    }
+
+    for (size_t i = 0; i < mp3FileCount; i++) {
+        lv_obj_t *card = lv_obj_create(list);
+        lv_obj_add_style(card, &style_card, 0);
+        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *name = lv_label_create(card);
+        lv_label_set_text(name, mp3Files[i].filename);
+        lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(name, lv_color_white(), 0);
+
+        lv_obj_t *date = lv_label_create(card);
+        lv_label_set_text(date, mp3Files[i].created);
+        lv_obj_set_style_text_font(date, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(date, lv_color_hex(0x9AA0AC), 0);
+    }
+}
+
+// SD access here shares the same SPI peripheral as touch (see storage.h /
+// display.h) - pause touch, re-scan, resume, same dance web_server.cpp
+// does for its file-manager requests.
+static void refresh_button_event_cb(lv_event_t *e) {
+    (void)e;
+    display_suspend_touch();
+    load_mp3_catalog();
+    display_resume_touch();
+
+    if (file_list) {
+        render_file_list(file_list);
+    }
+}
+
+static void add_refresh_button(lv_obj_t *scr) {
+    lv_obj_t *btn = lv_button_create(scr);
+    lv_obj_set_width(btn, lv_pct(100));
+    lv_obj_add_event_cb(btn, refresh_button_event_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *label = lv_label_create(btn);
+    lv_label_set_text(label, "Refresh");
+    lv_obj_center(label);
 }
 
 void build_main_screen(bool sd_present) {
@@ -61,42 +121,22 @@ void build_main_screen(bool sd_present) {
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
-    lv_obj_t *list = lv_obj_create(scr);
-    lv_obj_remove_style_all(list);
-    lv_obj_set_width(list, lv_pct(100));
-    lv_obj_set_flex_grow(list, 1);
-    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(list, 8, 0);
-    lv_obj_add_flag(list, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    // flex_grow(1) makes the list eat exactly the space left over after the
+    // title/status labels above and the Refresh button below take theirs -
+    // that's what keeps the (scrollable, unbounded-content) list from ever
+    // overlapping the button rather than just pushing it off-screen.
+    file_list = lv_obj_create(scr);
+    lv_obj_remove_style_all(file_list);
+    lv_obj_set_width(file_list, lv_pct(100));
+    lv_obj_set_flex_grow(file_list, 1);
+    lv_obj_set_flex_flow(file_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(file_list, 8, 0);
+    lv_obj_add_flag(file_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(file_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(file_list, LV_SCROLLBAR_MODE_AUTO);
 
-    if (mp3FileCount == 0) {
-        lv_obj_t *empty = lv_label_create(list);
-        lv_label_set_text(empty, "No audio files found");
-        lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(empty, lv_color_hex(0x9AA0AC), 0);
-        return;
-    }
-
-    for (size_t i = 0; i < mp3FileCount; i++) {
-        lv_obj_t *card = lv_obj_create(list);
-        lv_obj_add_style(card, &style_card, 0);
-        lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_width(card, lv_pct(100));
-        lv_obj_set_height(card, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-
-        lv_obj_t *name = lv_label_create(card);
-        lv_label_set_text(name, mp3Files[i].filename);
-        lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(name, lv_color_white(), 0);
-
-        lv_obj_t *date = lv_label_create(card);
-        lv_label_set_text(date, mp3Files[i].created);
-        lv_obj_set_style_text_font(date, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(date, lv_color_hex(0x9AA0AC), 0);
-    }
+    render_file_list(file_list);
+    add_refresh_button(scr);
 }
 
 void ui_set_wifi_status(const char *text) {

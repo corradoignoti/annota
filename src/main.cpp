@@ -4,6 +4,7 @@
 #include "display.h"
 #include "storage.h"
 #include "ui.h"
+#include "web_server.h"
 #include "wifi_manager.h"
 
 void setup() {
@@ -22,10 +23,15 @@ void setup() {
     // wifi_connect() paints its own status onto the screen it finds here
     // (ui_set_wifi_status() forces a repaint) before it can block on the
     // captive portal, so build_main_screen() must run first.
-    wifi_connect();
+    if (wifi_connect()) {
+        web_server_start();
+    } else {
+        Serial.println("Web file manager: not started (no WiFi)");
+    }
 }
 
 void loop() {
     lv_timer_handler();
+    web_server_handle();
     delay(5);
 }

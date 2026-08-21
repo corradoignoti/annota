@@ -70,16 +70,28 @@ static size_t scan_mp3_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries) {
     return count;
 }
 
-bool load_mp3_catalog() {
+bool sd_begin() {
     sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     bool sdOk = SD.begin(SD_CS, sdSPI);
+    if (!sdOk) {
+        sdSPI.end();
+    }
+    return sdOk;
+}
+
+void sd_end() {
+    SD.end();
+    sdSPI.end();
+}
+
+bool load_mp3_catalog() {
+    bool sdOk = sd_begin();
     if (sdOk) {
         mp3FileCount = scan_mp3_files(SD, mp3Files, MAX_MP3_FILES);
+        sd_end(); // release the SPI peripheral - display_init_input() needs it next for touch
     } else {
         mp3FileCount = 0;
     }
-    SD.end();
-    sdSPI.end(); // release the SPI peripheral - display_init_input() needs it next for touch
 
     return sdOk;
 }

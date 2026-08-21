@@ -8,7 +8,8 @@ Firmware (PlatformIO/Arduino, C++) for the ESP32-2432S028R "Cheap Yellow
 Display" (CYD): a 2.8" ILI9341 TFT + XPT2046 resistive touch, generic 30-pin
 ESP32 dev module. It's an MP3 file browser: scans an SD card's root for
 `.mp3` files and lists them on an LVGL touch UI, with a WiFi connection
-manager (captive-portal setup) alongside.
+manager (captive-portal setup) and an HTTP file manager for the SD card
+alongside.
 
 ## Commands
 
@@ -51,6 +52,15 @@ matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
   dialog, blocking until the user configures a network from a phone/laptop.
   Must be called after `build_main_screen()` so it has a screen to paint
   status onto.
+- **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
+  ESP32-core `WebServer` on port 80 serving a single-page file manager
+  (list/download/upload/delete files on the SD root) at `/`, backed by
+  `/api/files`, `/api/download`, `/api/upload`, `/api/delete`. Only started
+  once `wifi_connect()` succeeds. Each handler that touches the card calls
+  `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
+  after) to borrow the shared SPI peripheral from touch for that one
+  request — see the SPI note below. Uploads/deletes don't refresh the
+  on-screen MP3 list (`mp3Files`); that only happens on reboot.
 
 ### Shared SPI peripheral gotcha
 
@@ -62,6 +72,13 @@ peripheral — they have to take turns on it. That's why `load_mp3_catalog()`
 must run *before* `display_init_input()`: SD's `SPIClass` is released
 (`SD.end()` / `sdSPI.end()`) before touch claims the same peripheral. Don't
 reorder `main.cpp`'s `setup()` without preserving that.
+
+Same constraint applies at runtime once touch owns the peripheral for good:
+`web_server.cpp`'s handlers pause touch (`display_suspend_touch()`), borrow
+the bus for SD (`storage.h`'s `sd_begin()`/`sd_end()`), then resume touch
+(`display_resume_touch()`) — the touchscreen goes unresponsive for the
+duration of whatever SD request is in flight. Any new code that touches the
+SD card after boot needs the same pause/claim/release/resume dance.
 
 ### TFT_eSPI configuration
 

@@ -165,3 +165,12 @@ void display_init_input() {
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, touchpad_read_cb);
 }
+
+void display_suspend_touch() {
+    touch_down = false; // report released so a stale press doesn't latch while suspended
+    touchSPI.end();
+}
+
+void display_resume_touch() {
+    touchSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+}
