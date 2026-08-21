@@ -137,6 +137,11 @@ static void clock_timer_cb(lv_timer_t *timer) {
 // its own disabled state right after a retry attempt finishes.
 static void update_settings_info();
 
+// Forward-declared so the Delete WiFi Setup button (built below) can wire
+// up its click handler; defined below alongside the confirmation dialog it
+// opens.
+static void forget_button_event_cb(lv_event_t *e);
+
 // Builds the settings view as a sibling of file_list, occupying the same
 // flex slot between the title and the bottom button row - so unlike a
 // top-layer overlay, it never covers the row of buttons below it. Created
@@ -197,6 +202,117 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_obj_t *wifi_retry_label = lv_label_create(wifi_retry_btn);
     lv_label_set_text(wifi_retry_label, LV_SYMBOL_WIFI " Reconnect WiFi");
     lv_obj_center(wifi_retry_label);
+
+    // Danger button: erases the saved WiFi network and reboots into setup
+    // mode (wifi_forget_and_reboot()) - irreversible, so this only opens a
+    // confirmation dialog (forget_button_event_cb below); the actual erase
+    // only happens if the user confirms there.
+    lv_obj_t *wifi_forget_btn = lv_button_create(settings_view);
+    lv_obj_set_width(wifi_forget_btn, lv_pct(100));
+    lv_obj_set_style_margin_top(wifi_forget_btn, 8, 0);
+    lv_obj_set_style_bg_color(wifi_forget_btn, lv_color_hex(0xB3261E), 0);
+    lv_obj_add_event_cb(wifi_forget_btn, forget_button_event_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *wifi_forget_label = lv_label_create(wifi_forget_btn);
+    lv_label_set_text(wifi_forget_label, LV_SYMBOL_TRASH " Delete WiFi Setup");
+    lv_obj_center(wifi_forget_label);
+}
+
+// Modal confirmation for wifi_forget_and_reboot() - same top-layer overlay
+// pattern as ui_show_wifi_setup_dialog()/ui_show_wifi_timeout_dialog(), but
+// kept in its own dialog slot (forget_confirm_dialog) since those two are
+// wifi_manager.cpp's, driven by the connect flow, and can legitimately be
+// showing at the same time this one isn't (Settings is only reachable once
+// wifi_connect() has already resolved one way or another).
+static lv_obj_t *forget_confirm_dialog = nullptr;
+
+static void hide_forget_confirm_dialog() {
+    if (!forget_confirm_dialog) return;
+    // _async: called from a button inside forget_confirm_dialog itself -
+    // see ui_hide_wifi_setup_dialog()'s comment for why this can't delete
+    // synchronously out from under its own still-dispatching click event.
+    lv_obj_delete_async(forget_confirm_dialog);
+    forget_confirm_dialog = nullptr;
+}
+
+static void forget_confirm_no_cb(lv_event_t *e) {
+    (void)e;
+    hide_forget_confirm_dialog();
+}
+
+static void forget_confirm_yes_cb(lv_event_t *e) {
+    (void)e;
+    // No need to hide the dialog first - wifi_forget_and_reboot() erases
+    // the saved network and reboots immediately; nothing ever comes back
+    // to repaint it.
+    wifi_forget_and_reboot();
+}
+
+static void show_forget_confirm_dialog() {
+    if (forget_confirm_dialog) return;
+
+    forget_confirm_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(forget_confirm_dialog);
+    lv_obj_set_size(forget_confirm_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(forget_confirm_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(forget_confirm_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(forget_confirm_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(forget_confirm_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(forget_confirm_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(forget_confirm_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, LV_SYMBOL_WARNING " Delete WiFi Setup?");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, "This erases the saved WiFi network and reboots the device into setup mode.");
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_remove_style_all(btn_row);
+    lv_obj_set_width(btn_row, lv_pct(100));
+    lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btn_row, 8, 0);
+    lv_obj_set_style_margin_top(btn_row, 8, 0);
+
+    lv_obj_t *cancel_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(cancel_btn, 1);
+    lv_obj_add_event_cb(cancel_btn, forget_confirm_no_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, "Cancel");
+    lv_obj_center(cancel_label);
+
+    lv_obj_t *delete_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(delete_btn, 1);
+    lv_obj_set_style_bg_color(delete_btn, lv_color_hex(0xB3261E), 0);
+    lv_obj_add_event_cb(delete_btn, forget_confirm_yes_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *delete_label = lv_label_create(delete_btn);
+    lv_label_set_text(delete_label, "Delete");
+    lv_obj_center(delete_label);
+
+    lv_timer_handler();
+}
+
+static void forget_button_event_cb(lv_event_t *e) {
+    (void)e;
+    show_forget_confirm_dialog();
 }
 
 // Formats a byte count as e.g. "29.72 GB" (decimal GB, matching how SD

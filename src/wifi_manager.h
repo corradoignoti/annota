@@ -69,3 +69,11 @@ void wifi_request_reconnect();
 // way wifi_connect() does, and needs lv_timer_handler() to not already
 // be running so its own status/dialog repaints actually take effect.
 void wifi_process_pending_reconnect();
+
+// Erases the WiFi network saved in NVS (WiFiManager's resetSettings()) and
+// immediately reboots (ESP.restart()) so the next boot has nothing saved
+// and falls straight into wifi_connect()'s first-time setup portal - same
+// recovery path as a factory-fresh board. Never returns. Irreversible -
+// callers (ui.cpp's Settings "Delete WiFi Setup" button) must confirm with
+// the user first; this function itself does no confirmation.
+void wifi_forget_and_reboot();

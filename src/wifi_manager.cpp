@@ -205,3 +205,14 @@ void wifi_process_pending_reconnect() {
     ui_hide_wifi_setup_dialog();
     try_connect(/*allowPortalFallback=*/false);
 }
+
+// Unlike wifi_request_reconnect(), this doesn't need to defer through
+// loop() - it never returns, so there's no repaint afterwards that could
+// silently no-op from running nested inside lv_timer_handler().
+void wifi_forget_and_reboot() {
+    WiFiManager wm;
+    wm.resetSettings();
+    Serial.println("WiFi: saved network erased by user - rebooting into setup portal");
+    delay(200);
+    ESP.restart();
+}
