@@ -4,6 +4,7 @@
 #include "display.h"
 #include "storage.h"
 #include "ui.h"
+#include "wifi_manager.h"
 
 void setup() {
     Serial.begin(115200);
@@ -17,6 +18,11 @@ void setup() {
 
     display_init_input();
     build_main_screen(sd_present);
+
+    // wifi_connect() paints its own status onto the screen it finds here
+    // (ui_set_wifi_status() forces a repaint) before it can block on the
+    // captive portal, so build_main_screen() must run first.
+    wifi_connect();
 }
 
 void loop() {
