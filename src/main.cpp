@@ -32,6 +32,9 @@ void setup() {
 
 void loop() {
     lv_timer_handler();
+    // Must come after lv_timer_handler() has returned, never nested
+    // inside it - see the comment on wifi_process_pending_reconnect().
+    wifi_process_pending_reconnect();
     web_server_handle();
     delay(5);
 }

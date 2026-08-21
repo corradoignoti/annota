@@ -46,12 +46,22 @@ matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
   on `lv_layer_top()`, so it floats over the screen's content untouched).
   These setters force their own `lv_timer_handler()` repaint since they're
   called from `wifi_manager.cpp` while it may be blocking `loop()`.
-- **wifi_manager.cpp/h** — `wifi_connect()` via tzapu/WiFiManager. Tries
-  the network saved in NVS; if none works, opens a captive portal AP
-  ("Annota-Setup", no password) with no timeout and shows the on-screen
-  dialog, blocking until the user configures a network from a phone/laptop.
-  Must be called after `build_main_screen()` so it has a screen to paint
-  status onto.
+- **wifi_manager.cpp/h** — `wifi_connect()` via tzapu/WiFiManager. Two
+  paths depending on whether a network is already saved in NVS: none
+  saved opens a captive portal AP ("Annota-Setup", no password) with no
+  timeout and shows the on-screen dialog, blocking until the user
+  configures one from a phone/laptop; one saved reconnects to it directly
+  (no portal) for up to 30 seconds, then gives up, shows a warning
+  dialog with a Close button, and lets the device run offline — that
+  dialog only dismisses itself; reconnecting again is a separate,
+  explicit action via the main screen's Settings view "Reconnect WiFi"
+  button, which only calls `wifi_request_reconnect()` (it fires from an
+  LVGL click handler already nested inside `lv_timer_handler()`, which
+  refuses to run itself again while it's running — so the actual retry
+  can't happen there); `loop()` picks up the request via
+  `wifi_process_pending_reconnect()`, called right after
+  `lv_timer_handler()` returns, never nested inside it. Must be called
+  after `build_main_screen()` so it has a screen to paint status onto.
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80 serving a single-page file manager
   (list/download/upload/delete files on the SD root) at `/`, backed by

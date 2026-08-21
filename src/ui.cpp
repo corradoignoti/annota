@@ -1,5 +1,6 @@
 #include "ui.h"
 
+#include <WiFi.h>
 #include <cstdio>
 #include <lvgl.h>
 
@@ -24,6 +25,7 @@ static lv_obj_t *settings_view = nullptr;
 static lv_obj_t *refresh_btn = nullptr;
 static lv_obj_t *file_btn = nullptr;
 static lv_obj_t *sd_info_label = nullptr;
+static lv_obj_t *wifi_retry_btn = nullptr;
 static lv_obj_t *clock_label = nullptr;
 static lv_timer_t *clock_timer = nullptr;
 // Toggled by the file/audio button - true while showing mp3Files/
@@ -131,6 +133,10 @@ static void clock_timer_cb(lv_timer_t *timer) {
     lv_label_set_text(clock_label, text);
 }
 
+// Forward-declared so the Reconnect WiFi button (built below) can refresh
+// its own disabled state right after a retry attempt finishes.
+static void update_settings_info();
+
 // Builds the settings view as a sibling of file_list, occupying the same
 // flex slot between the title and the bottom button row - so unlike a
 // top-layer overlay, it never covers the row of buttons below it. Created
@@ -169,6 +175,28 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_obj_set_width(sd_info_label, lv_pct(100));
     lv_obj_set_style_text_font(sd_info_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(sd_info_label, lv_color_hex(0x9AA0AC), 0);
+
+    // Asks wifi_manager.cpp to re-run its connect attempt on demand -
+    // e.g. after it gave up and the user fixed the router, or just wants
+    // to retry without waiting for the timeout dialog to reappear on its
+    // own (it doesn't - that only fires from wifi_manager.cpp's own
+    // attempts). Only requests it (see wifi_request_reconnect()'s
+    // comment for why this can't just call the blocking retry directly
+    // from an LV_EVENT_CLICKED handler); wifi_manager.cpp calls back
+    // into ui_refresh_wifi_retry_button() once the attempt actually runs.
+    wifi_retry_btn = lv_button_create(settings_view);
+    lv_obj_set_width(wifi_retry_btn, lv_pct(100));
+    lv_obj_set_style_margin_top(wifi_retry_btn, 8, 0);
+    lv_obj_add_event_cb(
+        wifi_retry_btn, [](lv_event_t *e) {
+            (void)e;
+            wifi_request_reconnect();
+        },
+        LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *wifi_retry_label = lv_label_create(wifi_retry_btn);
+    lv_label_set_text(wifi_retry_label, LV_SYMBOL_WIFI " Reconnect WiFi");
+    lv_obj_center(wifi_retry_label);
 }
 
 // Formats a byte count as e.g. "29.72 GB" (decimal GB, matching how SD
@@ -177,10 +205,41 @@ static void format_gb(uint64_t bytes, char *out, size_t outLen) {
     snprintf(out, outLen, "%.2f GB", bytes / 1000000000.0);
 }
 
+// Re-checks live WiFi status and reflects it: disables wifi_retry_btn
+// while already connected (retrying would be a no-op) and enables it
+// otherwise, and if the connection has actually dropped, replaces
+// whatever the top status line was last showing (possibly a stale IP,
+// or a stale sync-in-progress message) with an explicit offline notice -
+// the device keeps working offline the whole time regardless, this is
+// purely informational. Shared by update_settings_info() (so opening
+// Settings always catches a drop wifi_manager.cpp's own connect/retry
+// flow didn't - e.g. the AP going away entirely, which the background
+// auto-reconnect wifi_connect() listens for can't do anything about
+// either) and ui_refresh_wifi_retry_button() (called by wifi_manager.cpp
+// after every connect/retry attempt, so the button doesn't go stale if
+// Settings happens to already be open when one finishes).
+static void refresh_wifi_connection_ui() {
+    bool connected = WiFi.status() == WL_CONNECTED;
+
+    if (wifi_retry_btn) {
+        if (connected) {
+            lv_obj_add_state(wifi_retry_btn, LV_STATE_DISABLED);
+        } else {
+            lv_obj_remove_state(wifi_retry_btn, LV_STATE_DISABLED);
+        }
+    }
+
+    if (!connected && wifi_status_label) {
+        lv_label_set_text(wifi_status_label, LV_SYMBOL_WARNING " WiFi not connected - working offline");
+    }
+}
+
 // Re-reads SD capacity/usage and refreshes sd_info_label. SD access here
 // shares the same SPI peripheral as touch (see storage.h / display.h) -
 // pause touch, query, resume, same dance refresh_button_event_cb does.
 static void update_settings_info() {
+    refresh_wifi_connection_ui();
+
     display_suspend_touch();
     SdInfo info;
     bool ok = get_sd_info(info);
@@ -372,12 +431,19 @@ void ui_show_wifi_setup_dialog(const char *setup_ssid) {
 
 void ui_hide_wifi_setup_dialog() {
     if (!wifi_dialog) return;
-    lv_obj_delete(wifi_dialog);
+    // _async: this may be called from a button inside wifi_dialog itself
+    // (its own LV_EVENT_CLICKED handler, e.g. the timeout dialog's Close
+    // button) - deleting wifi_dialog synchronously there would free the
+    // button out from under its own still-dispatching click event.
+    // Deferring the delete is the same fix the *button's* click handler
+    // already needs for wifi_manager.cpp's retry request; see the
+    // comment on wifi_request_reconnect().
+    lv_obj_delete_async(wifi_dialog);
     wifi_dialog = nullptr;
     lv_timer_handler();
 }
 
-void ui_show_wifi_timeout_dialog(lv_event_cb_t retry_cb) {
+void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb) {
     if (wifi_dialog) return;
 
     wifi_dialog = lv_obj_create(lv_layer_top());
@@ -407,19 +473,24 @@ void ui_show_wifi_timeout_dialog(lv_event_cb_t retry_cb) {
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
     lv_obj_t *msg = lv_label_create(card);
-    lv_label_set_text(msg, "Could not connect within 5 minutes. Continuing offline.");
+    lv_label_set_text(msg, "Could not connect within 30 seconds. Continuing offline.");
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, lv_pct(100));
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
 
-    lv_obj_t *retry_btn = lv_button_create(card);
-    lv_obj_set_width(retry_btn, lv_pct(100));
-    lv_obj_add_event_cb(retry_btn, retry_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *close_btn = lv_button_create(card);
+    lv_obj_set_width(close_btn, lv_pct(100));
+    lv_obj_add_event_cb(close_btn, close_cb, LV_EVENT_CLICKED, nullptr);
 
-    lv_obj_t *retry_label = lv_label_create(retry_btn);
-    lv_label_set_text(retry_label, "Retry");
-    lv_obj_center(retry_label);
+    lv_obj_t *close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, "Close");
+    lv_obj_center(close_label);
 
+    lv_timer_handler();
+}
+
+void ui_refresh_wifi_retry_button() {
+    refresh_wifi_connection_ui();
     lv_timer_handler();
 }
