@@ -12,19 +12,25 @@
 // -----------------------------------------------------------------------
 
 static const char *PORTAL_SSID = "Annota-Setup";
+static bool clockSynced = false;
 
 // UTC, no daylight offset - storage.cpp only needs a sane wall clock for
 // file timestamps, not a local-time display, so no timezone UI exists yet.
 static void sync_clock_via_ntp() {
     configTime(0, 0, "pool.ntp.org", "time.nist.gov");
     struct tm timeInfo;
-    if (getLocalTime(&timeInfo, 10000)) {
+    clockSynced = getLocalTime(&timeInfo, 10000);
+    if (clockSynced) {
         char buf[32];
         strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
         Serial.printf("NTP: clock synced (%s UTC)\n", buf);
     } else {
         Serial.println("NTP: sync failed - keeping system clock as-is");
     }
+}
+
+bool wifi_clock_synced() {
+    return clockSynced;
 }
 
 bool wifi_connect() {

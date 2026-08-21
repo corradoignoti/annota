@@ -3,8 +3,11 @@
 #include <cstdio>
 #include <lvgl.h>
 
+#include <ctime>
+
 #include "display.h"
 #include "storage.h"
+#include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
 // Main screen: title + scrollable list of rounded file cards, or an
@@ -17,6 +20,12 @@ static lv_obj_t *wifi_status_label = nullptr;
 static lv_obj_t *wifi_dialog = nullptr;
 static lv_obj_t *file_list = nullptr;
 static lv_obj_t *file_list_title = nullptr;
+static lv_obj_t *settings_view = nullptr;
+static lv_obj_t *refresh_btn = nullptr;
+static lv_obj_t *file_btn = nullptr;
+static lv_obj_t *sd_info_label = nullptr;
+static lv_obj_t *clock_label = nullptr;
+static lv_timer_t *clock_timer = nullptr;
 // Toggled by the file/audio button - true while showing mp3Files/
 // mp3FileCount as .mp3 files, false while showing them as .txt files.
 static bool showing_audio_files = true;
@@ -102,6 +111,125 @@ static void file_button_event_cb(lv_event_t *e) {
     }
 }
 
+// Refreshes clock_label with the current wall-clock time and whether it's
+// been NTP-synced. Ticks once a second via clock_timer while the settings
+// view is open (see settings_button_event_cb()); called once more directly
+// on open so the label isn't blank for that first second.
+static void clock_timer_cb(lv_timer_t *timer) {
+    (void)timer;
+    if (!clock_label) return;
+
+    time_t now = time(nullptr);
+    struct tm tmInfo;
+    localtime_r(&now, &tmInfo);
+    char timeStr[16];
+    strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &tmInfo);
+
+    char text[48];
+    snprintf(text, sizeof(text), "%s  %s", timeStr,
+             wifi_clock_synced() ? LV_SYMBOL_OK " NTP synced" : LV_SYMBOL_WARNING " not synced");
+    lv_label_set_text(clock_label, text);
+}
+
+// Builds the settings view as a sibling of file_list, occupying the same
+// flex slot between the title and the bottom button row - so unlike a
+// top-layer overlay, it never covers the row of buttons below it. Created
+// once, hidden, and toggled by settings_button_event_cb() alongside
+// file_list/file_list_title. sd_info_label starts blank; it's filled in by
+// update_settings_info() each time the view is opened. clock_timer starts
+// paused and is only resumed while the view is visible.
+static void build_settings_view(lv_obj_t *scr) {
+    settings_view = lv_obj_create(scr);
+    lv_obj_remove_style_all(settings_view);
+    lv_obj_set_width(settings_view, lv_pct(100));
+    lv_obj_set_flex_grow(settings_view, 1);
+    lv_obj_set_flex_flow(settings_view, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(settings_view, 4, 0);
+    lv_obj_clear_flag(settings_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(settings_view, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *title = lv_label_create(settings_view);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    clock_label = lv_label_create(settings_view);
+    lv_label_set_text(clock_label, "");
+    lv_obj_set_width(clock_label, lv_pct(100));
+    lv_obj_set_style_text_align(clock_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
+
+    clock_timer = lv_timer_create(clock_timer_cb, 1000, nullptr);
+    lv_timer_pause(clock_timer);
+
+    sd_info_label = lv_label_create(settings_view);
+    lv_label_set_text(sd_info_label, "");
+    lv_label_set_long_mode(sd_info_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(sd_info_label, lv_pct(100));
+    lv_obj_set_style_text_font(sd_info_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(sd_info_label, lv_color_hex(0x9AA0AC), 0);
+}
+
+// Formats a byte count as e.g. "29.72 GB" (decimal GB, matching how SD
+// cards are marketed/labeled).
+static void format_gb(uint64_t bytes, char *out, size_t outLen) {
+    snprintf(out, outLen, "%.2f GB", bytes / 1000000000.0);
+}
+
+// Re-reads SD capacity/usage and refreshes sd_info_label. SD access here
+// shares the same SPI peripheral as touch (see storage.h / display.h) -
+// pause touch, query, resume, same dance refresh_button_event_cb does.
+static void update_settings_info() {
+    display_suspend_touch();
+    SdInfo info;
+    bool ok = get_sd_info(info);
+    display_resume_touch();
+
+    char text[160];
+    if (ok && info.totalBytes > 0) {
+        char cardStr[24];
+        format_gb(info.cardBytes, cardStr, sizeof(cardStr));
+        double usedPct = 100.0 * (double)info.usedBytes / (double)info.totalBytes;
+        snprintf(text, sizeof(text), "SD card: %s\nSpace used: %.1f%%\nAudio files: %u\nText files: %u", cardStr,
+                 usedPct, (unsigned)info.audioFileCount, (unsigned)info.textFileCount);
+    } else {
+        snprintf(text, sizeof(text), "SD card info unavailable");
+    }
+    lv_label_set_text(sd_info_label, text);
+}
+
+// Toggles between the file list and the settings view in the same flex
+// slot, swapping the settings button's own icon between LV_SYMBOL_SETTINGS
+// and LV_SYMBOL_CLOSE to match - same pattern as file_button_event_cb's
+// own-icon toggle. The bottom button row stays visible either way (it's a
+// separate sibling), but the Refresh and audio/text buttons are disabled
+// while settings are open, since they act on the now-hidden file list.
+static void settings_button_event_cb(lv_event_t *e) {
+    lv_obj_t *label = static_cast<lv_obj_t *>(lv_event_get_user_data(e));
+
+    bool showing_settings = !lv_obj_has_flag(settings_view, LV_OBJ_FLAG_HIDDEN);
+    if (showing_settings) {
+        lv_timer_pause(clock_timer);
+        lv_obj_add_flag(settings_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(file_list_title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(file_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_state(refresh_btn, LV_STATE_DISABLED);
+        lv_obj_remove_state(file_btn, LV_STATE_DISABLED);
+        lv_label_set_text(label, LV_SYMBOL_SETTINGS);
+    } else {
+        update_settings_info();
+        clock_timer_cb(nullptr);
+        lv_timer_resume(clock_timer);
+        lv_obj_add_flag(file_list_title, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(file_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(settings_view, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_state(refresh_btn, LV_STATE_DISABLED);
+        lv_obj_add_state(file_btn, LV_STATE_DISABLED);
+        lv_label_set_text(label, LV_SYMBOL_CLOSE);
+    }
+}
+
 static void add_bottom_buttons(lv_obj_t *scr) {
     lv_obj_t *row = lv_obj_create(scr);
     lv_obj_remove_style_all(row);
@@ -110,7 +238,7 @@ static void add_bottom_buttons(lv_obj_t *scr) {
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(row, 8, 0);
 
-    lv_obj_t *refresh_btn = lv_button_create(row);
+    refresh_btn = lv_button_create(row);
     lv_obj_set_flex_grow(refresh_btn, 1);
     lv_obj_add_event_cb(refresh_btn, refresh_button_event_cb, LV_EVENT_CLICKED, nullptr);
 
@@ -118,13 +246,21 @@ static void add_bottom_buttons(lv_obj_t *scr) {
     lv_label_set_text(refresh_label, LV_SYMBOL_REFRESH);
     lv_obj_center(refresh_label);
 
-    lv_obj_t *file_btn = lv_button_create(row);
+    file_btn = lv_button_create(row);
     lv_obj_set_flex_grow(file_btn, 1);
 
     lv_obj_t *file_label = lv_label_create(file_btn);
     lv_label_set_text(file_label, LV_SYMBOL_FILE);
     lv_obj_add_event_cb(file_btn, file_button_event_cb, LV_EVENT_CLICKED, file_label);
     lv_obj_center(file_label);
+
+    lv_obj_t *settings_btn = lv_button_create(row);
+    lv_obj_set_flex_grow(settings_btn, 1);
+
+    lv_obj_t *settings_label = lv_label_create(settings_btn);
+    lv_label_set_text(settings_label, LV_SYMBOL_SETTINGS);
+    lv_obj_add_event_cb(settings_btn, settings_button_event_cb, LV_EVENT_CLICKED, settings_label);
+    lv_obj_center(settings_label);
 }
 
 void build_main_screen(bool sd_present) {
@@ -178,6 +314,7 @@ void build_main_screen(bool sd_present) {
     lv_obj_set_scrollbar_mode(file_list, LV_SCROLLBAR_MODE_AUTO);
 
     render_file_list(file_list);
+    build_settings_view(scr);
     add_bottom_buttons(scr);
 }
 

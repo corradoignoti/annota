@@ -9,3 +9,9 @@
 // once WiFi is up. Call once, after build_main_screen() (the dialog is
 // drawn onto whatever's already on screen) and Serial.begin().
 bool wifi_connect();
+
+// True once sync_clock_via_ntp() has successfully set the system clock from
+// an NTP server after wifi_connect() succeeded; false before that (no WiFi
+// yet, or the NTP request timed out) - the system clock may still be
+// running from whatever it was at power-on in that case.
+bool wifi_clock_synced();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 constexpr size_t MAX_MP3_FILES = 64;
 
@@ -33,3 +34,17 @@ bool sd_begin();
 
 // Unmounts the card and releases the SPI peripheral claimed by sd_begin().
 void sd_end();
+
+struct SdInfo {
+    uint64_t cardBytes;    // raw card capacity (SD.cardSize())
+    uint64_t totalBytes;   // usable filesystem capacity (SD.totalBytes())
+    uint64_t usedBytes;    // filesystem space in use (SD.usedBytes())
+    size_t audioFileCount; // root-level .mp3 files
+    size_t textFileCount;  // root-level .txt files
+};
+
+// Claims the SD card via sd_begin() (same SPI-sharing rules apply - see
+// sd_begin()'s comment) just long enough to read capacity/usage figures for
+// the settings view, then releases it via sd_end(). Returns false if the
+// card can't be opened.
+bool get_sd_info(SdInfo &out);

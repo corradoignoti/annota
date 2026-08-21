@@ -71,6 +71,32 @@ static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const cha
     return count;
 }
 
+// Counts root-level files matching `ext`, same filtering rules as
+// scan_files() (skips directories and dotfiles) but without storing
+// anything - used for the settings view's separate audio/text counts so it
+// doesn't disturb mp3Files/mp3FileCount (whichever catalog is on screen).
+static size_t count_files(fs::FS &fs, const char *ext) {
+    File root = fs.open("/");
+    if (!root || !root.isDirectory()) {
+        return 0;
+    }
+
+    size_t count = 0;
+    File entry = root.openNextFile();
+    while (entry) {
+        const char *base = strrchr(entry.name(), '/');
+        base = base ? base + 1 : entry.name();
+
+        if (!entry.isDirectory() && base[0] != '.' && has_ext(base, ext)) {
+            count++;
+        }
+        entry.close();
+        entry = root.openNextFile();
+    }
+    root.close();
+    return count;
+}
+
 bool sd_begin() {
     sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     bool sdOk = SD.begin(SD_CS, sdSPI);
@@ -83,6 +109,19 @@ bool sd_begin() {
 void sd_end() {
     SD.end();
     sdSPI.end();
+}
+
+bool get_sd_info(SdInfo &out) {
+    bool sdOk = sd_begin();
+    if (sdOk) {
+        out.cardBytes = SD.cardSize();
+        out.totalBytes = SD.totalBytes();
+        out.usedBytes = SD.usedBytes();
+        out.audioFileCount = count_files(SD, ".mp3");
+        out.textFileCount = count_files(SD, ".txt");
+        sd_end();
+    }
+    return sdOk;
 }
 
 bool load_mp3_catalog() {
