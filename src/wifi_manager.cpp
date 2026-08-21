@@ -3,6 +3,7 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <lvgl.h>
+#include <time.h>
 
 #include "ui.h"
 
@@ -11,6 +12,20 @@
 // -----------------------------------------------------------------------
 
 static const char *PORTAL_SSID = "Annota-Setup";
+
+// UTC, no daylight offset - storage.cpp only needs a sane wall clock for
+// file timestamps, not a local-time display, so no timezone UI exists yet.
+static void sync_clock_via_ntp() {
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    struct tm timeInfo;
+    if (getLocalTime(&timeInfo, 10000)) {
+        char buf[32];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeInfo);
+        Serial.printf("NTP: clock synced (%s UTC)\n", buf);
+    } else {
+        Serial.println("NTP: sync failed - keeping system clock as-is");
+    }
+}
 
 bool wifi_connect() {
     WiFiManager wm;
@@ -35,6 +50,7 @@ bool wifi_connect() {
         snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
         ui_set_wifi_status(msg);
         Serial.println(msg);
+        sync_clock_via_ntp();
     } else {
         // Only reachable if the portal is ever given a timeout again.
         ui_set_wifi_status("WiFi not configured - continuing offline");
