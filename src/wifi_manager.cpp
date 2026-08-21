@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <lvgl.h>
 
 #include "ui.h"
 
@@ -31,7 +32,7 @@ bool wifi_connect() {
     ui_hide_wifi_setup_dialog();
     if (connected) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "WiFi connected: %s", WiFi.localIP().toString().c_str());
+        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
         ui_set_wifi_status(msg);
         Serial.println(msg);
     } else {
