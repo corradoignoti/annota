@@ -238,7 +238,7 @@ static void refresh_wifi_connection_ui() {
             snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
             lv_label_set_text(wifi_status_label, msg);
         } else {
-            lv_label_set_text(wifi_status_label, LV_SYMBOL_WARNING " WiFi not connected - working offline");
+            lv_label_set_text(wifi_status_label, LV_SYMBOL_WARNING " working offline");
         }
     }
 }
