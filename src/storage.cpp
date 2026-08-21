@@ -5,6 +5,8 @@
 #include <SD.h>
 #include <SPI.h>
 
+#include "display.h"
+
 // -----------------------------------------------------------------------
 // MP3 catalog: SD card first, internal flash (LittleFS) if no card
 //
@@ -23,6 +25,7 @@
 #define SD_CS   5
 
 static SPIClass sdSPI(VSPI);
+static bool usingSd = false;
 
 Mp3Entry mp3Files[MAX_MP3_FILES];
 size_t mp3FileCount = 0;
@@ -81,14 +84,72 @@ const char *load_mp3_catalog() {
     sdSPI.end(); // release the SPI peripheral - display_init_input() needs it next for touch
 
     if (sdOk) {
+        usingSd = true;
         return "SD card";
     }
 
     if (LittleFS.begin(true)) {
         mp3FileCount = scan_mp3_files(LittleFS, mp3Files, MAX_MP3_FILES);
+        usingSd = false;
         return "internal flash";
     }
 
     mp3FileCount = 0;
+    usingSd = false;
     return "no storage found";
+}
+
+fs::FS &active_fs() {
+    return usingSd ? static_cast<fs::FS &>(SD) : static_cast<fs::FS &>(LittleFS);
+}
+
+bool active_source_is_sd() {
+    return usingSd;
+}
+
+bool acquire_sd_bus() {
+    if (!usingSd) {
+        return true;
+    }
+    Serial.println("[storage] acquire_sd_bus: sdSPI.begin");
+    sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+    Serial.println("[storage] acquire_sd_bus: SD.begin");
+    bool ok = SD.begin(SD_CS, sdSPI);
+    Serial.printf("[storage] acquire_sd_bus: SD.begin returned %d\n", ok);
+    return ok;
+}
+
+void release_sd_bus() {
+    if (!usingSd) {
+        return;
+    }
+    Serial.println("[storage] release_sd_bus: SD.end");
+    SD.end();
+    Serial.println("[storage] release_sd_bus: sdSPI.end");
+    sdSPI.end();
+    Serial.println("[storage] release_sd_bus: done");
+}
+
+bool delete_mp3_file(size_t index) {
+    if (index >= mp3FileCount) {
+        return false;
+    }
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", mp3Files[index].filename);
+
+    display_set_touch_enabled(false);
+    bool ok = acquire_sd_bus() && active_fs().remove(path);
+    release_sd_bus();
+    display_set_touch_enabled(true);
+
+    if (!ok) {
+        return false;
+    }
+
+    for (size_t i = index; i + 1 < mp3FileCount; i++) {
+        mp3Files[i] = mp3Files[i + 1];
+    }
+    mp3FileCount--;
+    return true;
 }

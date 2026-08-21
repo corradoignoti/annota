@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
+#include "audio.h"
 #include "display.h"
 #include "storage.h"
 #include "ui.h"
@@ -21,5 +22,6 @@ void setup() {
 
 void loop() {
     lv_timer_handler();
+    audio_loop();
     delay(5);
 }

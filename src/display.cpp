@@ -35,6 +35,7 @@ static SPIClass touchSPI(VSPI);
 static XPT2046_Touchscreen touchscreen(XPT2046_CS, XPT2046_IRQ);
 
 static lv_display_t *display;
+static lv_indev_t *touch_indev = nullptr;
 static lv_color_t draw_buf[SCREEN_W * 40] __attribute__((aligned(4))); // ~25KB partial render buffer
 
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -161,7 +162,13 @@ void display_init_input() {
     lv_display_set_flush_cb(display, disp_flush_cb);
     lv_display_set_buffers(display, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
-    lv_indev_t *indev = lv_indev_create();
-    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
-    lv_indev_set_read_cb(indev, touchpad_read_cb);
+    touch_indev = lv_indev_create();
+    lv_indev_set_type(touch_indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(touch_indev, touchpad_read_cb);
+}
+
+void display_set_touch_enabled(bool enabled) {
+    if (touch_indev) {
+        lv_indev_enable(touch_indev, enabled);
+    }
 }

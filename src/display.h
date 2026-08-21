@@ -16,3 +16,9 @@ void display_init_panel();
 // peripheral (the display panel occupies the other one full-time), so SD
 // needs to finish with it first. See storage.cpp for why.
 void display_init_input();
+
+// Temporarily enables/disables the touch input device without tearing it
+// down. Used while something else (SD-card audio playback) needs
+// exclusive use of the SPI peripheral touch normally owns - see
+// storage.h's acquire_sd_bus()/release_sd_bus().
+void display_set_touch_enabled(bool enabled);
