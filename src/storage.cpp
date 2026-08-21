@@ -26,9 +26,10 @@ static SPIClass sdSPI(VSPI);
 Mp3Entry mp3Files[MAX_MP3_FILES];
 size_t mp3FileCount = 0;
 
-static bool has_mp3_ext(const char *name) {
-    size_t len = strlen(name);
-    return len > 4 && strcasecmp(name + len - 4, ".mp3") == 0;
+static bool has_ext(const char *name, const char *ext) {
+    size_t nameLen = strlen(name);
+    size_t extLen = strlen(ext);
+    return nameLen > extLen && strcasecmp(name + nameLen - extLen, ext) == 0;
 }
 
 static void format_timestamp(time_t t, char *out, size_t outLen) {
@@ -42,7 +43,7 @@ static void format_timestamp(time_t t, char *out, size_t outLen) {
     strftime(out, outLen, "%Y-%m-%d %H:%M", &tmInfo);
 }
 
-static size_t scan_mp3_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries) {
+static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const char *ext) {
     File root = fs.open("/");
     if (!root || !root.isDirectory()) {
         return 0;
@@ -57,7 +58,7 @@ static size_t scan_mp3_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries) {
         const char *base = strrchr(entry.name(), '/');
         base = base ? base + 1 : entry.name();
 
-        if (!entry.isDirectory() && base[0] != '.' && has_mp3_ext(base)) {
+        if (!entry.isDirectory() && base[0] != '.' && has_ext(base, ext)) {
             strncpy(out[count].filename, base, sizeof(out[count].filename) - 1);
             out[count].filename[sizeof(out[count].filename) - 1] = '\0';
             format_timestamp(entry.getLastWrite(), out[count].created, sizeof(out[count].created));
@@ -85,9 +86,13 @@ void sd_end() {
 }
 
 bool load_mp3_catalog() {
+    return load_file_catalog(".mp3");
+}
+
+bool load_file_catalog(const char *ext) {
     bool sdOk = sd_begin();
     if (sdOk) {
-        mp3FileCount = scan_mp3_files(SD, mp3Files, MAX_MP3_FILES);
+        mp3FileCount = scan_files(SD, mp3Files, MAX_MP3_FILES, ext);
         sd_end(); // release the SPI peripheral - display_init_input() needs it next for touch
     } else {
         mp3FileCount = 0;

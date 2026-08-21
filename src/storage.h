@@ -17,6 +17,12 @@ extern size_t mp3FileCount;
 // user to insert one instead of showing a file list.
 bool load_mp3_catalog();
 
+// Scans the SD card's root for files matching `ext` (e.g. ".mp3", ".txt",
+// case-insensitive, dot required) into mp3Files/mp3FileCount. Generic form
+// of load_mp3_catalog(), used by the UI's audio/text list toggle. Returns
+// false if no SD card is present.
+bool load_file_catalog(const char *ext);
+
 // Claims the shared SPI peripheral and mounts the SD card for a one-off
 // operation outside the boot-time catalog scan (web_server.cpp's file
 // manager). Touch owns that peripheral after display_init_input(), so call

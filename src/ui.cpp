@@ -16,6 +16,10 @@ static lv_style_t style_card;
 static lv_obj_t *wifi_status_label = nullptr;
 static lv_obj_t *wifi_dialog = nullptr;
 static lv_obj_t *file_list = nullptr;
+static lv_obj_t *file_list_title = nullptr;
+// Toggled by the file/audio button - true while showing mp3Files/
+// mp3FileCount as .mp3 files, false while showing them as .txt files.
+static bool showing_audio_files = true;
 
 static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
@@ -37,7 +41,7 @@ static void render_file_list(lv_obj_t *list) {
 
     if (mp3FileCount == 0) {
         lv_obj_t *empty = lv_label_create(list);
-        lv_label_set_text(empty, "No audio files found");
+        lv_label_set_text(empty, showing_audio_files ? "No audio files found" : "No text files found");
         lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(empty, lv_color_hex(0x9AA0AC), 0);
         return;
@@ -69,7 +73,7 @@ static void render_file_list(lv_obj_t *list) {
 static void refresh_button_event_cb(lv_event_t *e) {
     (void)e;
     display_suspend_touch();
-    load_mp3_catalog();
+    load_file_catalog(showing_audio_files ? ".mp3" : ".txt");
     display_resume_touch();
 
     if (file_list) {
@@ -77,14 +81,50 @@ static void refresh_button_event_cb(lv_event_t *e) {
     }
 }
 
-static void add_refresh_button(lv_obj_t *scr) {
-    lv_obj_t *btn = lv_button_create(scr);
-    lv_obj_set_width(btn, lv_pct(100));
-    lv_obj_add_event_cb(btn, refresh_button_event_cb, LV_EVENT_CLICKED, nullptr);
+// Toggles between the .mp3 and .txt catalogs, re-scanning the SD card and
+// swapping the button's own icon plus the list title to match. Same SPI
+// pause/claim/release/resume dance as refresh_button_event_cb.
+static void file_button_event_cb(lv_event_t *e) {
+    lv_obj_t *label = static_cast<lv_obj_t *>(lv_event_get_user_data(e));
 
-    lv_obj_t *label = lv_label_create(btn);
-    lv_label_set_text(label, "Refresh");
-    lv_obj_center(label);
+    showing_audio_files = !showing_audio_files;
+
+    display_suspend_touch();
+    load_file_catalog(showing_audio_files ? ".mp3" : ".txt");
+    display_resume_touch();
+
+    lv_label_set_text(label, showing_audio_files ? LV_SYMBOL_FILE : LV_SYMBOL_AUDIO);
+    if (file_list_title) {
+        lv_label_set_text(file_list_title, showing_audio_files ? "Audio Files" : "Text File");
+    }
+    if (file_list) {
+        render_file_list(file_list);
+    }
+}
+
+static void add_bottom_buttons(lv_obj_t *scr) {
+    lv_obj_t *row = lv_obj_create(scr);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_height(row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 8, 0);
+
+    lv_obj_t *refresh_btn = lv_button_create(row);
+    lv_obj_set_flex_grow(refresh_btn, 1);
+    lv_obj_add_event_cb(refresh_btn, refresh_button_event_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *refresh_label = lv_label_create(refresh_btn);
+    lv_label_set_text(refresh_label, LV_SYMBOL_REFRESH);
+    lv_obj_center(refresh_label);
+
+    lv_obj_t *file_btn = lv_button_create(row);
+    lv_obj_set_flex_grow(file_btn, 1);
+
+    lv_obj_t *file_label = lv_label_create(file_btn);
+    lv_label_set_text(file_label, LV_SYMBOL_FILE);
+    lv_obj_add_event_cb(file_btn, file_button_event_cb, LV_EVENT_CLICKED, file_label);
+    lv_obj_center(file_label);
 }
 
 void build_main_screen(bool sd_present) {
@@ -120,6 +160,8 @@ void build_main_screen(bool sd_present) {
     lv_label_set_text(title, "Audio Files");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    file_list_title = title;
+    showing_audio_files = true;
 
     // flex_grow(1) makes the list eat exactly the space left over after the
     // title/status labels above and the Refresh button below take theirs -
@@ -136,7 +178,7 @@ void build_main_screen(bool sd_present) {
     lv_obj_set_scrollbar_mode(file_list, LV_SCROLLBAR_MODE_AUTO);
 
     render_file_list(file_list);
-    add_refresh_button(scr);
+    add_bottom_buttons(scr);
 }
 
 void ui_set_wifi_status(const char *text) {
