@@ -45,10 +45,10 @@ static void on_play_clicked(lv_event_t *e) {
     if (audio_is_playing()) {
         if (audio_is_paused()) {
             audio_resume();
-            lv_label_set_text(dialog_play_label, "Pause");
+            lv_label_set_text(dialog_play_label, LV_SYMBOL_PAUSE);
         } else {
             audio_pause();
-            lv_label_set_text(dialog_play_label, "Play");
+            lv_label_set_text(dialog_play_label, LV_SYMBOL_PLAY);
         }
         return;
     }
@@ -56,7 +56,7 @@ static void on_play_clicked(lv_event_t *e) {
     char path[80];
     build_file_path(dialog_index, path, sizeof(path));
     if (audio_play(active_fs(), path)) {
-        lv_label_set_text(dialog_play_label, "Pause");
+        lv_label_set_text(dialog_play_label, LV_SYMBOL_PAUSE);
     }
 }
 
@@ -118,10 +118,10 @@ static void show_file_dialog(size_t index) {
     dialog_play_label = lv_obj_get_child(play_btn, 0);
     lv_obj_add_event_cb(play_btn, on_play_clicked, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *delete_btn = lv_msgbox_add_footer_button(mbox, "Delete");
+    lv_obj_t *delete_btn = lv_msgbox_add_footer_button(mbox, LV_SYMBOL_TRASH);
     lv_obj_add_event_cb(delete_btn, on_delete_clicked, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *close_btn = lv_msgbox_add_footer_button(mbox, "Close");
+    lv_obj_t *close_btn = lv_msgbox_add_footer_button(mbox, LV_SYMBOL_CLOSE);
     lv_obj_add_event_cb(close_btn, on_close_clicked, LV_EVENT_CLICKED, NULL);
 }
 
