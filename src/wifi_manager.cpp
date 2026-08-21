@@ -140,7 +140,7 @@ static bool try_connect() {
         Serial.println(msg);
         sync_clock_via_ntp();
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " WiFi not connected - continuing offline");
+        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
         Serial.println("WiFi: no connection after 30 seconds - continuing offline");
         ui_show_wifi_timeout_dialog(close_button_event_cb);
     }
