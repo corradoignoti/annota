@@ -239,3 +239,50 @@ void ui_hide_wifi_setup_dialog() {
     wifi_dialog = nullptr;
     lv_timer_handler();
 }
+
+void ui_show_wifi_timeout_dialog(lv_event_cb_t retry_cb) {
+    if (wifi_dialog) return;
+
+    wifi_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(wifi_dialog);
+    lv_obj_set_size(wifi_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(wifi_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(wifi_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(wifi_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(wifi_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(wifi_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(wifi_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "WiFi Connection Failed");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, "Could not connect within 5 minutes. Continuing offline.");
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *retry_btn = lv_button_create(card);
+    lv_obj_set_width(retry_btn, lv_pct(100));
+    lv_obj_add_event_cb(retry_btn, retry_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *retry_label = lv_label_create(retry_btn);
+    lv_label_set_text(retry_label, "Retry");
+    lv_obj_center(retry_label);
+
+    lv_timer_handler();
+}

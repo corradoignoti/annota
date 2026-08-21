@@ -1,5 +1,7 @@
 #pragma once
 
+#include <lvgl.h>
+
 // Builds the main screen: with sd_present, a title plus a scrollable list
 // of rounded cards, one per entry in mp3Files/mp3FileCount (see
 // storage.h); without it, a message inviting the user to insert an SD
@@ -19,6 +21,14 @@ void ui_set_wifi_status(const char *text);
 // no-op.
 void ui_show_wifi_setup_dialog(const char *setup_ssid);
 
-// Removes the dialog shown by ui_show_wifi_setup_dialog() and repaints.
-// No-op if it isn't currently shown.
+// Removes the dialog shown by ui_show_wifi_setup_dialog() or
+// ui_show_wifi_timeout_dialog() and repaints. No-op if neither is
+// currently shown.
 void ui_hide_wifi_setup_dialog();
+
+// Shows a modal dialog warning that WiFi connection attempts gave up
+// after timing out, with a Retry button wired to retry_cb (fires on
+// LV_EVENT_CLICKED). Forces one LVGL repaint. Same single-dialog slot as
+// ui_show_wifi_setup_dialog() - showing one while the other is up is not
+// supported; hide with ui_hide_wifi_setup_dialog().
+void ui_show_wifi_timeout_dialog(lv_event_cb_t retry_cb);
