@@ -95,7 +95,7 @@ static void file_button_event_cb(lv_event_t *e) {
 
     lv_label_set_text(label, showing_audio_files ? LV_SYMBOL_FILE : LV_SYMBOL_AUDIO);
     if (file_list_title) {
-        lv_label_set_text(file_list_title, showing_audio_files ? "Audio Files" : "Text File");
+        lv_label_set_text(file_list_title, showing_audio_files ? "Audio Files" : "Text Files");
     }
     if (file_list) {
         render_file_list(file_list);
