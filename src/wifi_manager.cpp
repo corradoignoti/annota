@@ -101,12 +101,12 @@ static bool run_setup_portal() {
 }
 
 // Network already saved in NVS: try reconnecting to it directly (no
-// portal, no AP - the user isn't being asked to reconfigure anything)
-// for up to WIFI_RECONNECT_TIMEOUT_SECONDS, then give up so the device
-// keeps working offline instead of hanging here indefinitely. Counts
-// down on the status label each second so the wait isn't a silent
-// freeze - ui_set_wifi_status() forces its own repaint since our normal
-// loop()'s lv_timer_handler() isn't running here.
+// portal, no AP - the user isn't being asked to reconfigure anything yet)
+// for up to WIFI_RECONNECT_TIMEOUT_SECONDS, then give up so this doesn't
+// hang here indefinitely - try_connect() falls back to the setup portal
+// once this returns false. Counts down on the status label each second so
+// the wait isn't a silent freeze - ui_set_wifi_status() forces its own
+// repaint since our normal loop()'s lv_timer_handler() isn't running here.
 static bool reconnect_saved_network() {
     WiFi.mode(WIFI_STA);
     WiFi.begin();  // no args = reconnect with the credentials already in NVS
@@ -126,12 +126,41 @@ static bool reconnect_saved_network() {
     return WiFi.status() == WL_CONNECTED;
 }
 
-static bool try_connect() {
+// allowPortalFallback gates the stale-creds recovery below: true from
+// wifi_connect() at boot, false from wifi_process_pending_reconnect() (the
+// Settings "Reconnect WiFi" button). A manual reconnect click is the user
+// explicitly asking to retry the *same* saved network right now - usually
+// because they just fixed the router - so it must stay a quick retry that
+// either succeeds or shows the familiar Close-able timeout dialog, not
+// something that can silently wipe their saved credentials and dump them
+// into AP setup mode out from under a Settings button they didn't expect
+// to reconfigure anything.
+static bool try_connect(bool allowPortalFallback) {
     WiFiManager wm;
+    // getWiFiIsSaved() reads ESP-IDF's own station config out of NVS, not
+    // anything wifi_manager.cpp itself wrote - it persists across reflashes
+    // and even across different sketches ever run on this board. So "saved"
+    // here can mean stale/unreachable creds left over from something else
+    // entirely, not "the user configured this device". Falling through to
+    // the setup portal below (instead of just giving up offline) is what
+    // recovers from that case - but only at boot (see allowPortalFallback).
     bool hasSavedNetwork = wm.getWiFiIsSaved();
 
     ui_set_wifi_status("Connecting to WiFi...");
-    bool connected = hasSavedNetwork ? reconnect_saved_network() : run_setup_portal();
+    bool connected = hasSavedNetwork ? reconnect_saved_network() : false;
+
+    if (!connected && hasSavedNetwork && allowPortalFallback) {
+        // The saved network didn't answer in time - could be genuinely
+        // stale creds, could just be the router being off right now. Either
+        // way, don't strand the user on a Close-only dialog with no path
+        // back to setup: wipe the saved config and drop straight into the
+        // same captive portal first-time setup uses.
+        Serial.println("WiFi: saved network unreachable after 30 seconds - falling back to setup portal");
+        wm.resetSettings();
+    }
+    if (!connected && (allowPortalFallback || !hasSavedNetwork)) {
+        connected = run_setup_portal();
+    }
 
     if (connected) {
         char msg[64];
@@ -141,7 +170,8 @@ static bool try_connect() {
         sync_clock_via_ntp();
     } else {
         ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
-        Serial.println("WiFi: no connection after 30 seconds - continuing offline");
+        Serial.println(allowPortalFallback ? "WiFi: setup portal exited without a connection - continuing offline"
+                                            : "WiFi: no connection after 30 seconds - continuing offline");
         ui_show_wifi_timeout_dialog(close_button_event_cb);
     }
     ui_refresh_wifi_retry_button();
@@ -162,7 +192,7 @@ static void close_button_event_cb(lv_event_t *e) {
 
 bool wifi_connect() {
     WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    return try_connect();
+    return try_connect(/*allowPortalFallback=*/true);
 }
 
 void wifi_request_reconnect() {
@@ -173,5 +203,5 @@ void wifi_process_pending_reconnect() {
     if (!reconnectRequested) return;
     reconnectRequested = false;
     ui_hide_wifi_setup_dialog();
-    try_connect();
+    try_connect(/*allowPortalFallback=*/false);
 }

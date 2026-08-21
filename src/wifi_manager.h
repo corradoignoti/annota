@@ -7,13 +7,19 @@
 //    credentials entered there are saved for every boot after this one.
 //    Blocks indefinitely - there's no other way online yet, so this only
 //    returns once it succeeds.
-//  - A network is already saved: reconnects to it directly, no portal.
-//    Gives up after 30 seconds (WIFI_RECONNECT_TIMEOUT_SECONDS in
-//    wifi_manager.cpp) and shows a warning dialog with a Close button
-//    instead of the IP, then lets the device run offline - reconnecting
-//    again is a separate, explicit action via the Settings "Reconnect
-//    WiFi" button (see wifi_request_reconnect()). Blocks until either
-//    WiFi comes up or the 30 seconds run out.
+//  - A network is already saved: reconnects to it directly, no portal, for
+//    up to 30 seconds (WIFI_RECONNECT_TIMEOUT_SECONDS in wifi_manager.cpp).
+//    If that times out, the saved credentials are wiped (WiFiManager's
+//    "saved" NVS entry can be stale - left over from a different sketch
+//    ever flashed to this board, not necessarily something the user
+//    configured) and this falls back to the same setup portal as the
+//    no-network-saved case above, so there's always a way back to
+//    configuring an AP instead of getting stuck offline with no recourse.
+//    Only if that portal itself is exited without connecting does this
+//    give up, show a warning dialog with a Close button, and let the
+//    device run offline - reconnecting again is then a separate, explicit
+//    action via the Settings "Reconnect WiFi" button (see
+//    wifi_request_reconnect()).
 // Also registers a WiFi.onEvent() handler (once) that (re)starts the
 // SNTP client on every got-IP event, including ones try_connect() never
 // sees - e.g. the underlying esp_wifi/lwIP station quietly auto-
@@ -49,7 +55,11 @@ bool wifi_clock_synced();
 // wifi_process_pending_reconnect() to actually run it. Since this is
 // only reachable once the device has booted past wifi_connect(), a
 // network is always already saved at this point, so the run always
-// takes the reconnect path, never the setup portal.
+// takes the reconnect path, never the setup portal - unlike the boot-time
+// connect, a manual click here never wipes saved credentials on failure;
+// it just fails the same way it always did (see wifi_connect()'s comment)
+// so the user isn't dropped into AP setup mode by a button that looks
+// like a simple retry.
 void wifi_request_reconnect();
 
 // Runs the reconnect attempt requested by wifi_request_reconnect(), if

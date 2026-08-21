@@ -51,17 +51,24 @@ matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
   saved opens a captive portal AP ("Annota-Setup", no password) with no
   timeout and shows the on-screen dialog, blocking until the user
   configures one from a phone/laptop; one saved reconnects to it directly
-  (no portal) for up to 30 seconds, then gives up, shows a warning
-  dialog with a Close button, and lets the device run offline — that
-  dialog only dismisses itself; reconnecting again is a separate,
-  explicit action via the main screen's Settings view "Reconnect WiFi"
-  button, which only calls `wifi_request_reconnect()` (it fires from an
-  LVGL click handler already nested inside `lv_timer_handler()`, which
-  refuses to run itself again while it's running — so the actual retry
-  can't happen there); `loop()` picks up the request via
-  `wifi_process_pending_reconnect()`, called right after
-  `lv_timer_handler()` returns, never nested inside it. Must be called
-  after `build_main_screen()` so it has a screen to paint status onto.
+  (no portal) for up to 30 seconds. WiFiManager's "saved" check reads
+  ESP-IDF's own NVS station config, which can be stale (left over from a
+  different sketch ever flashed to this board) rather than something the
+  user actually set up here, so a timeout there wipes the saved
+  credentials and falls back to the same setup portal instead of
+  stranding the device offline with no way back to configuring an AP.
+  Only if that fallback portal itself is exited without connecting does
+  it show a warning dialog with a Close button and let the device run
+  offline — that dialog only dismisses itself; reconnecting again from
+  there is a separate, explicit action via the main screen's Settings
+  view "Reconnect WiFi" button, which only calls
+  `wifi_request_reconnect()` (it fires from an LVGL click handler already
+  nested inside `lv_timer_handler()`, which refuses to run itself again
+  while it's running — so the actual retry can't happen there); `loop()`
+  picks up the request via `wifi_process_pending_reconnect()`, called
+  right after `lv_timer_handler()` returns, never nested inside it. Must
+  be called after `build_main_screen()` so it has a screen to paint
+  status onto.
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80 serving a single-page file manager
   (list/download/upload/delete files on the SD root) at `/`, backed by

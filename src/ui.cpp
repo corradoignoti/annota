@@ -207,17 +207,20 @@ static void format_gb(uint64_t bytes, char *out, size_t outLen) {
 
 // Re-checks live WiFi status and reflects it: disables wifi_retry_btn
 // while already connected (retrying would be a no-op) and enables it
-// otherwise, and if the connection has actually dropped, replaces
-// whatever the top status line was last showing (possibly a stale IP,
-// or a stale sync-in-progress message) with an explicit offline notice -
-// the device keeps working offline the whole time regardless, this is
-// purely informational. Shared by update_settings_info() (so opening
-// Settings always catches a drop wifi_manager.cpp's own connect/retry
-// flow didn't - e.g. the AP going away entirely, which the background
-// auto-reconnect wifi_connect() listens for can't do anything about
-// either) and ui_refresh_wifi_retry_button() (called by wifi_manager.cpp
-// after every connect/retry attempt, so the button doesn't go stale if
-// Settings happens to already be open when one finishes).
+// otherwise, and syncs the top status line to match either way - not just
+// on drop, but also on a recovery this module didn't see itself (e.g. the
+// background auto-reconnect wifi_connect() listens for succeeding, or the
+// underlying esp_wifi/lwIP station reassociating on its own) - otherwise
+// the label can go stale showing "offline" while the button, reading live
+// WiFi.status() right here, has already correctly re-disabled itself,
+// which looks like the button is stuck rather than the label being out of
+// date. The device keeps working offline the whole time regardless, this
+// is purely informational. Shared by update_settings_info() (so opening
+// Settings always catches a drop or recovery wifi_manager.cpp's own
+// connect/retry flow didn't) and ui_refresh_wifi_retry_button() (called by
+// wifi_manager.cpp after every connect/retry attempt, so neither the
+// button nor the label goes stale if Settings happens to already be open
+// when one finishes).
 static void refresh_wifi_connection_ui() {
     bool connected = WiFi.status() == WL_CONNECTED;
 
@@ -229,8 +232,14 @@ static void refresh_wifi_connection_ui() {
         }
     }
 
-    if (!connected && wifi_status_label) {
-        lv_label_set_text(wifi_status_label, LV_SYMBOL_WARNING " WiFi not connected - working offline");
+    if (wifi_status_label) {
+        if (connected) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+            lv_label_set_text(wifi_status_label, msg);
+        } else {
+            lv_label_set_text(wifi_status_label, LV_SYMBOL_WARNING " WiFi not connected - working offline");
+        }
     }
 }
 
