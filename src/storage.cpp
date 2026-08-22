@@ -26,10 +26,20 @@ static SPIClass sdSPI(VSPI);
 Mp3Entry mp3Files[MAX_MP3_FILES];
 size_t mp3FileCount = 0;
 
-static bool has_ext(const char *name, const char *ext) {
+// `extList` is one extension ("*.txt") or several separated by '|'
+// ("*.mp3|.m4a") - matches if `name` ends in any of them, case-insensitive.
+static bool has_ext(const char *name, const char *extList) {
     size_t nameLen = strlen(name);
-    size_t extLen = strlen(ext);
-    return nameLen > extLen && strcasecmp(name + nameLen - extLen, ext) == 0;
+    const char *p = extList;
+    while (*p) {
+        const char *bar = strchr(p, '|');
+        size_t extLen = bar ? (size_t)(bar - p) : strlen(p);
+        if (nameLen > extLen && strncasecmp(name + nameLen - extLen, p, extLen) == 0) {
+            return true;
+        }
+        p = bar ? bar + 1 : p + extLen;
+    }
+    return false;
 }
 
 static void format_timestamp(time_t t, char *out, size_t outLen) {
@@ -117,7 +127,7 @@ bool get_sd_info(SdInfo &out) {
         out.cardBytes = SD.cardSize();
         out.totalBytes = SD.totalBytes();
         out.usedBytes = SD.usedBytes();
-        out.audioFileCount = count_files(SD, ".mp3");
+        out.audioFileCount = count_files(SD, AUDIO_EXTS);
         out.textFileCount = count_files(SD, ".txt");
         sd_end();
     }
@@ -125,7 +135,7 @@ bool get_sd_info(SdInfo &out) {
 }
 
 bool load_mp3_catalog() {
-    return load_file_catalog(".mp3");
+    return load_file_catalog(AUDIO_EXTS);
 }
 
 bool load_file_catalog(const char *ext) {

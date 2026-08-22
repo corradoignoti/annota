@@ -30,7 +30,8 @@ static lv_obj_t *wifi_retry_btn = nullptr;
 static lv_obj_t *clock_label = nullptr;
 static lv_timer_t *clock_timer = nullptr;
 // Toggled by the file/audio button - true while showing mp3Files/
-// mp3FileCount as .mp3 files, false while showing them as .txt files.
+// mp3FileCount as audio files (AUDIO_EXTS), false while showing them as
+// .txt files.
 static bool showing_audio_files = true;
 
 // Settings view's OpenAI API key field, plus the on-screen keyboard it
@@ -111,7 +112,7 @@ static void render_file_list(lv_obj_t *list) {
 static void refresh_button_event_cb(lv_event_t *e) {
     (void)e;
     display_suspend_touch();
-    load_file_catalog(showing_audio_files ? ".mp3" : ".txt");
+    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
     display_resume_touch();
 
     if (file_list) {
@@ -119,7 +120,7 @@ static void refresh_button_event_cb(lv_event_t *e) {
     }
 }
 
-// Toggles between the .mp3 and .txt catalogs, re-scanning the SD card and
+// Toggles between the audio (AUDIO_EXTS) and .txt catalogs, re-scanning the SD card and
 // swapping the button's own icon plus the list title to match. Same SPI
 // pause/claim/release/resume dance as refresh_button_event_cb.
 static void file_button_event_cb(lv_event_t *e) {
@@ -128,7 +129,7 @@ static void file_button_event_cb(lv_event_t *e) {
     showing_audio_files = !showing_audio_files;
 
     display_suspend_touch();
-    load_file_catalog(showing_audio_files ? ".mp3" : ".txt");
+    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
     display_resume_touch();
 
     lv_label_set_text(label, showing_audio_files ? LV_SYMBOL_FILE : LV_SYMBOL_AUDIO);
