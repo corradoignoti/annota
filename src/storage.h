@@ -54,3 +54,18 @@ struct SdInfo {
 // the settings view, then releases it via sd_end(). Returns false if the
 // card can't be opened.
 bool get_sd_info(SdInfo &out);
+
+// Claims the SD card via sd_begin() just long enough to read a root-level
+// file's contents into `out` (NUL-terminated, truncated to outLen - 1 bytes
+// if longer), then releases it via sd_end(). Returns false if the card or
+// the file can't be opened. Caller (ui.cpp) is responsible for the same
+// display_suspend_touch()/display_resume_touch() dance as every other
+// after-boot SD access - see the SPI note in CLAUDE.md.
+bool read_text_file_preview(const char *filename, char *out, size_t outLen);
+
+// Claims the SD card via sd_begin(), deletes a root-level file, then
+// releases it via sd_end(). Returns false if the card can't be opened or
+// the file doesn't exist. Same caller responsibility as
+// read_text_file_preview() above. Doesn't touch mp3Files/mp3FileCount -
+// the caller re-scans (load_file_catalog()) to refresh the on-screen list.
+bool delete_file(const char *filename);

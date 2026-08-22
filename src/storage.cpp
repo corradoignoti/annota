@@ -134,6 +134,36 @@ bool get_sd_info(SdInfo &out) {
     return sdOk;
 }
 
+bool read_text_file_preview(const char *filename, char *out, size_t outLen) {
+    out[0] = '\0';
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    File f = SD.open(path, FILE_READ);
+    if (!f) {
+        sd_end();
+        return false;
+    }
+    size_t n = f.readBytes(out, outLen - 1);
+    out[n] = '\0';
+    f.close();
+    sd_end();
+    return true;
+}
+
+bool delete_file(const char *filename) {
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    bool ok = SD.remove(path);
+    sd_end();
+    return ok;
+}
+
 bool load_mp3_catalog() {
     return load_file_catalog(AUDIO_EXTS);
 }

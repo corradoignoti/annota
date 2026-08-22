@@ -45,6 +45,12 @@ static lv_obj_t *api_key_status_label = nullptr;
 static lv_obj_t *transcribe_dialog = nullptr;
 static char transcribe_target_filename[64];
 
+// Shared by the file menu/preview/delete-confirm dialogs below - same
+// one-at-a-time reuse as transcribe_dialog above.
+static lv_obj_t *file_action_dialog = nullptr;
+static char file_action_target_filename[64];
+static char file_preview_buffer[2048];
+
 static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -59,8 +65,9 @@ static void show_insert_card_message(lv_obj_t *scr) {
 }
 
 // Forward-declared so render_file_list() (defined next) can wire it up;
-// defined below alongside the confirm dialog it opens.
-static void card_long_press_cb(lv_event_t *e);
+// defined below alongside the menu/preview/delete/transcribe dialogs it
+// opens.
+static void card_click_cb(lv_event_t *e);
 
 // Wipes and repopulates `list` from mp3Files/mp3FileCount. Used both for
 // the initial build and for the Refresh button.
@@ -93,16 +100,12 @@ static void render_file_list(lv_obj_t *list) {
         lv_obj_set_style_text_font(date, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(date, lv_color_hex(0x9AA0AC), 0);
 
-        // Transcription only makes sense for audio files, not the .txt
-        // transcripts this same list shows when toggled - so only audio
-        // cards get the long-press handler. i is this entry's index into
-        // mp3Files at render time; card_long_press_cb captures the
-        // filename immediately (not this index) since the array can be
+        // Every card gets a normal tap (card_click_cb, the preview/
+        // delete/transcribe menu) - i is this entry's index into mp3Files
+        // at render time, captured as user_data since the array can be
         // rescanned/reordered later.
-        if (showing_audio_files) {
-            lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(card, card_long_press_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
-        }
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, card_click_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
     }
 }
 
@@ -293,8 +296,8 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_obj_center(wifi_forget_label);
 
     // API key for whichever AI_PROVIDER_* is compiled in (transcribe.h),
-    // used by transcribe.cpp for the long-press-to-transcribe flow
-    // (ui.cpp's card_long_press_cb). Password mode masks it on screen;
+    // used by transcribe.cpp for the file menu's Transcribe flow (ui.cpp's
+    // file_menu_transcribe_cb). Password mode masks it on screen;
     // it's still stored in NVS as plain text, same as WiFiManager's own
     // saved credentials. Title/placeholder name the provider dynamically
     // (ai_provider_name()) so this doesn't need editing when the compiled-
@@ -429,10 +432,10 @@ static void forget_button_event_cb(lv_event_t *e) {
 }
 
 // -----------------------------------------------------------------------
-// Transcribe confirm/progress/result dialogs, triggered by long-pressing
-// an audio card (card_long_press_cb, wired in render_file_list()). All
-// three share the transcribe_dialog top-layer slot - only one is ever up
-// at once. The confirm dialog's Yes button only calls transcribe_request()
+// Transcribe confirm/progress/result dialogs, triggered by the file menu's
+// Transcribe button (file_menu_transcribe_cb, below). All three share the
+// transcribe_dialog top-layer slot - only one is ever up at once. The
+// confirm dialog's Yes button only calls transcribe_request()
 // (transcribe.h); the actual blocking work happens later from loop() via
 // transcribe_process_pending(), which is what calls
 // ui_show_transcribe_progress()/ui_show_transcribe_result() below - same
@@ -586,14 +589,297 @@ static void show_transcribe_offline_dialog() {
     lv_timer_handler();
 }
 
-static void card_long_press_cb(lv_event_t *e) {
-    size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
-    if (idx >= mp3FileCount) return;
+// -----------------------------------------------------------------------
+// File menu (tap on a card), triggered by card_click_cb below. Preview,
+// Delete, Transcribe and the delete confirmation share the file_action_dialog
+// top-layer slot - only one is ever up at once, same reuse as
+// transcribe_dialog above.
+// -----------------------------------------------------------------------
+
+// Preview only understands plain text for now, so it's only ever offered
+// for .txt entries - everything else (the AUDIO_EXTS list) gets a disabled
+// Preview button in the menu instead of one that fails silently.
+static bool is_text_file(const char *filename) {
+    size_t len = strlen(filename);
+    return len > 4 && strcasecmp(filename + len - 4, ".txt") == 0;
+}
+
+static void hide_file_action_dialog_async() {
+    if (!file_action_dialog) return;
+    // _async: may be called from a button inside file_action_dialog itself
+    // - see ui_hide_wifi_setup_dialog()'s comment for why this can't delete
+    // synchronously out from under its own still-dispatching click event.
+    lv_obj_delete_async(file_action_dialog);
+    file_action_dialog = nullptr;
+}
+
+static void file_preview_close_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+}
+
+// `ok`/`text` come from read_text_file_preview() (storage.h) - `ok` false
+// means the card or file couldn't be opened (e.g. pulled mid-menu).
+static void show_text_preview_dialog(const char *filename, bool ok, const char *text) {
+    file_action_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(file_action_dialog);
+    lv_obj_set_size(file_action_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(file_action_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(file_action_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(file_action_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(file_action_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(file_action_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(file_action_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(90));
+    lv_obj_set_height(card, lv_pct(80));
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, filename);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    // Scrollable content area - flex_grow(1) so it eats whatever space is
+    // left after the title and Close button, same trick file_list uses in
+    // build_main_screen().
+    lv_obj_t *content = lv_obj_create(card);
+    lv_obj_remove_style_all(content);
+    lv_obj_set_width(content, lv_pct(100));
+    lv_obj_set_flex_grow(content, 1);
+    lv_obj_add_flag(content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+
+    lv_obj_t *body = lv_label_create(content);
+    lv_label_set_text(body, ok ? text : "Could not read this file.");
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(body, lv_pct(100));
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(body, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *close_btn = lv_button_create(card);
+    lv_obj_set_width(close_btn, lv_pct(100));
+    lv_obj_set_style_margin_top(close_btn, 8, 0);
+    lv_obj_add_event_cb(close_btn, file_preview_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, LV_SYMBOL_CLOSE " Close");
+    lv_obj_center(close_label);
+
+    lv_timer_handler();
+}
+
+static void delete_confirm_no_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+}
+
+// SD access here shares the same SPI peripheral as touch (see storage.h /
+// display.h) - pause touch, delete, re-scan, resume, same dance
+// refresh_button_event_cb does. Re-scans (rather than splicing the array)
+// so mp3Files/mp3FileCount stay consistent with what's actually on the
+// card, same as every other post-boot mutation in this file.
+static void delete_confirm_yes_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+
+    display_suspend_touch();
+    delete_file(file_action_target_filename);
+    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+    display_resume_touch();
+
+    if (file_list) {
+        render_file_list(file_list);
+    }
+}
+
+static void show_delete_confirm_dialog(const char *filename) {
+    file_action_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(file_action_dialog);
+    lv_obj_set_size(file_action_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(file_action_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(file_action_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(file_action_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(file_action_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(file_action_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(file_action_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, LV_SYMBOL_WARNING " Delete File?");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    char text[96];
+    snprintf(text, sizeof(text), "Delete \"%s\"? This cannot be undone.", filename);
+    lv_label_set_text(msg, text);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_remove_style_all(btn_row);
+    lv_obj_set_width(btn_row, lv_pct(100));
+    lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btn_row, 8, 0);
+    lv_obj_set_style_margin_top(btn_row, 8, 0);
+
+    lv_obj_t *no_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(no_btn, 1);
+    lv_obj_add_event_cb(no_btn, delete_confirm_no_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *no_label = lv_label_create(no_btn);
+    lv_label_set_text(no_label, "No");
+    lv_obj_center(no_label);
+
+    lv_obj_t *yes_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(yes_btn, 1);
+    lv_obj_set_style_bg_color(yes_btn, lv_color_hex(0xB3261E), 0);
+    lv_obj_add_event_cb(yes_btn, delete_confirm_yes_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *yes_label = lv_label_create(yes_btn);
+    lv_label_set_text(yes_label, "Yes");
+    lv_obj_center(yes_label);
+
+    lv_timer_handler();
+}
+
+// SD access here shares the same SPI peripheral as touch, same dance as
+// delete_confirm_yes_cb above.
+static void file_menu_preview_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+
+    display_suspend_touch();
+    bool ok = read_text_file_preview(file_action_target_filename, file_preview_buffer, sizeof(file_preview_buffer));
+    display_resume_touch();
+
+    show_text_preview_dialog(file_action_target_filename, ok, file_preview_buffer);
+}
+
+static void file_menu_delete_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+    show_delete_confirm_dialog(file_action_target_filename);
+}
+
+static void file_menu_cancel_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
+}
+
+// Same behavior as the long-press-to-transcribe flow this replaced: checks
+// live WiFi status right here (catches a drop since the screen was last
+// painted) and either bounces to the offline dialog or opens the normal
+// confirm dialog - see show_transcribe_offline_dialog()'s comment.
+static void file_menu_transcribe_cb(lv_event_t *e) {
+    (void)e;
+    hide_file_action_dialog_async();
     if (WiFi.status() != WL_CONNECTED) {
         show_transcribe_offline_dialog();
         return;
     }
-    show_transcribe_confirm_dialog(mp3Files[idx].filename);
+    show_transcribe_confirm_dialog(file_action_target_filename);
+}
+
+static void show_file_menu_dialog(const char *filename) {
+    if (file_action_dialog) return;
+    strncpy(file_action_target_filename, filename, sizeof(file_action_target_filename) - 1);
+    file_action_target_filename[sizeof(file_action_target_filename) - 1] = '\0';
+
+    file_action_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(file_action_dialog);
+    lv_obj_set_size(file_action_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(file_action_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(file_action_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(file_action_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(file_action_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(file_action_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(file_action_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, filename);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    // Transcription only makes sense for audio files, not the .txt
+    // transcripts this same list shows when toggled - showing_audio_files
+    // reflects which of the two the tapped card came from.
+    if (showing_audio_files) {
+        lv_obj_t *transcribe_btn = lv_button_create(card);
+        lv_obj_set_width(transcribe_btn, lv_pct(100));
+        lv_obj_add_event_cb(transcribe_btn, file_menu_transcribe_cb, LV_EVENT_CLICKED, nullptr);
+        lv_obj_t *transcribe_label = lv_label_create(transcribe_btn);
+        lv_label_set_text(transcribe_label, LV_SYMBOL_UPLOAD " Transcribe");
+        lv_obj_center(transcribe_label);
+    }
+
+    lv_obj_t *preview_btn = lv_button_create(card);
+    lv_obj_set_width(preview_btn, lv_pct(100));
+    lv_obj_add_event_cb(preview_btn, file_menu_preview_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *preview_label = lv_label_create(preview_btn);
+    lv_label_set_text(preview_label, LV_SYMBOL_EYE_OPEN " Preview");
+    lv_obj_center(preview_label);
+    if (!is_text_file(filename)) {
+        lv_obj_add_state(preview_btn, LV_STATE_DISABLED);
+    }
+
+    lv_obj_t *delete_btn = lv_button_create(card);
+    lv_obj_set_width(delete_btn, lv_pct(100));
+    lv_obj_set_style_bg_color(delete_btn, lv_color_hex(0xB3261E), 0);
+    lv_obj_add_event_cb(delete_btn, file_menu_delete_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *delete_label = lv_label_create(delete_btn);
+    lv_label_set_text(delete_label, LV_SYMBOL_TRASH " Delete");
+    lv_obj_center(delete_label);
+
+    lv_obj_t *cancel_btn = lv_button_create(card);
+    lv_obj_set_width(cancel_btn, lv_pct(100));
+    lv_obj_add_event_cb(cancel_btn, file_menu_cancel_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *cancel_label = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_label, LV_SYMBOL_CLOSE " Cancel");
+    lv_obj_center(cancel_label);
+
+    lv_timer_handler();
+}
+
+static void card_click_cb(lv_event_t *e) {
+    size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= mp3FileCount) return;
+    show_file_menu_dialog(mp3Files[idx].filename);
 }
 
 // Formats a byte count as e.g. "29.72 GB" (decimal GB, matching how SD
