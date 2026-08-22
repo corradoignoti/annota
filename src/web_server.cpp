@@ -7,6 +7,7 @@
 
 #include "display.h"
 #include "storage.h"
+#include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
 // SD file manager web UI (list / download / upload / delete on the SD
@@ -95,6 +96,14 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     letter-spacing: 0.01em;
   }
   .appbar .sub { color: var(--on-surface-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
+  .appbar .row { display: flex; align-items: baseline; justify-content: space-between; }
+  .appbar nav a {
+    color: var(--on-surface-secondary);
+    text-decoration: none;
+    font-size: 0.8rem;
+    margin-left: 1rem;
+  }
+  .appbar nav a.active { color: var(--accent); }
   .card {
     background: var(--surface);
     border-radius: 12px;
@@ -175,7 +184,10 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 </head>
 <body>
 <div class="appbar">
-  <h1>Annota</h1>
+  <div class="row">
+    <h1>Annota</h1>
+    <nav><a class="active" href="/">Files</a><a href="/settings">Settings</a></nav>
+  </div>
   <div class="sub">SD card files</div>
 </div>
 
@@ -383,8 +395,295 @@ refresh();
 </html>
 )rawliteral";
 
+// Mirrors ui.cpp's on-screen Settings view: WiFi/clock status, SD card
+// info, Reconnect WiFi, and the Delete WiFi Setup danger button - same
+// palette and card look as INDEX_HTML above.
+static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Annota - Settings</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161c;
+    --surface: #2a2e3a;
+    --surface-2: #343947;
+    --on-surface: #ffffff;
+    --on-surface-secondary: #9aa0ac;
+    --accent: #3498db;
+    --danger: #e06a5a;
+    --divider: rgba(255, 255, 255, 0.08);
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Roboto", -apple-system, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--on-surface);
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0 0 2rem;
+  }
+  .appbar {
+    padding: 1.1rem 1rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  }
+  .appbar h1 { margin: 0; font-size: 1.15rem; font-weight: 500; letter-spacing: 0.01em; }
+  .appbar .sub { color: var(--on-surface-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
+  .appbar .row { display: flex; align-items: baseline; justify-content: space-between; }
+  .appbar nav a {
+    color: var(--on-surface-secondary);
+    text-decoration: none;
+    font-size: 0.8rem;
+    margin-left: 1rem;
+  }
+  .appbar nav a.active { color: var(--accent); }
+  .card {
+    background: var(--surface);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    margin: 0 1rem 1.2rem;
+    padding: 1rem;
+  }
+  .card h2 {
+    margin: 0 0 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--on-surface-secondary);
+  }
+  .row-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--divider);
+  }
+  .row-item:last-child { border-bottom: none; }
+  .row-item .label { color: var(--on-surface-secondary); font-size: 0.85rem; }
+  .row-item .value { font-size: 0.9rem; text-align: right; }
+  .value.ok { color: var(--accent); }
+  .value.warn { color: var(--danger); }
+  .bar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--surface-2);
+    overflow: hidden;
+    margin-top: 0.6rem;
+  }
+  .bar .fill { height: 100%; background: var(--accent); }
+
+  button, .btn {
+    font: inherit;
+    font-weight: 500;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    border: none;
+    width: 100%;
+    background: var(--surface-2);
+    color: var(--on-surface);
+    padding: 0.7rem 0.8rem;
+    border-radius: 8px;
+    transition: background 0.15s ease;
+  }
+  button:hover { background: #3d4353; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.accent { background: var(--accent); color: #fff; }
+  button.accent:hover { background: #2f87c4; }
+  button.danger { background: var(--danger); color: #fff; }
+  button.danger:hover { background: #c85848; }
+  #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--on-surface-secondary); text-align: center; }
+</style>
+</head>
+<body>
+<div class="appbar">
+  <div class="row">
+    <h1>Annota</h1>
+    <nav><a href="/">Files</a><a class="active" href="/settings">Settings</a></nav>
+  </div>
+  <div class="sub">Device settings</div>
+</div>
+
+<div class="card">
+  <h2>Status</h2>
+  <div class="row-item"><span class="label">WiFi</span><span class="value" id="wifiValue">-</span></div>
+  <div class="row-item"><span class="label">Clock</span><span class="value" id="clockValue">-</span></div>
+</div>
+
+<div class="card">
+  <h2>SD card</h2>
+  <div class="row-item"><span class="label">Capacity</span><span class="value" id="cardValue">-</span></div>
+  <div class="row-item"><span class="label">Space used</span><span class="value" id="usedValue">-</span></div>
+  <div class="bar"><div class="fill" id="usedBar" style="width:0%"></div></div>
+  <div class="row-item" style="margin-top:0.4rem"><span class="label">Audio files</span><span class="value" id="audioValue">-</span></div>
+  <div class="row-item"><span class="label">Text files</span><span class="value" id="textValue">-</span></div>
+</div>
+
+<div class="card">
+  <h2>WiFi</h2>
+  <button class="accent" id="reconnectBtn">Reconnect WiFi</button>
+</div>
+
+<div class="card">
+  <h2>Danger zone</h2>
+  <button class="danger" id="forgetBtn">Delete WiFi Setup</button>
+</div>
+
+<div id="status"></div>
+
+<script>
+function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
+
+async function refresh() {
+  let info;
+  try {
+    const res = await fetch("/api/settings");
+    info = await res.json();
+  } catch (e) {
+    document.getElementById("status").textContent = "Lost connection to device";
+    return;
+  }
+
+  const wifiValue = document.getElementById("wifiValue");
+  if (info.wifiConnected) {
+    wifiValue.textContent = info.ip;
+    wifiValue.className = "value ok";
+  } else {
+    wifiValue.textContent = "working offline";
+    wifiValue.className = "value warn";
+  }
+  document.getElementById("reconnectBtn").disabled = info.wifiConnected;
+
+  const clockValue = document.getElementById("clockValue");
+  clockValue.textContent = info.clockSynced ? "synced" : "not synced";
+  clockValue.className = "value " + (info.clockSynced ? "ok" : "warn");
+
+  if (info.sdOk) {
+    document.getElementById("cardValue").textContent = fmtGb(info.cardBytes);
+    const usedPct = info.totalBytes > 0 ? (100 * info.usedBytes / info.totalBytes) : 0;
+    document.getElementById("usedValue").textContent = usedPct.toFixed(1) + "%";
+    document.getElementById("usedBar").style.width = usedPct.toFixed(1) + "%";
+    document.getElementById("audioValue").textContent = info.audioFileCount;
+    document.getElementById("textValue").textContent = info.textFileCount;
+  } else {
+    document.getElementById("cardValue").textContent = "unavailable";
+    document.getElementById("usedValue").textContent = "-";
+    document.getElementById("audioValue").textContent = "-";
+    document.getElementById("textValue").textContent = "-";
+  }
+}
+
+let pollTimer = null;
+
+document.getElementById("reconnectBtn").onclick = async () => {
+  const btn = document.getElementById("reconnectBtn");
+  const status = document.getElementById("status");
+  btn.disabled = true;
+  status.textContent = "Reconnecting... this can take up to 30 seconds, and the page will briefly stop responding.";
+  try {
+    await fetch("/api/settings/reconnect", { method: "POST" });
+  } catch (e) {
+    // The device's web server is busy blocking on the reconnect attempt
+    // itself (see wifi_manager.cpp) - that's expected, not a failure.
+  }
+  if (pollTimer) clearInterval(pollTimer);
+  let tries = 0;
+  pollTimer = setInterval(async () => {
+    tries++;
+    await refresh();
+    if (tries > 40) {
+      clearInterval(pollTimer);
+      status.textContent = "";
+    }
+  }, 1000);
+  setTimeout(() => { status.textContent = ""; }, 35000);
+};
+
+document.getElementById("forgetBtn").onclick = async () => {
+  if (!confirm("Delete the saved WiFi network and reboot into setup mode? This can't be undone from here - you'll need to join the device's setup WiFi network again.")) return;
+  document.getElementById("status").textContent = "Rebooting into setup mode...";
+  try {
+    await fetch("/api/settings/forget", { method: "POST" });
+  } catch (e) {
+    // Expected: the device reboots mid-response.
+  }
+  document.getElementById("status").textContent = "Rebooted. Join the \"Annota-Setup\" WiFi network from your phone or laptop to reconfigure.";
+};
+
+refresh();
+</script>
+</body>
+</html>
+)rawliteral";
+
 static void handle_root() {
     server.send_P(200, "text/html", INDEX_HTML);
+}
+
+static void handle_settings_page() {
+    server.send_P(200, "text/html", SETTINGS_HTML);
+}
+
+// GET /api/settings - snapshot for the settings page: live WiFi status
+// (not cached - same WiFi.status() check ui.cpp's refresh_wifi_connection_ui()
+// does), NTP sync state, and SD capacity/usage. SD access shares the
+// display's SPI peripheral with touch, so it needs the same
+// suspend/query/resume dance as everywhere else in this file - unlike
+// sd_claim()/sd_release(), get_sd_info() already calls sd_begin()/sd_end()
+// itself, so only the touch suspend/resume wraps it here.
+static void handle_settings_info() {
+    JsonDocument doc;
+    bool connected = WiFi.status() == WL_CONNECTED;
+    doc["wifiConnected"] = connected;
+    doc["ip"] = connected ? WiFi.localIP().toString() : "";
+    doc["clockSynced"] = wifi_clock_synced();
+
+    display_suspend_touch();
+    SdInfo info;
+    bool sdOk = get_sd_info(info);
+    display_resume_touch();
+
+    doc["sdOk"] = sdOk;
+    if (sdOk) {
+        doc["cardBytes"] = info.cardBytes;
+        doc["totalBytes"] = info.totalBytes;
+        doc["usedBytes"] = info.usedBytes;
+        doc["audioFileCount"] = info.audioFileCount;
+        doc["textFileCount"] = info.textFileCount;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+// POST /api/settings/reconnect - same request wifi_manager.h's
+// wifi_request_reconnect() documents for the on-screen Settings button:
+// only flags it, loop() actually runs it (wifi_process_pending_reconnect())
+// once this handler has returned and lv_timer_handler() has run again, so
+// this responds immediately rather than blocking the request for up to 30
+// seconds. web_server_handle() itself won't run again until that attempt
+// finishes, so the page's next few polls will stall rather than fail -
+// the client-side handler above treats that as expected.
+static void handle_settings_reconnect() {
+    wifi_request_reconnect();
+    server.send(200, "text/plain", "Reconnecting");
+}
+
+// POST /api/settings/forget - web equivalent of the on-screen Settings
+// "Delete WiFi Setup" button; the confirmation happens client-side
+// (confirm() in SETTINGS_HTML) since wifi_forget_and_reboot() itself does
+// none and never returns. The response must be sent *before* calling it -
+// once called, the device reboots and no code after it ever runs.
+static void handle_settings_forget() {
+    server.send(200, "text/plain", "Rebooting into setup mode");
+    wifi_forget_and_reboot();
 }
 
 static void handle_list() {
@@ -591,6 +890,10 @@ static void handle_upload_done() {
 
 void web_server_start() {
     server.on("/", HTTP_GET, handle_root);
+    server.on("/settings", HTTP_GET, handle_settings_page);
+    server.on("/api/settings", HTTP_GET, handle_settings_info);
+    server.on("/api/settings/reconnect", HTTP_POST, handle_settings_reconnect);
+    server.on("/api/settings/forget", HTTP_POST, handle_settings_forget);
     server.on("/api/files", HTTP_GET, handle_list);
     server.on("/api/download", HTTP_GET, handle_download);
     server.on("/api/play", HTTP_GET, handle_play);
