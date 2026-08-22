@@ -520,9 +520,71 @@ static void show_transcribe_confirm_dialog(const char *filename) {
     lv_timer_handler();
 }
 
+static void transcribe_offline_close_cb(lv_event_t *e) {
+    (void)e;
+    hide_transcribe_dialog_async();
+}
+
+// Shown instead of show_transcribe_confirm_dialog() when WiFi is down -
+// no point asking "Transcribe?" for something guaranteed to fail
+// (transcribe_file() would just bounce it back with the same reason).
+// Checking live WiFi.status() here, right at long-press time, catches a
+// drop that happened after the screen was last painted - same reasoning
+// as ui.cpp's own refresh_wifi_connection_ui().
+static void show_transcribe_offline_dialog() {
+    if (transcribe_dialog) return;
+
+    transcribe_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(transcribe_dialog);
+    lv_obj_set_size(transcribe_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(transcribe_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(transcribe_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(transcribe_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(transcribe_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(transcribe_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(transcribe_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, LV_SYMBOL_WARNING " Device Offline");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, "Connect to WiFi first - transcription needs to reach OpenAI over the internet.");
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *close_btn = lv_button_create(card);
+    lv_obj_set_width(close_btn, lv_pct(100));
+    lv_obj_add_event_cb(close_btn, transcribe_offline_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, "Close");
+    lv_obj_center(close_label);
+
+    lv_timer_handler();
+}
+
 static void card_long_press_cb(lv_event_t *e) {
     size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
     if (idx >= mp3FileCount) return;
+    if (WiFi.status() != WL_CONNECTED) {
+        show_transcribe_offline_dialog();
+        return;
+    }
     show_transcribe_confirm_dialog(mp3Files[idx].filename);
 }
 
