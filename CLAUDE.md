@@ -10,7 +10,8 @@ ESP32 dev module. It's an MP3 file browser: scans an SD card's root for
 `.mp3` files and lists them on an LVGL touch UI, with a WiFi connection
 manager (captive-portal setup) and an HTTP file manager for the SD card
 alongside. Long-pressing an audio file's card offers to transcribe it via
-OpenAI's API, saving the result as a sibling `.txt` file.
+an AI provider's API (OpenAI by default, selected at compile time — see
+`transcribe.cpp/h` below), saving the result as a sibling `.txt` file.
 
 ## Commands
 
@@ -51,9 +52,11 @@ their bullets below) — then `web_server_handle()`.
   on `lv_layer_top()`, so it floats over the screen's content untouched).
   These setters force their own `lv_timer_handler()` repaint since they're
   called from `wifi_manager.cpp` while it may be blocking `loop()`. The
-  Settings view (same file) also holds the OpenAI API key field —
-  `transcribe.h`'s `openai_set_api_key()`/`openai_get_api_key()` — with an
-  `lv_keyboard` created lazily on first focus, parented to `lv_layer_top()`
+  Settings view (same file) also holds the API key field for whichever AI
+  provider is compiled in — `transcribe.h`'s `ai_provider_set_api_key()`/
+  `ai_provider_get_api_key()`, labeled dynamically via `ai_provider_name()`
+  — with an `lv_keyboard` created lazily on first focus, parented to
+  `lv_layer_top()`
   the same way the dialogs are so it floats instead of squeezing the
   layout. Long-pressing an audio card (only wired up while the list is
   showing `.mp3`s, not `.txt` transcripts) opens a Yes/No confirm dialog;
@@ -85,42 +88,59 @@ their bullets below) — then `web_server_handle()`.
   right after `lv_timer_handler()` returns, never nested inside it. Must
   be called after `build_main_screen()` so it has a screen to paint
   status onto.
-- **transcribe.cpp/h** — OpenAI API key storage (NVS, `annota` namespace —
-  same one `display.cpp` uses for touch calibration, different key) plus
-  `transcribe_file()`, which uploads an SD-root `.mp3` to OpenAI's
-  `/v1/audio/transcriptions` (`whisper-1`) and writes the result to a
-  sibling `.txt`. The upload streams straight off the SD card through a
-  custom `Stream` subclass wrapping the multipart preamble/file/trailer —
-  the ESP32 doesn't have enough RAM to buffer a whole audio file first.
-  TLS cert validation is skipped (`WiFiClientSecure::setInsecure()`); no
-  root-CA bundle exists in this project. Like `wifi_manager.cpp`'s
-  `wifi_request_reconnect()`/`wifi_process_pending_reconnect()` pair,
-  `transcribe_request()`/`transcribe_process_pending()` split the "ask for
-  it" (from `ui.cpp`'s LVGL click handler) from the "actually block and
-  repaint" (from `main.cpp`'s `loop()`, after `lv_timer_handler()` returns)
-  for the same reentrancy reason. Claims the SD card itself
-  (`storage.h`'s `sd_begin()`/`sd_end()`) but leaves pausing/resuming touch
-  to the caller — `transcribe_process_pending()` does that around the
-  whole blocking call, same shared-SPI dance as everything else below.
+- **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
+  split into a provider-agnostic half and a provider-specific half so a
+  future second provider is a new file plus a new build flag, not a
+  rewrite. `transcribe.h` declares the whole public surface — generic
+  names only (`ai_provider_name()`, `ai_provider_has_api_key()`/
+  `..._get_api_key()`/`..._set_api_key()`, `ai_transcribe_file()`) — and
+  `ui.cpp`/`web_server.cpp` only ever call those, never anything
+  provider-specific. `transcribe.cpp` implements the provider-agnostic
+  part: `transcribe_request()`/`transcribe_process_pending()` mirror
+  `wifi_manager.cpp`'s `wifi_request_reconnect()`/
+  `wifi_process_pending_reconnect()` pair, splitting the "ask for it"
+  (from `ui.cpp`'s LVGL click handler) from the "actually block and
+  repaint" (from `main.cpp`'s `loop()`, after `lv_timer_handler()`
+  returns) for the same reentrancy reason; it also `#error`s at compile
+  time if no `AI_PROVIDER_*` build flag is defined, so a missing one fails
+  loudly here instead of as a confusing link error. Exactly one
+  `transcribe_<provider>.cpp` implements the rest (`ai_provider_name()`
+  and `ai_transcribe_file()`) — each file's entire body is wrapped in
+  `#ifdef AI_PROVIDER_<NAME>`, so every provider file can sit in `src/`
+  at once and only the one selected by `platformio.ini`'s build_flags
+  (currently `-D AI_PROVIDER_OPENAI=1`) compiles to anything. NVS keys are
+  namespaced per provider (e.g. `openaiKey`) so switching the compiled-in
+  provider doesn't feed it a stale key saved for a different one.
+  `transcribe_openai.cpp` (`whisper-1`, `/v1/audio/transcriptions`)
+  streams the upload straight off the SD card through a custom `Stream`
+  subclass wrapping the multipart preamble/file/trailer — the ESP32
+  doesn't have enough RAM to buffer a whole audio file first — and skips
+  TLS cert validation (`WiFiClientSecure::setInsecure()`); no root-CA
+  bundle exists in this project. `ai_transcribe_file()` claims the SD card
+  itself (`storage.h`'s `sd_begin()`/`sd_end()`) but leaves pausing/
+  resuming touch to the caller — `transcribe_process_pending()` does that
+  around the whole blocking call, same shared-SPI dance as everything
+  else below.
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80. Two pages, same dark palette as
   `ui.cpp`: a file manager (list/download/upload/delete files on the SD
   root) at `/`, backed by `/api/files`, `/api/download`, `/api/upload`,
   `/api/delete`; and a `/settings` page mirroring `ui.cpp`'s on-screen
   Settings view (WiFi/clock status, SD capacity, Reconnect WiFi, Delete
-  WiFi Setup, and the OpenAI API key field), backed by `/api/settings`
+  WiFi Setup, and the AI provider's API key field, labeled dynamically
+  from `aiProviderName` in the JSON below), backed by `/api/settings`
   (GET, a status snapshot) and `/api/settings/reconnect`,
-  `/api/settings/forget`, `/api/settings/openai-key` (POST). Only started
+  `/api/settings/forget`, `/api/settings/ai-key` (POST). Only started
   once `wifi_connect()` succeeds. Each handler that touches the card calls
   `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
   after) to borrow the shared SPI peripheral from touch for that one
-  request — see the SPI note below; the OpenAI key handler is the one
-  exception, since `transcribe.h`'s `openai_set_api_key()` is pure NVS and
-  never touches the SD card. Like `ui.cpp`'s own field, this server is
-  plain HTTP, so `/api/settings` reports only whether a key is saved, never
-  the key itself — the web page can clear or overwrite it but never
-  displays the current value. Uploads/deletes don't refresh the on-screen
-  MP3 list (`mp3Files`); that only happens on reboot.
+  request — see the SPI note below; the AI key handler is the one
+  exception, since `transcribe.h`'s `ai_provider_set_api_key()` is pure
+  NVS and never touches the SD card. Like `ui.cpp`'s own field, this
+  server is plain HTTP, so `/api/settings` reports only whether a key is
+  saved, never the key itself — the web page can clear or overwrite it but
+  never displays the current value. Uploads/deletes don't refresh the
+  on-screen MP3 list (`mp3Files`); that only happens on reboot.
 
 ### Shared SPI peripheral gotcha
 
@@ -140,8 +160,9 @@ the bus for SD (`storage.h`'s `sd_begin()`/`sd_end()`), then resume touch
 duration of whatever SD request is in flight. Any new code that touches the
 SD card after boot needs the same pause/claim/release/resume dance.
 `transcribe.cpp`'s `transcribe_process_pending()` does the same thing
-around its own (much longer-running) `transcribe_file()` call, which keeps
-the SD card claimed the whole time it's streaming the file to OpenAI.
+around its own (much longer-running) `ai_transcribe_file()` call, which
+keeps the SD card claimed the whole time it's streaming the file to
+whichever provider is compiled in.
 
 ### TFT_eSPI configuration
 

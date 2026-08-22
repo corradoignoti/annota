@@ -34,8 +34,8 @@ static lv_timer_t *clock_timer = nullptr;
 // .txt files.
 static bool showing_audio_files = true;
 
-// Settings view's OpenAI API key field, plus the on-screen keyboard it
-// (and only it) uses - see build_settings_view().
+// Settings view's AI provider API key field, plus the on-screen keyboard
+// it (and only it) uses - see build_settings_view().
 static lv_obj_t *api_key_textarea = nullptr;
 static lv_obj_t *api_key_keyboard = nullptr;
 static lv_obj_t *api_key_status_label = nullptr;
@@ -197,15 +197,15 @@ static void api_key_textarea_event_cb(lv_event_t *e) {
     }
 }
 
-// Saves whatever's currently in api_key_textarea to NVS (openai.h) - an
-// empty field clears the saved key. Doesn't validate the key itself
+// Saves whatever's currently in api_key_textarea to NVS (transcribe.h) -
+// an empty field clears the saved key. Doesn't validate the key itself
 // (that only happens for real the next time a transcription is
 // attempted); this just confirms the save with api_key_status_label.
 static void api_key_save_event_cb(lv_event_t *e) {
     (void)e;
     if (!api_key_textarea) return;
     const char *text = lv_textarea_get_text(api_key_textarea);
-    openai_set_api_key(text);
+    ai_provider_set_api_key(text);
     if (api_key_status_label) {
         lv_label_set_text(api_key_status_label, text[0] ? "API key saved" : "API key cleared");
     }
@@ -292,12 +292,17 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_label_set_text(wifi_forget_label, LV_SYMBOL_TRASH " Delete WiFi Setup");
     lv_obj_center(wifi_forget_label);
 
-    // OpenAI API key, used by transcribe.cpp for the long-press-to-
-    // transcribe flow (ui.cpp's card_long_press_cb). Password mode masks
-    // it on screen; it's still stored in NVS as plain text (openai.h),
-    // same as WiFiManager's own saved credentials.
+    // API key for whichever AI_PROVIDER_* is compiled in (transcribe.h),
+    // used by transcribe.cpp for the long-press-to-transcribe flow
+    // (ui.cpp's card_long_press_cb). Password mode masks it on screen;
+    // it's still stored in NVS as plain text, same as WiFiManager's own
+    // saved credentials. Title/placeholder name the provider dynamically
+    // (ai_provider_name()) so this doesn't need editing when the compiled-
+    // in provider changes.
     lv_obj_t *api_key_title = lv_label_create(settings_view);
-    lv_label_set_text(api_key_title, "OpenAI API Key");
+    char titleText[48];
+    snprintf(titleText, sizeof(titleText), "%s API Key", ai_provider_name());
+    lv_label_set_text(api_key_title, titleText);
     lv_obj_set_style_margin_top(api_key_title, 8, 0);
     lv_obj_set_style_text_font(api_key_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(api_key_title, lv_color_white(), 0);
@@ -307,8 +312,8 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_textarea_set_password_mode(api_key_textarea, true);
     lv_textarea_set_placeholder_text(api_key_textarea, "sk-...");
     lv_obj_set_width(api_key_textarea, lv_pct(100));
-    char existingKey[OPENAI_API_KEY_MAX];
-    openai_get_api_key(existingKey, sizeof(existingKey));
+    char existingKey[AI_API_KEY_MAX];
+    ai_provider_get_api_key(existingKey, sizeof(existingKey));
     lv_textarea_set_text(api_key_textarea, existingKey);
     lv_obj_add_event_cb(api_key_textarea, api_key_textarea_event_cb, LV_EVENT_FOCUSED, nullptr);
     lv_obj_add_event_cb(api_key_textarea, api_key_textarea_event_cb, LV_EVENT_DEFOCUSED, nullptr);
@@ -488,7 +493,7 @@ static void show_transcribe_confirm_dialog(const char *filename) {
 
     lv_obj_t *msg = lv_label_create(card);
     char text[96];
-    snprintf(text, sizeof(text), "Send \"%s\" to OpenAI for transcription?", filename);
+    snprintf(text, sizeof(text), "Send \"%s\" to %s for transcription?", filename, ai_provider_name());
     lv_label_set_text(msg, text);
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, lv_pct(100));
@@ -527,7 +532,7 @@ static void transcribe_offline_close_cb(lv_event_t *e) {
 
 // Shown instead of show_transcribe_confirm_dialog() when WiFi is down -
 // no point asking "Transcribe?" for something guaranteed to fail
-// (transcribe_file() would just bounce it back with the same reason).
+// (ai_transcribe_file() would just bounce it back with the same reason).
 // Checking live WiFi.status() here, right at long-press time, catches a
 // drop that happened after the screen was last painted - same reasoning
 // as ui.cpp's own refresh_wifi_connection_ui().
@@ -561,7 +566,10 @@ static void show_transcribe_offline_dialog() {
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
 
     lv_obj_t *msg = lv_label_create(card);
-    lv_label_set_text(msg, "Connect to WiFi first - transcription needs to reach OpenAI over the internet.");
+    char offlineText[112];
+    snprintf(offlineText, sizeof(offlineText), "Connect to WiFi first - transcription needs to reach %s over the internet.",
+             ai_provider_name());
+    lv_label_set_text(msg, offlineText);
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, lv_pct(100));
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
