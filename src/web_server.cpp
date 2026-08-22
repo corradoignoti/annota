@@ -112,6 +112,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
     margin: 0 1rem 1.2rem;
     overflow: hidden;
   }
+  #files-card { overflow-x: auto; }
   #player { padding: 0.9rem 1rem; }
   #player #playerName { font-size: 0.85rem; margin-bottom: 0.5rem; word-break: break-all; }
   #player audio { width: 100%; height: 32px; }
@@ -136,7 +137,13 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   .arrow { color: var(--accent); }
   td.size, th.size { text-align: right; white-space: nowrap; }
   td.date, th.date { white-space: nowrap; color: var(--on-surface-secondary); font-size: 0.85rem; }
-  td.actions { text-align: right; white-space: nowrap; }
+  td.actions { text-align: right; }
+  table td:first-child, table th:first-child {
+    max-width: 40vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   button, .btn {
     font: inherit;
@@ -198,7 +205,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <button id="playerClose" class="btn">Stop</button>
 </div>
 
-<div class="card">
+<div class="card" id="files-card">
   <table id="files">
     <thead><tr>
       <th class="sortable" data-sort="name">Name<span class="arrow"></span></th>
