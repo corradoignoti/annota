@@ -8,6 +8,7 @@
 
 #include "display.h"
 #include "storage.h"
+#include "transcribe.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -32,6 +33,17 @@ static lv_timer_t *clock_timer = nullptr;
 // mp3FileCount as .mp3 files, false while showing them as .txt files.
 static bool showing_audio_files = true;
 
+// Settings view's OpenAI API key field, plus the on-screen keyboard it
+// (and only it) uses - see build_settings_view().
+static lv_obj_t *api_key_textarea = nullptr;
+static lv_obj_t *api_key_keyboard = nullptr;
+static lv_obj_t *api_key_status_label = nullptr;
+
+// Shared by the transcribe confirm/progress/result dialogs below - only
+// one of the three is ever up at once, so they reuse one top-layer slot.
+static lv_obj_t *transcribe_dialog = nullptr;
+static char transcribe_target_filename[64];
+
 static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(scr, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -44,6 +56,10 @@ static void show_insert_card_message(lv_obj_t *scr) {
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
 }
+
+// Forward-declared so render_file_list() (defined next) can wire it up;
+// defined below alongside the confirm dialog it opens.
+static void card_long_press_cb(lv_event_t *e);
 
 // Wipes and repopulates `list` from mp3Files/mp3FileCount. Used both for
 // the initial build and for the Refresh button.
@@ -75,6 +91,17 @@ static void render_file_list(lv_obj_t *list) {
         lv_label_set_text(date, mp3Files[i].created);
         lv_obj_set_style_text_font(date, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(date, lv_color_hex(0x9AA0AC), 0);
+
+        // Transcription only makes sense for audio files, not the .txt
+        // transcripts this same list shows when toggled - so only audio
+        // cards get the long-press handler. i is this entry's index into
+        // mp3Files at render time; card_long_press_cb captures the
+        // filename immediately (not this index) since the array can be
+        // rescanned/reordered later.
+        if (showing_audio_files) {
+            lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(card, card_long_press_cb, LV_EVENT_LONG_PRESSED, (void *)(uintptr_t)i);
+        }
     }
 }
 
@@ -142,6 +169,48 @@ static void update_settings_info();
 // opens.
 static void forget_button_event_cb(lv_event_t *e);
 
+// Shows/hides api_key_keyboard, and detaches it from api_key_textarea on
+// hide - wired to the textarea's own FOCUSED/DEFOCUSED events below.
+// api_key_keyboard is created lazily (on first focus) since it's the
+// only text input in the app; parented to lv_layer_top() so it floats
+// over settings_view instead of squeezing it, same overlay trick the
+// dialogs use.
+static void api_key_keyboard_event_cb(lv_event_t *e) {
+    (void)e;
+    if (api_key_keyboard) lv_obj_add_flag(api_key_keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void api_key_textarea_event_cb(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_FOCUSED) {
+        if (!api_key_keyboard) {
+            api_key_keyboard = lv_keyboard_create(lv_layer_top());
+            lv_obj_add_event_cb(api_key_keyboard, api_key_keyboard_event_cb, LV_EVENT_READY, nullptr);
+            lv_obj_add_event_cb(api_key_keyboard, api_key_keyboard_event_cb, LV_EVENT_CANCEL, nullptr);
+        }
+        lv_keyboard_set_textarea(api_key_keyboard, api_key_textarea);
+        lv_obj_remove_flag(api_key_keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(api_key_keyboard);
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        if (api_key_keyboard) lv_obj_add_flag(api_key_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+// Saves whatever's currently in api_key_textarea to NVS (openai.h) - an
+// empty field clears the saved key. Doesn't validate the key itself
+// (that only happens for real the next time a transcription is
+// attempted); this just confirms the save with api_key_status_label.
+static void api_key_save_event_cb(lv_event_t *e) {
+    (void)e;
+    if (!api_key_textarea) return;
+    const char *text = lv_textarea_get_text(api_key_textarea);
+    openai_set_api_key(text);
+    if (api_key_status_label) {
+        lv_label_set_text(api_key_status_label, text[0] ? "API key saved" : "API key cleared");
+    }
+    if (api_key_keyboard) lv_obj_add_flag(api_key_keyboard, LV_OBJ_FLAG_HIDDEN);
+}
+
 // Builds the settings view as a sibling of file_list, occupying the same
 // flex slot between the title and the bottom button row - so unlike a
 // top-layer overlay, it never covers the row of buttons below it. Created
@@ -156,7 +225,12 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_obj_set_flex_grow(settings_view, 1);
     lv_obj_set_flex_flow(settings_view, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(settings_view, 4, 0);
-    lv_obj_clear_flag(settings_view, LV_OBJ_FLAG_SCROLLABLE);
+    // Scrollable (unlike a plain static settings panel): the API key
+    // field + buttons pushed this past one screen's worth of content, so
+    // this needs to scroll the same way file_list does.
+    lv_obj_add_flag(settings_view, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(settings_view, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(settings_view, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_add_flag(settings_view, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *title = lv_label_create(settings_view);
@@ -216,6 +290,39 @@ static void build_settings_view(lv_obj_t *scr) {
     lv_obj_t *wifi_forget_label = lv_label_create(wifi_forget_btn);
     lv_label_set_text(wifi_forget_label, LV_SYMBOL_TRASH " Delete WiFi Setup");
     lv_obj_center(wifi_forget_label);
+
+    // OpenAI API key, used by transcribe.cpp for the long-press-to-
+    // transcribe flow (ui.cpp's card_long_press_cb). Password mode masks
+    // it on screen; it's still stored in NVS as plain text (openai.h),
+    // same as WiFiManager's own saved credentials.
+    lv_obj_t *api_key_title = lv_label_create(settings_view);
+    lv_label_set_text(api_key_title, "OpenAI API Key");
+    lv_obj_set_style_margin_top(api_key_title, 8, 0);
+    lv_obj_set_style_text_font(api_key_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(api_key_title, lv_color_white(), 0);
+
+    api_key_textarea = lv_textarea_create(settings_view);
+    lv_textarea_set_one_line(api_key_textarea, true);
+    lv_textarea_set_password_mode(api_key_textarea, true);
+    lv_textarea_set_placeholder_text(api_key_textarea, "sk-...");
+    lv_obj_set_width(api_key_textarea, lv_pct(100));
+    char existingKey[OPENAI_API_KEY_MAX];
+    openai_get_api_key(existingKey, sizeof(existingKey));
+    lv_textarea_set_text(api_key_textarea, existingKey);
+    lv_obj_add_event_cb(api_key_textarea, api_key_textarea_event_cb, LV_EVENT_FOCUSED, nullptr);
+    lv_obj_add_event_cb(api_key_textarea, api_key_textarea_event_cb, LV_EVENT_DEFOCUSED, nullptr);
+
+    lv_obj_t *api_key_save_btn = lv_button_create(settings_view);
+    lv_obj_set_width(api_key_save_btn, lv_pct(100));
+    lv_obj_add_event_cb(api_key_save_btn, api_key_save_event_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *api_key_save_label = lv_label_create(api_key_save_btn);
+    lv_label_set_text(api_key_save_label, LV_SYMBOL_SAVE " Save API Key");
+    lv_obj_center(api_key_save_label);
+
+    api_key_status_label = lv_label_create(settings_view);
+    lv_label_set_text(api_key_status_label, "");
+    lv_obj_set_style_text_font(api_key_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(api_key_status_label, lv_color_hex(0x9AA0AC), 0);
 }
 
 // Modal confirmation for wifi_forget_and_reboot() - same top-layer overlay
@@ -313,6 +420,109 @@ static void show_forget_confirm_dialog() {
 static void forget_button_event_cb(lv_event_t *e) {
     (void)e;
     show_forget_confirm_dialog();
+}
+
+// -----------------------------------------------------------------------
+// Transcribe confirm/progress/result dialogs, triggered by long-pressing
+// an audio card (card_long_press_cb, wired in render_file_list()). All
+// three share the transcribe_dialog top-layer slot - only one is ever up
+// at once. The confirm dialog's Yes button only calls transcribe_request()
+// (transcribe.h); the actual blocking work happens later from loop() via
+// transcribe_process_pending(), which is what calls
+// ui_show_transcribe_progress()/ui_show_transcribe_result() below - same
+// split as wifi_manager.cpp's reconnect flow, and for the same reason
+// (see transcribe_request()'s comment).
+// -----------------------------------------------------------------------
+
+static void hide_transcribe_dialog_async() {
+    if (!transcribe_dialog) return;
+    // _async: called from a button inside transcribe_dialog itself - see
+    // ui_hide_wifi_setup_dialog()'s comment for why this can't delete
+    // synchronously out from under its own still-dispatching click event.
+    lv_obj_delete_async(transcribe_dialog);
+    transcribe_dialog = nullptr;
+}
+
+static void transcribe_confirm_no_cb(lv_event_t *e) {
+    (void)e;
+    hide_transcribe_dialog_async();
+}
+
+static void transcribe_confirm_yes_cb(lv_event_t *e) {
+    (void)e;
+    hide_transcribe_dialog_async();
+    transcribe_request(transcribe_target_filename);
+}
+
+static void show_transcribe_confirm_dialog(const char *filename) {
+    if (transcribe_dialog) return;
+    strncpy(transcribe_target_filename, filename, sizeof(transcribe_target_filename) - 1);
+    transcribe_target_filename[sizeof(transcribe_target_filename) - 1] = '\0';
+
+    transcribe_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(transcribe_dialog);
+    lv_obj_set_size(transcribe_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(transcribe_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(transcribe_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(transcribe_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(transcribe_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(transcribe_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(transcribe_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "Transcribe Audio?");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    char text[96];
+    snprintf(text, sizeof(text), "Send \"%s\" to OpenAI for transcription?", filename);
+    lv_label_set_text(msg, text);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_remove_style_all(btn_row);
+    lv_obj_set_width(btn_row, lv_pct(100));
+    lv_obj_set_height(btn_row, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(btn_row, 8, 0);
+    lv_obj_set_style_margin_top(btn_row, 8, 0);
+
+    lv_obj_t *no_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(no_btn, 1);
+    lv_obj_add_event_cb(no_btn, transcribe_confirm_no_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *no_label = lv_label_create(no_btn);
+    lv_label_set_text(no_label, "No");
+    lv_obj_center(no_label);
+
+    lv_obj_t *yes_btn = lv_button_create(btn_row);
+    lv_obj_set_flex_grow(yes_btn, 1);
+    lv_obj_add_event_cb(yes_btn, transcribe_confirm_yes_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *yes_label = lv_label_create(yes_btn);
+    lv_label_set_text(yes_label, "Yes");
+    lv_obj_center(yes_label);
+
+    lv_timer_handler();
+}
+
+static void card_long_press_cb(lv_event_t *e) {
+    size_t idx = (size_t)(uintptr_t)lv_event_get_user_data(e);
+    if (idx >= mp3FileCount) return;
+    show_transcribe_confirm_dialog(mp3Files[idx].filename);
 }
 
 // Formats a byte count as e.g. "29.72 GB" (decimal GB, matching how SD
@@ -617,5 +827,104 @@ void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb) {
 
 void ui_refresh_wifi_retry_button() {
     refresh_wifi_connection_ui();
+    lv_timer_handler();
+}
+
+void ui_show_transcribe_progress(const char *filename) {
+    // Whatever's in transcribe_dialog here is the confirm dialog the Yes
+    // button already scheduled an async delete for (see
+    // transcribe_confirm_yes_cb) - that pointer was already cleared
+    // there, so this is a plain create, not a hide-then-create.
+    transcribe_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(transcribe_dialog);
+    lv_obj_set_size(transcribe_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(transcribe_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(transcribe_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(transcribe_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(transcribe_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(transcribe_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(transcribe_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *msg = lv_label_create(card);
+    char text[96];
+    snprintf(text, sizeof(text), "Transcribing \"%s\"...", filename);
+    lv_label_set_text(msg, text);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_white(), 0);
+
+    // Safe here (unlike the confirm dialog's own buttons): this only ever
+    // runs from transcribe_process_pending(), called from loop() after
+    // lv_timer_handler() has already returned, never nested inside it.
+    lv_timer_handler();
+}
+
+static void transcribe_result_close_cb(lv_event_t *e) {
+    (void)e;
+    hide_transcribe_dialog_async();
+}
+
+void ui_show_transcribe_result(bool ok, const char *message) {
+    // Not _async: called from transcribe_process_pending() (loop()), not
+    // from a click handler nested inside transcribe_dialog itself - see
+    // ui_show_transcribe_progress()'s comment.
+    if (transcribe_dialog) {
+        lv_obj_delete(transcribe_dialog);
+        transcribe_dialog = nullptr;
+    }
+
+    transcribe_dialog = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(transcribe_dialog);
+    lv_obj_set_size(transcribe_dialog, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(transcribe_dialog, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(transcribe_dialog, LV_OPA_70, 0);
+    lv_obj_clear_flag(transcribe_dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(transcribe_dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(transcribe_dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *card = lv_obj_create(transcribe_dialog);
+    lv_obj_set_style_radius(card, 12, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x2A2E3A), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
+    lv_obj_set_width(card, lv_pct(85));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, ok ? LV_SYMBOL_OK " Transcription Complete" : LV_SYMBOL_WARNING " Transcription Failed");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, message);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, lv_pct(100));
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0x9AA0AC), 0);
+
+    lv_obj_t *close_btn = lv_button_create(card);
+    lv_obj_set_width(close_btn, lv_pct(100));
+    lv_obj_add_event_cb(close_btn, transcribe_result_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, "Close");
+    lv_obj_center(close_label);
+
     lv_timer_handler();
 }

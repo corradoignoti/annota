@@ -46,3 +46,16 @@ void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb);
 // attempt, in case Settings is already open when one finishes, and by
 // the Settings view itself every time it's opened.
 void ui_refresh_wifi_retry_button();
+
+// Shows a modal "Transcribing <filename>..." status, floated above
+// whatever's on screen (no buttons), and forces one LVGL repaint. Call
+// only from loop() (via transcribe.h's transcribe_process_pending()),
+// never from inside an LVGL event/timer callback - same reentrant-
+// lv_timer_handler() reason as ui_show_wifi_setup_dialog(). Call
+// ui_show_transcribe_result() once the attempt finishes.
+void ui_show_transcribe_progress(const char *filename);
+
+// Replaces the progress dialog with a result dialog (message plus a
+// Close button) and forces one repaint. Same calling constraints as
+// ui_show_transcribe_progress().
+void ui_show_transcribe_result(bool ok, const char *message);

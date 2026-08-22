@@ -9,7 +9,8 @@ Display" (CYD): a 2.8" ILI9341 TFT + XPT2046 resistive touch, generic 30-pin
 ESP32 dev module. It's an MP3 file browser: scans an SD card's root for
 `.mp3` files and lists them on an LVGL touch UI, with a WiFi connection
 manager (captive-portal setup) and an HTTP file manager for the SD card
-alongside.
+alongside. Long-pressing an audio file's card offers to transcribe it via
+OpenAI's API, saving the result as a sibling `.txt` file.
 
 ## Commands
 
@@ -30,7 +31,11 @@ No test suite exists yet (`test/` is the stock PlatformIO placeholder).
 ## Architecture
 
 `src/main.cpp` wires the modules together in `setup()`, in an order that
-matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
+matters — see the SPI note below. `loop()` calls `lv_timer_handler()` first,
+then, only after it returns, the deferred-work pumps that a nested LVGL
+click handler can't safely trigger directly —
+`wifi_process_pending_reconnect()` and `transcribe_process_pending()` (see
+their bullets below) — then `web_server_handle()`.
 
 - **display.cpp/h** — TFT_eSPI panel + XPT2046 touch, bridged into LVGL v9.
   `display_init_panel()` brings up the raw TFT_eSPI panel only.
@@ -45,7 +50,18 @@ matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
   and `ui_show_wifi_setup_dialog()`/`ui_hide_wifi_setup_dialog()` (a modal
   on `lv_layer_top()`, so it floats over the screen's content untouched).
   These setters force their own `lv_timer_handler()` repaint since they're
-  called from `wifi_manager.cpp` while it may be blocking `loop()`.
+  called from `wifi_manager.cpp` while it may be blocking `loop()`. The
+  Settings view (same file) also holds the OpenAI API key field —
+  `transcribe.h`'s `openai_set_api_key()`/`openai_get_api_key()` — with an
+  `lv_keyboard` created lazily on first focus, parented to `lv_layer_top()`
+  the same way the dialogs are so it floats instead of squeezing the
+  layout. Long-pressing an audio card (only wired up while the list is
+  showing `.mp3`s, not `.txt` transcripts) opens a Yes/No confirm dialog;
+  Yes calls `transcribe.h`'s `transcribe_request()` rather than blocking
+  right there — same reason as `wifi_request_reconnect()` below.
+  `ui_show_transcribe_progress()`/`ui_show_transcribe_result()` are what
+  `transcribe_process_pending()` calls back into once it's actually safe
+  to block and repaint.
 - **wifi_manager.cpp/h** — `wifi_connect()` via tzapu/WiFiManager. Two
   paths depending on whether a network is already saved in NVS: none
   saved opens a captive portal AP ("Annota-Setup", no password) with no
@@ -69,6 +85,23 @@ matters — see the SPI note below. `loop()` is just `lv_timer_handler()`.
   right after `lv_timer_handler()` returns, never nested inside it. Must
   be called after `build_main_screen()` so it has a screen to paint
   status onto.
+- **transcribe.cpp/h** — OpenAI API key storage (NVS, `annota` namespace —
+  same one `display.cpp` uses for touch calibration, different key) plus
+  `transcribe_file()`, which uploads an SD-root `.mp3` to OpenAI's
+  `/v1/audio/transcriptions` (`whisper-1`) and writes the result to a
+  sibling `.txt`. The upload streams straight off the SD card through a
+  custom `Stream` subclass wrapping the multipart preamble/file/trailer —
+  the ESP32 doesn't have enough RAM to buffer a whole audio file first.
+  TLS cert validation is skipped (`WiFiClientSecure::setInsecure()`); no
+  root-CA bundle exists in this project. Like `wifi_manager.cpp`'s
+  `wifi_request_reconnect()`/`wifi_process_pending_reconnect()` pair,
+  `transcribe_request()`/`transcribe_process_pending()` split the "ask for
+  it" (from `ui.cpp`'s LVGL click handler) from the "actually block and
+  repaint" (from `main.cpp`'s `loop()`, after `lv_timer_handler()` returns)
+  for the same reentrancy reason. Claims the SD card itself
+  (`storage.h`'s `sd_begin()`/`sd_end()`) but leaves pausing/resuming touch
+  to the caller — `transcribe_process_pending()` does that around the
+  whole blocking call, same shared-SPI dance as everything else below.
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80 serving a single-page file manager
   (list/download/upload/delete files on the SD root) at `/`, backed by
@@ -96,6 +129,9 @@ the bus for SD (`storage.h`'s `sd_begin()`/`sd_end()`), then resume touch
 (`display_resume_touch()`) — the touchscreen goes unresponsive for the
 duration of whatever SD request is in flight. Any new code that touches the
 SD card after boot needs the same pause/claim/release/resume dance.
+`transcribe.cpp`'s `transcribe_process_pending()` does the same thing
+around its own (much longer-running) `transcribe_file()` call, which keeps
+the SD card claimed the whole time it's streaming the file to OpenAI.
 
 ### TFT_eSPI configuration
 

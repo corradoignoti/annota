@@ -3,6 +3,7 @@
 
 #include "display.h"
 #include "storage.h"
+#include "transcribe.h"
 #include "ui.h"
 #include "web_server.h"
 #include "wifi_manager.h"
@@ -35,6 +36,9 @@ void loop() {
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
+    // Same constraint, same reason - see transcribe_process_pending()'s
+    // comment.
+    transcribe_process_pending();
     web_server_handle();
     delay(5);
 }
