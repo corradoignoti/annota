@@ -19,7 +19,7 @@
 // missing (or misspelling) its build flag fails at compile time here
 // instead of as a confusing "undefined reference to ai_transcribe_file()"
 // link error.
-#if !defined(AI_PROVIDER_OPENAI)
+#if !defined(AI_PROVIDER_OPENAI) && !defined(AI_PROVIDER_GEMINI)
 #error "No AI_PROVIDER_* build flag defined - add one (e.g. -D AI_PROVIDER_OPENAI=1) to platformio.ini's build_flags to select a transcription provider."
 #endif
 
