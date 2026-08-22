@@ -7,6 +7,7 @@
 
 #include "display.h"
 #include "storage.h"
+#include "transcribe.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -531,6 +532,15 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card">
+  <h2>OpenAI API Key</h2>
+  <div class="row-item"><span class="label">Status</span><span class="value" id="keyValue">-</span></div>
+  <input id="keyInput" type="password" placeholder="sk-... (leave blank to keep current)"
+    style="width:100%;margin-top:0.6rem;padding:0.6rem 0.7rem;border-radius:8px;border:1px solid var(--divider);background:var(--surface-2);color:var(--on-surface);font:inherit;box-sizing:border-box;">
+  <button class="accent" id="keySaveBtn" style="margin-top:0.6rem;">Save API Key</button>
+  <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">Clear API Key</button>
+</div>
+
+<div class="card">
   <h2>Danger zone</h2>
   <button class="danger" id="forgetBtn">Delete WiFi Setup</button>
 </div>
@@ -563,6 +573,10 @@ async function refresh() {
   const clockValue = document.getElementById("clockValue");
   clockValue.textContent = info.clockSynced ? "synced" : "not synced";
   clockValue.className = "value " + (info.clockSynced ? "ok" : "warn");
+
+  const keyValue = document.getElementById("keyValue");
+  keyValue.textContent = info.openaiKeyConfigured ? "set" : "not set";
+  keyValue.className = "value " + (info.openaiKeyConfigured ? "ok" : "warn");
 
   if (info.sdOk) {
     document.getElementById("cardValue").textContent = fmtGb(info.cardBytes);
@@ -605,6 +619,31 @@ document.getElementById("reconnectBtn").onclick = async () => {
   setTimeout(() => { status.textContent = ""; }, 35000);
 };
 
+// The field never gets prefilled with the real saved key (see
+// handle_settings_info()'s comment) - blank + Save is a no-op rather than
+// an accidental clear; Clear is its own explicit, confirmed action.
+document.getElementById("keySaveBtn").onclick = async () => {
+  const input = document.getElementById("keyInput");
+  const status = document.getElementById("status");
+  if (!input.value) return;
+  const form = new URLSearchParams();
+  form.set("key", input.value);
+  const res = await fetch("/api/settings/openai-key", { method: "POST", body: form });
+  input.value = "";
+  status.textContent = res.ok ? "API key saved." : "Save failed: " + (await res.text());
+  refresh();
+};
+
+document.getElementById("keyClearBtn").onclick = async () => {
+  if (!confirm("Clear the saved OpenAI API key?")) return;
+  const status = document.getElementById("status");
+  const form = new URLSearchParams();
+  form.set("key", "");
+  const res = await fetch("/api/settings/openai-key", { method: "POST", body: form });
+  status.textContent = res.ok ? "API key cleared." : "Clear failed: " + (await res.text());
+  refresh();
+};
+
 document.getElementById("forgetBtn").onclick = async () => {
   if (!confirm("Delete the saved WiFi network and reboot into setup mode? This can't be undone from here - you'll need to join the device's setup WiFi network again.")) return;
   document.getElementById("status").textContent = "Rebooting into setup mode...";
@@ -643,6 +682,11 @@ static void handle_settings_info() {
     doc["wifiConnected"] = connected;
     doc["ip"] = connected ? WiFi.localIP().toString() : "";
     doc["clockSynced"] = wifi_clock_synced();
+    // Never echoes the key itself back over the network - this server is
+    // plain HTTP, so the page only learns whether one's saved and shows a
+    // placeholder; ui.cpp's on-screen field is the only place the actual
+    // value is ever displayed.
+    doc["openaiKeyConfigured"] = openai_has_api_key();
 
     display_suspend_touch();
     SdInfo info;
@@ -684,6 +728,25 @@ static void handle_settings_reconnect() {
 static void handle_settings_forget() {
     server.send(200, "text/plain", "Rebooting into setup mode");
     wifi_forget_and_reboot();
+}
+
+// POST /api/settings/openai-key - web equivalent of the on-screen
+// Settings API key field (ui.cpp's api_key_save_event_cb). An empty
+// `key` clears the saved one, same as there. Doesn't touch the SD card
+// or shared SPI peripheral - transcribe.h's openai_set_api_key() is pure
+// NVS (Preferences), so no sd_claim()/sd_release() dance is needed here.
+static void handle_settings_set_openai_key() {
+    if (!server.hasArg("key")) {
+        server.send(400, "text/plain", "Missing key");
+        return;
+    }
+    String key = server.arg("key");
+    if (key.length() >= OPENAI_API_KEY_MAX) {
+        server.send(400, "text/plain", "Key too long");
+        return;
+    }
+    openai_set_api_key(key.c_str());
+    server.send(200, "text/plain", "OK");
 }
 
 static void handle_list() {
@@ -894,6 +957,7 @@ void web_server_start() {
     server.on("/api/settings", HTTP_GET, handle_settings_info);
     server.on("/api/settings/reconnect", HTTP_POST, handle_settings_reconnect);
     server.on("/api/settings/forget", HTTP_POST, handle_settings_forget);
+    server.on("/api/settings/openai-key", HTTP_POST, handle_settings_set_openai_key);
     server.on("/api/files", HTTP_GET, handle_list);
     server.on("/api/download", HTTP_GET, handle_download);
     server.on("/api/play", HTTP_GET, handle_play);

@@ -103,14 +103,24 @@ their bullets below) — then `web_server_handle()`.
   to the caller — `transcribe_process_pending()` does that around the
   whole blocking call, same shared-SPI dance as everything else below.
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
-  ESP32-core `WebServer` on port 80 serving a single-page file manager
-  (list/download/upload/delete files on the SD root) at `/`, backed by
-  `/api/files`, `/api/download`, `/api/upload`, `/api/delete`. Only started
+  ESP32-core `WebServer` on port 80. Two pages, same dark palette as
+  `ui.cpp`: a file manager (list/download/upload/delete files on the SD
+  root) at `/`, backed by `/api/files`, `/api/download`, `/api/upload`,
+  `/api/delete`; and a `/settings` page mirroring `ui.cpp`'s on-screen
+  Settings view (WiFi/clock status, SD capacity, Reconnect WiFi, Delete
+  WiFi Setup, and the OpenAI API key field), backed by `/api/settings`
+  (GET, a status snapshot) and `/api/settings/reconnect`,
+  `/api/settings/forget`, `/api/settings/openai-key` (POST). Only started
   once `wifi_connect()` succeeds. Each handler that touches the card calls
   `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
   after) to borrow the shared SPI peripheral from touch for that one
-  request — see the SPI note below. Uploads/deletes don't refresh the
-  on-screen MP3 list (`mp3Files`); that only happens on reboot.
+  request — see the SPI note below; the OpenAI key handler is the one
+  exception, since `transcribe.h`'s `openai_set_api_key()` is pure NVS and
+  never touches the SD card. Like `ui.cpp`'s own field, this server is
+  plain HTTP, so `/api/settings` reports only whether a key is saved, never
+  the key itself — the web page can clear or overwrite it but never
+  displays the current value. Uploads/deletes don't refresh the on-screen
+  MP3 list (`mp3Files`); that only happens on reboot.
 
 ### Shared SPI peripheral gotcha
 
