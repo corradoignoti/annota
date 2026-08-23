@@ -1,20 +1,34 @@
 #include "storage.h"
 
 #include <Arduino.h>
-#include <SD.h>
-#include <SPI.h>
 
 // -----------------------------------------------------------------------
 // MP3 catalog: SD card only - no card, no list, no fallback
 //
-// The CYD's SD slot is wired to its own SPI pins (18/19/23), distinct from
-// both the display bus (12/13/14, see User_Setup.h) and the touch bus
-// (25/32/39, see display.cpp) - same "not actually shared" gotcha as
-// touch. The ESP32 only has two general-purpose SPI peripherals though,
-// and the display panel keeps one busy full-time, so SD has to borrow the
-// other one (the one touch normally owns) *before* touch claims it -
-// that's why load_mp3_catalog() must run before display_init_input().
+// Two SD backends depending on which BOARD_* build flag is set (see
+// platformio.ini) - everything below sd_begin()/sd_end() (scanning,
+// capacity, file read/delete) is written against fs::FS, which both
+// backends implement identically, so only the begin/end pair and the FS
+// object itself differ.
+//
+// esp32-cyd: SD is on its own SPI pins (18/19/23), distinct from both the
+// display bus (12/13/14, see User_Setup.h) and the touch bus (25/32/39,
+// see display.cpp) - same "not actually shared" gotcha as touch. The
+// ESP32 only has two general-purpose SPI peripherals though, and the
+// display panel keeps one busy full-time, so SD has to borrow the other
+// one (the one touch normally owns) *before* touch claims it - that's why
+// load_mp3_catalog() must run before display_init_input().
+//
+// esp32-s3-epaper154: SD is on the ESP32-S3's dedicated SDMMC peripheral
+// (1-bit mode: CLK/CMD/D0 only, pins 39/41/40 - see Waveshare's own
+// example repo, waveshareteam/ESP32-S3-ePaper-1.54), entirely separate
+// from the e-paper panel's SPI2_HOST - no borrowing/sharing needed, so
+// sd_begin()/sd_end() there are just SD_MMC.begin()/end().
 // -----------------------------------------------------------------------
+
+#if defined(BOARD_CYD)
+#include <SD.h>
+#include <SPI.h>
 
 #define SD_SCK  18
 #define SD_MISO 19
@@ -22,6 +36,19 @@
 #define SD_CS   5
 
 static SPIClass sdSPI(VSPI);
+#define SD_FS SD
+
+#elif defined(BOARD_ESP32S3_EPAPER154)
+#include <SD_MMC.h>
+
+#define SDMMC_CLK_PIN 39
+#define SDMMC_CMD_PIN 41
+#define SDMMC_D0_PIN  40
+#define SD_FS SD_MMC
+
+#else
+#error "No BOARD_* build flag defined - see platformio.ini."
+#endif
 
 Mp3Entry mp3Files[MAX_MP3_FILES];
 size_t mp3FileCount = 0;
@@ -108,27 +135,36 @@ static size_t count_files(fs::FS &fs, const char *ext) {
 }
 
 bool sd_begin() {
+#if defined(BOARD_CYD)
     sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
     bool sdOk = SD.begin(SD_CS, sdSPI);
     if (!sdOk) {
         sdSPI.end();
     }
     return sdOk;
+#else
+    SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
+    return SD_MMC.begin("/sdcard", /*mode1bit=*/true);
+#endif
 }
 
 void sd_end() {
+#if defined(BOARD_CYD)
     SD.end();
     sdSPI.end();
+#else
+    SD_MMC.end();
+#endif
 }
 
 bool get_sd_info(SdInfo &out) {
     bool sdOk = sd_begin();
     if (sdOk) {
-        out.cardBytes = SD.cardSize();
-        out.totalBytes = SD.totalBytes();
-        out.usedBytes = SD.usedBytes();
-        out.audioFileCount = count_files(SD, AUDIO_EXTS);
-        out.textFileCount = count_files(SD, ".txt");
+        out.cardBytes = SD_FS.cardSize();
+        out.totalBytes = SD_FS.totalBytes();
+        out.usedBytes = SD_FS.usedBytes();
+        out.audioFileCount = count_files(SD_FS, AUDIO_EXTS);
+        out.textFileCount = count_files(SD_FS, ".txt");
         sd_end();
     }
     return sdOk;
@@ -141,7 +177,7 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen) {
 
     char path[80];
     snprintf(path, sizeof(path), "/%s", filename);
-    File f = SD.open(path, FILE_READ);
+    File f = SD_FS.open(path, FILE_READ);
     if (!f) {
         sd_end();
         return false;
@@ -159,7 +195,7 @@ bool delete_file(const char *filename) {
 
     char path[80];
     snprintf(path, sizeof(path), "/%s", filename);
-    bool ok = SD.remove(path);
+    bool ok = SD_FS.remove(path);
     sd_end();
     return ok;
 }
@@ -171,7 +207,7 @@ bool load_mp3_catalog() {
 bool load_file_catalog(const char *ext) {
     bool sdOk = sd_begin();
     if (sdOk) {
-        mp3FileCount = scan_files(SD, mp3Files, MAX_MP3_FILES, ext);
+        mp3FileCount = scan_files(SD_FS, mp3Files, MAX_MP3_FILES, ext);
         sd_end(); // release the SPI peripheral - display_init_input() needs it next for touch
     } else {
         mp3FileCount = 0;

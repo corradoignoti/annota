@@ -1285,3 +1285,8 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 
     lv_timer_handler();
 }
+
+// No-op here - esp32-cyd's input flows through LVGL's touch indev
+// (display.cpp) instead. See ui.h's comment; the real implementation is
+// ui_epaper.cpp's, for esp32-s3-epaper154.
+void ui_process_input() {}
