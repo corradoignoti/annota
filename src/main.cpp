@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
+#include "antiburn.h"
 #include "display.h"
 #include "storage.h"
 #include "transcribe.h"
@@ -40,5 +41,6 @@ void loop() {
     // comment.
     transcribe_process_pending();
     web_server_handle();
+    antiburn_process();
     delay(5);
 }

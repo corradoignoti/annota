@@ -26,3 +26,13 @@ void display_suspend_touch();
 
 // Reclaims the shared SPI peripheral for touch after display_suspend_touch().
 void display_resume_touch();
+
+// Backlight on/off (TFT_BL pin). Used by antiburn.cpp to blank the screen
+// after an idle timeout - cuts power draw and how long a static image
+// stays lit. Idempotent: safe to call every loop() tick regardless of
+// current state.
+void display_set_backlight(bool on);
+
+// Milliseconds since the last touch contact, i.e. how long the screen's
+// been idle. antiburn.cpp polls this to decide when to blank/wake.
+uint32_t display_idle_ms();

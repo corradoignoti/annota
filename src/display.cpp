@@ -121,6 +121,15 @@ static bool touch_down = false;
 static uint32_t touch_last_seen_ms = 0;
 static int16_t touch_last_x = 0, touch_last_y = 0;
 
+// antiburn.cpp's backlight state. display_idle_ms() reuses touch_last_seen_ms
+// above (already "last time a touch was seen") instead of tracking a second
+// timestamp.
+static bool backlight_on = true;
+// Set when a fresh touch contact arrives while the backlight is off - that
+// tap is waking the screen, not clicking whatever's underneath it, so
+// swallow it (report RELEASED) until the finger lifts.
+static bool waking = false;
+
 static void touchpad_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     uint32_t now = millis();
 
@@ -131,12 +140,16 @@ static void touchpad_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
         touch_last_x = constrain(x, 0, SCREEN_W - 1);
         touch_last_y = constrain(y, 0, SCREEN_H - 1);
         touch_last_seen_ms = now;
+        if (!touch_down && !backlight_on) {
+            waking = true;
+        }
         touch_down = true;
     } else if (touch_down && (now - touch_last_seen_ms) >= TOUCH_RELEASE_GRACE_MS) {
         touch_down = false;
+        waking = false;
     }
 
-    data->state = touch_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    data->state = (touch_down && !waking) ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
     data->point.x = touch_last_x;
     data->point.y = touch_last_y;
 }
@@ -173,4 +186,17 @@ void display_suspend_touch() {
 
 void display_resume_touch() {
     touchSPI.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
+}
+
+void display_set_backlight(bool on) {
+    backlight_on = on;
+    // TFT_BL / TFT_BACKLIGHT_ON come from include/User_Setup.h (force-included
+    // ahead of every translation unit - see platformio.ini). TFT_eSPI drives
+    // the pin HIGH once in tft.begin() and never touches it again, so it's
+    // ours to toggle from here on.
+    digitalWrite(TFT_BL, on ? TFT_BACKLIGHT_ON : !TFT_BACKLIGHT_ON);
+}
+
+uint32_t display_idle_ms() {
+    return millis() - touch_last_seen_ms;
 }
