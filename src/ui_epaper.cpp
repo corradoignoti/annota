@@ -44,15 +44,20 @@ enum class Screen {
 
 static const int16_t HEADER_H = 16;
 static const int16_t ROW_H = 18;
-static const int16_t HINT_H = 16;
-static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H) / ROW_H;
+static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
+// kList reserves its own top row (below) for the Audio/Text mode label, on
+// top of HEADER_H/HINT_H.
+static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
 static lv_obj_t *header_label = nullptr;
 static lv_obj_t *body = nullptr;
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
 
-// kList
+// kList. showing_audio_files mirrors ui.cpp's toggle: true while
+// mp3Files/mp3FileCount hold AUDIO_EXTS, false while showing .txt -
+// toggled by a long Next press (see ui_process_input()'s kList case).
+static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
 
@@ -115,11 +120,16 @@ static void add_centered_message(const char *text) {
     lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 30);
 }
 
+// Wraps onto up to two lines instead of running off the 200px panel edge -
+// callers keep hint text short enough to fit HINT_H at that wrap width.
 static void add_hint(const char *text) {
     lv_obj_t *hint = lv_label_create(body);
     lv_label_set_text(hint, text);
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, SCREEN_W - 4);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
 
@@ -144,24 +154,33 @@ static void render_body() {
             break;
 
         case Screen::kList: {
+            add_row(0, showing_audio_files ? "Audio Files" : "Text Files", false);
             if (mp3FileCount == 0) {
-                add_centered_message("No audio files on the SD card");
-                add_hint("Select (hold): rescan");
+                add_centered_message(showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
+                add_hint("Sel(hold): rescan   Next(hold): switch");
                 break;
             }
             clamp_selection();
-            int16_t y = 0;
+            int16_t y = ROW_H;
             for (size_t i = top_index; i < mp3FileCount && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
                 add_row(y, mp3Files[i].filename, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move   Select: menu, hold: rescan");
+            add_hint("Next: move, hold: switch   Sel: menu, hold: rescan");
             break;
         }
 
         case Screen::kActionMenu: {
-            static const char *options[] = {"Transcribe", "Delete", "Cancel"};
-            render_option_menu(active_filename, options, 3);
+            // Transcription only makes sense for audio files, not the .txt
+            // transcripts this same list shows when toggled - see ui.cpp's
+            // identical rule.
+            if (showing_audio_files) {
+                static const char *options[] = {"Transcribe", "Delete", "Cancel"};
+                render_option_menu(active_filename, options, 3);
+            } else {
+                static const char *options[] = {"Delete", "Cancel"};
+                render_option_menu(active_filename, options, 2);
+            }
             break;
         }
 
@@ -283,9 +302,17 @@ void ui_process_input() {
             break; // nothing to navigate - insert a card and reboot
 
         case Screen::kList:
+            if (nextEv == DisplayButtonEvent::kLong) {
+                showing_audio_files = !showing_audio_files;
+                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                selected_index = 0;
+                top_index = 0;
+                render_body();
+                break;
+            }
             if (mp3FileCount == 0) {
                 if (selEv == DisplayButtonEvent::kLong) {
-                    load_mp3_catalog();
+                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                     render_body();
                 }
                 break;
@@ -300,22 +327,26 @@ void ui_process_input() {
                 state = Screen::kActionMenu;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
-                load_mp3_catalog();
+                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                 selected_index = 0;
                 top_index = 0;
                 render_body();
             }
             break;
 
-        case Screen::kActionMenu:
+        case Screen::kActionMenu: {
+            // Option count/order tracks render_body()'s kActionMenu case:
+            // {Transcribe, Delete, Cancel} for audio, {Delete, Cancel} for
+            // .txt (no Transcribe there - see that comment).
+            int optionCount = showing_audio_files ? 3 : 2;
             if (nextEv == DisplayButtonEvent::kShort) {
-                menu_index = (menu_index + 1) % 3;
+                menu_index = (menu_index + 1) % optionCount;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
-                if (menu_index == 0) {
+                if (showing_audio_files && menu_index == 0) {
                     // Don't touch state/render here - transcribe.h's
                     // transcribe_process_pending() (called right after
                     // this, from the same loop() iteration - see
@@ -324,7 +355,7 @@ void ui_process_input() {
                     // moments from now, so redrawing the list first here
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
-                } else if (menu_index == 1) {
+                } else if (menu_index == (showing_audio_files ? 1 : 0)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -334,6 +365,7 @@ void ui_process_input() {
                 }
             }
             break;
+        }
 
         case Screen::kDeleteConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
@@ -345,7 +377,7 @@ void ui_process_input() {
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     delete_file(active_filename);
-                    load_mp3_catalog();
+                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                     selected_index = 0;
                     top_index = 0;
                 }
