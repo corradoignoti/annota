@@ -85,3 +85,12 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // read_text_file_preview() above. Doesn't touch mp3Files/mp3FileCount -
 // the caller re-scans (load_file_catalog()) to refresh the on-screen list.
 bool delete_file(const char *filename);
+
+// Finds an unused "RECnnnn.mp3" name in the SD root (nnnn zero-padded,
+// starting at 0001) for a new mic recording (speaker.cpp's
+// mic_start_recording()), writing it (NUL-terminated) into `out`. Unlike
+// this file's other helpers, doesn't bracket its own sd_begin()/sd_end() -
+// the caller already holds the card open for the whole recording that
+// follows. Returns false only if every slot up to 9999 is taken (never
+// happens in practice).
+bool next_recording_filename(char *out, size_t outLen);
