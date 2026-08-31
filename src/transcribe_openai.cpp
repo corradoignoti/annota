@@ -11,7 +11,6 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Preferences.h>
-#include <SD.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
@@ -143,7 +142,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
 
     char srcPath[80];
     snprintf(srcPath, sizeof(srcPath), "/%s", filename);
-    File src = SD.open(srcPath, FILE_READ);
+    File src = sd_fs().open(srcPath, FILE_READ);
     if (!src) {
         sd_end();
         set_err(errOut, errOutLen, "Could not open file");
@@ -214,7 +213,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
 
     char dstPath[80];
     txt_sibling_path(filename, dstPath, sizeof(dstPath));
-    File dst = SD.open(dstPath, FILE_WRITE);
+    File dst = sd_fs().open(dstPath, FILE_WRITE);
     if (!dst) {
         sd_end();
         set_err(errOut, errOutLen, "Could not write transcript file");

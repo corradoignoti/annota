@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FS.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -40,6 +42,15 @@ bool sd_begin();
 
 // Unmounts the card and releases the SPI peripheral claimed by sd_begin().
 void sd_end();
+
+// The mounted filesystem object itself (SD on esp32-cyd, SD_MMC on
+// esp32-s3-epaper154 - see storage.cpp's top comment). Callers that need
+// direct fs::FS calls (web_server.cpp's file manager: list/open/remove)
+// must go through this instead of naming `SD`/`SD_MMC` themselves - doing
+// so would silently operate on the wrong (unmounted) backend on whichever
+// board doesn't use that library. Only valid between sd_begin() and
+// sd_end().
+fs::FS &sd_fs();
 
 struct SdInfo {
     uint64_t cardBytes;    // raw card capacity (SD.cardSize())

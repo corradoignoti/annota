@@ -157,6 +157,10 @@ void sd_end() {
 #endif
 }
 
+fs::FS &sd_fs() {
+    return SD_FS;
+}
+
 bool get_sd_info(SdInfo &out) {
     bool sdOk = sd_begin();
     if (sdOk) {

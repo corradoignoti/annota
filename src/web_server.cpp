@@ -1,7 +1,6 @@
 #include "web_server.h"
 
 #include <ArduinoJson.h>
-#include <SD.h>
 #include <WebServer.h>
 #include <WiFi.h>
 
@@ -769,7 +768,7 @@ static void handle_list() {
 
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    File root = SD.open("/");
+    File root = sd_fs().open("/");
     if (root && root.isDirectory()) {
         File entry = root.openNextFile();
         while (entry) {
@@ -838,13 +837,13 @@ static void handle_play() {
 
     char path[80];
     snprintf(path, sizeof(path), "/%s", name);
-    if (!SD.exists(path)) {
+    if (!sd_fs().exists(path)) {
         sd_release();
         server.send(404, "text/plain", "Not found");
         return;
     }
 
-    File f = SD.open(path, FILE_READ);
+    File f = sd_fs().open(path, FILE_READ);
     server.streamFile(f, contentType);
     f.close();
     sd_release();
@@ -868,13 +867,13 @@ static void handle_download() {
 
     char path[80];
     snprintf(path, sizeof(path), "/%s", name);
-    if (!SD.exists(path)) {
+    if (!sd_fs().exists(path)) {
         sd_release();
         server.send(404, "text/plain", "Not found");
         return;
     }
 
-    File f = SD.open(path, FILE_READ);
+    File f = sd_fs().open(path, FILE_READ);
     server.sendHeader("Content-Disposition", "attachment; filename=\"" + String(name) + "\"");
     server.streamFile(f, "application/octet-stream");
     f.close();
@@ -899,7 +898,7 @@ static void handle_delete() {
 
     char path[80];
     snprintf(path, sizeof(path), "/%s", name);
-    bool ok = SD.remove(path);
+    bool ok = sd_fs().remove(path);
     sd_release();
 
     if (ok) {
@@ -933,7 +932,7 @@ static void handle_upload_data() {
         uploadClaimed = true;
         char path[80];
         snprintf(path, sizeof(path), "/%s", name);
-        uploadFile = SD.open(path, FILE_WRITE);
+        uploadFile = sd_fs().open(path, FILE_WRITE);
         uploadOk = (bool)uploadFile;
     } else if (upload.status == UPLOAD_FILE_WRITE) {
         if (uploadOk) {
