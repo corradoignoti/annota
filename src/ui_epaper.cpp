@@ -10,6 +10,7 @@
 #include <lvgl.h>
 
 #include "display.h"
+#include "speaker.h"
 #include "storage.h"
 #include "transcribe.h"
 
@@ -36,6 +37,7 @@ enum class Screen {
     kList,
     kActionMenu,
     kDeleteConfirm,
+    kPlaying,
     kWifiSetup,
     kWifiTimeoutDialog,
     kTranscribeProgress,
@@ -171,12 +173,12 @@ static void render_body() {
         }
 
         case Screen::kActionMenu: {
-            // Transcription only makes sense for audio files, not the .txt
-            // transcripts this same list shows when toggled - see ui.cpp's
-            // identical rule.
+            // Play/Transcription only make sense for audio files, not the
+            // .txt transcripts this same list shows when toggled - see
+            // ui.cpp's identical Transcribe rule.
             if (showing_audio_files) {
-                static const char *options[] = {"Transcribe", "Delete", "Cancel"};
-                render_option_menu(active_filename, options, 3);
+                static const char *options[] = {"Play", "Transcribe", "Delete", "Cancel"};
+                render_option_menu(active_filename, options, 4);
             } else {
                 static const char *options[] = {"Delete", "Cancel"};
                 render_option_menu(active_filename, options, 2);
@@ -189,6 +191,14 @@ static void render_body() {
             snprintf(title, sizeof(title), "Delete %s?", active_filename);
             static const char *options[] = {"Confirm delete", "Cancel"};
             render_option_menu(title, options, 2);
+            break;
+        }
+
+        case Screen::kPlaying: {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Playing %s...", active_filename);
+            add_centered_message(msg);
+            add_hint("Select: stop");
             break;
         }
 
@@ -293,6 +303,17 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 void ui_process_input() {
+    // Cheap no-op when nothing's playing (see speaker.h) - called
+    // unconditionally so playback keeps decoding every loop() iteration,
+    // not just on a button edge like everything below.
+    speaker_process();
+    if (state == Screen::kPlaying && !speaker_is_playing()) {
+        // Track ended on its own (no Select press involved) - leave the
+        // Playing screen the same way Select does.
+        state = sd_present ? Screen::kList : Screen::kNoCard;
+        render_body();
+    }
+
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
@@ -336,9 +357,10 @@ void ui_process_input() {
 
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
-            // {Transcribe, Delete, Cancel} for audio, {Delete, Cancel} for
-            // .txt (no Transcribe there - see that comment).
-            int optionCount = showing_audio_files ? 3 : 2;
+            // {Play, Transcribe, Delete, Cancel} for audio, {Delete,
+            // Cancel} for .txt (no Play/Transcribe there - see that
+            // comment).
+            int optionCount = showing_audio_files ? 4 : 2;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -347,6 +369,10 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (showing_audio_files && menu_index == 0) {
+                    speaker_play(active_filename);
+                    state = Screen::kPlaying;
+                    render_body();
+                } else if (showing_audio_files && menu_index == 1) {
                     // Don't touch state/render here - transcribe.h's
                     // transcribe_process_pending() (called right after
                     // this, from the same loop() iteration - see
@@ -355,7 +381,7 @@ void ui_process_input() {
                     // moments from now, so redrawing the list first here
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
-                } else if (menu_index == (showing_audio_files ? 1 : 0)) {
+                } else if (menu_index == (showing_audio_files ? 2 : 0)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -382,6 +408,14 @@ void ui_process_input() {
                     top_index = 0;
                 }
                 state = Screen::kList;
+                render_body();
+            }
+            break;
+
+        case Screen::kPlaying:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                speaker_stop();
+                state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }
             break;

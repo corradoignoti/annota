@@ -11,6 +11,7 @@
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("annota: boot");
 
     display_init_panel();
 
