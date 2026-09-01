@@ -17,10 +17,10 @@
 //
 // esp32-cyd has no such hardware, and speaker.cpp itself is excluded from
 // that env's build (see platformio.ini's board-split comment - it #includes
-// ESP8266Audio/I2S/shine headers that aren't in esp32-cyd's lib_deps, which
-// would trip the same LDF gotcha display.cpp/display_epaper.cpp's split
-// avoids). So BOARD_CYD gets inline no-op stubs right here instead, keeping
-// the callers (ui_epaper.cpp) free of a board #ifdef of their own.
+// ESP8266Audio/I2S headers that aren't in esp32-cyd's lib_deps, which would
+// trip the same LDF gotcha display.cpp/display_epaper.cpp's split avoids).
+// So BOARD_CYD gets inline no-op stubs right here instead, keeping the
+// callers (ui_epaper.cpp) free of a board #ifdef of their own.
 // -----------------------------------------------------------------------
 
 #if defined(BOARD_CYD)
@@ -78,14 +78,14 @@ void speaker_process();
 bool speaker_is_playing();
 
 // Stops any playback in progress, then starts recording a new root-level
-// MP3 from the onboard mic (a fresh "RECnnnn.mp3" name from storage.h's
+// PCM WAV from the onboard mic (a fresh "RECnnnn.wav" name from storage.h's
 // next_recording_filename()), copying that name into filenameOut. Claims
 // the SD card for the whole recording - released by mic_stop_recording().
 // Must be pumped afterwards by repeated mic_process() calls (from
 // ui_epaper.cpp's ui_process_input(), once per loop() iteration), same
 // pattern as speaker_play()/speaker_process() - this call only sets up
-// the codec/encoder, it doesn't block. Returns false (nothing started) on
-// codec, SD, or encoder-init failure.
+// the codec and writes the WAV header, it doesn't block. Returns false
+// (nothing started) on codec or SD failure.
 bool mic_start_recording(char *filenameOut, size_t filenameOutLen);
 
 // Flushes and closes the in-progress recording (no-op if none), releasing

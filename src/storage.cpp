@@ -207,7 +207,7 @@ bool delete_file(const char *filename) {
 bool next_recording_filename(char *out, size_t outLen) {
     for (int n = 1; n <= 9999; n++) {
         char candidate[32];
-        snprintf(candidate, sizeof(candidate), "REC%04d.mp3", n);
+        snprintf(candidate, sizeof(candidate), "REC%04d.wav", n);
         char path[40];
         snprintf(path, sizeof(path), "/%s", candidate);
         if (!SD_FS.exists(path)) {

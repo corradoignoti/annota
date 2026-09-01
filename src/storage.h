@@ -9,13 +9,15 @@ constexpr size_t MAX_MP3_FILES = 64;
 
 // Extensions load_mp3_catalog() and the UI's audio/text toggle treat as
 // audio - pass to load_file_catalog() (see has_ext() in storage.cpp for
-// the '|'-separated format). .mp3 only: this project only ever decodes
-// MP3 (esp32-s3-epaper154's speaker.cpp is AudioGeneratorMP3, no AAC/m4a
-// decoder anywhere in this codebase), and both AI providers' transcribe
-// path only ever reads whatever's already on the card, so there's no
-// path that can do anything useful with an .m4a file - keeping it listed
-// (as this used to) just let it show up as a dead end.
-#define AUDIO_EXTS ".mp3"
+// the '|'-separated format). .mp3 (playback: AudioGeneratorMP3) and .wav
+// (playback: AudioGeneratorWAV; also what mic_start_recording() now
+// writes - see speaker.cpp's top-of-recording-section comment for why
+// PCM WAV instead of an MP3 encoder) - no AAC/m4a decoder anywhere in
+// this codebase, and both AI providers' transcribe path only ever reads
+// whatever's already on the card, so there's no path that can do
+// anything useful with an .m4a file - keeping it listed (as this used
+// to) just let it show up as a dead end.
+#define AUDIO_EXTS ".mp3|.wav"
 
 struct Mp3Entry {
     char filename[64];
@@ -86,7 +88,7 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // the caller re-scans (load_file_catalog()) to refresh the on-screen list.
 bool delete_file(const char *filename);
 
-// Finds an unused "RECnnnn.mp3" name in the SD root (nnnn zero-padded,
+// Finds an unused "RECnnnn.wav" name in the SD root (nnnn zero-padded,
 // starting at 0001) for a new mic recording (speaker.cpp's
 // mic_start_recording()), writing it (NUL-terminated) into `out`. Unlike
 // this file's other helpers, doesn't bracket its own sd_begin()/sd_end() -

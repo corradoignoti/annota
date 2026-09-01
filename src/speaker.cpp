@@ -9,28 +9,14 @@
 #include <Arduino.h>
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
+#include <AudioGeneratorWAV.h>
 #include <AudioOutput.h>
-#include <WiFi.h>
 #include <Wire.h>
 #include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
 
-// mp3_shine_esp32 (see platformio.ini's lib_deps comment) is a plain C
-// library with no library.json of its own, and its headers - unlike every
-// other dependency's here - don't guard themselves with
-// `#ifdef __cplusplus extern "C"`. Its .c files still compile (and export
-// their symbols) as C regardless, so without this wrapper we'd emit
-// C++-mangled *calls* to shine_initialise()/shine_encode_buffer_
-// interleaved()/etc. that never match the unmangled symbols the library
-// itself built - a link error, not a compile error, so it'd only surface
-// at the very end of a build.
-extern "C" {
-#include <layer3.h>
-}
-
 #include "es8311.h"
 #include "storage.h"
-#include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
 // Hardware, read straight off Waveshare's own schematic for this board
@@ -79,15 +65,17 @@ constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
 
 // Recording is voice-memo/transcription-oriented (not music), so mono at a
-// speech-friendly rate and a low bitrate - smaller files, faster to
-// stream to whichever AI provider transcribe.cpp is compiled for. 16kHz
-// is one of es8311.h's fixed 256x-MCLK family members, so no codec
+// speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
+// (write_wav_header()/patch_wav_header() below) - no encoder, no working
+// set to size for this no-PSRAM board's tight RAM budget, at the cost of
+// a bigger file than a compressed format would give (fine for a short
+// voice memo headed straight to transcribe.cpp's AI provider). 16kHz is
+// one of es8311.h's fixed 256x-MCLK family members, so no codec
 // clock-plan changes are needed switching between this and playback's
 // 44.1kHz. ES8311_MIC_GAIN_24DB (see es8311.h) is a reasonable starting
 // gain for a board-mounted mic at conversational distance - not tuned
 // against real hardware yet, may need adjusting once it is.
 constexpr uint32_t MIC_SAMPLE_RATE = 16000;
-constexpr int MIC_BITRATE_KBPS = 32;
 constexpr int MIC_GAIN_CODE = 4; // ES8311_MIC_GAIN_24DB
 
 i2s_chan_handle_t txChan = nullptr;
@@ -209,34 +197,28 @@ private:
 
 Es8311Output *output = nullptr;
 AudioFileSourceFS *source = nullptr;
-AudioGeneratorMP3 *mp3 = nullptr;
+// Base-class pointer - either an AudioGeneratorMP3 or an AudioGeneratorWAV,
+// chosen by speaker_play() from the file's extension. Both share the same
+// AudioGenerator interface (begin()/loop()/stop()), so nothing past that
+// choice needs to know which one it actually is.
+AudioGenerator *gen = nullptr;
 bool playing = false;
+
+// True if `filename` ends in ".wav" (case-insensitive) - the only other
+// extension AUDIO_EXTS (storage.h) lists is ".mp3", so anything that isn't
+// this is assumed to be that.
+bool has_wav_extension(const char *filename) {
+    size_t len = strlen(filename);
+    return len >= 4 && strcasecmp(filename + len - 4, ".wav") == 0;
+}
 
 // AudioGeneratorMP3's own buff/mad_stream/mad_frame/mad_synth (~29KB
 // combined, mostly libmad's mad_frame/mad_synth structs) default to a
-// plain `new`/malloc() each time speaker_play() creates one - on a board
-// with plenty of free heap that's fine, but this board's is a tight,
-// heavily-churned budget (mic recording's encoder needing a ~40-50KB
-// working set of its own - see mic_start_recording()'s comment) where a
-// single ~20KB+ contiguous request can fail to find room even when the
-// *total* free byte count looks adequate - that's what made a
-// just-recorded file (proven fine - it played back fine off-device) fail
-// mp3->begin() on-device with no other symptom.
-//
-// A single *permanent* static reservation would sidestep that
-// fragmentation risk completely, but this board doesn't have room for
-// both this buffer AND the encoder's own working set resident at once -
-// they'd need to fit in the same scarce free-heap budget even though
-// they're never actually needed at the same time (recording always stops
-// playback first, and vice versa). So instead this is heap memory this
-// module explicitly hands back and forth between the two: released by
-// mic_start_recording() (giving its ~29KB to the encoder, the same way
-// wifi_suspend_for_memory() gives back WiFi's), and reallocated
-// opportunistically by mic_stop_recording() right after - the least
-// fragmented moment it'll ever get another shot at, since that's right
-// after the encoder's own allocations were just freed. ensure_mp3_buffer()
-// (called from speaker_play() too) is the fallback for whenever that
-// eager reallocation didn't happen to succeed.
+// plain `new`/malloc() each time speaker_play() creates one - lazily
+// allocated once here instead and kept for the process's lifetime, so a
+// long-running device only ever pays that ~29KB allocation's
+// fragmentation risk once, on the first MP3 played, rather than on every
+// track.
 uint8_t *mp3DecodeBuffer = nullptr;
 
 bool ensure_mp3_buffer() {
@@ -245,14 +227,9 @@ bool ensure_mp3_buffer() {
     return mp3DecodeBuffer != nullptr;
 }
 
-void release_mp3_buffer() {
-    heap_caps_free(mp3DecodeBuffer);
-    mp3DecodeBuffer = nullptr;
-}
-
 void cleanup() {
-    delete mp3;
-    mp3 = nullptr;
+    delete gen;
+    gen = nullptr;
     delete source;
     source = nullptr;
     if (playing) {
@@ -350,7 +327,11 @@ void speaker_play(const char *filename) {
         return;
     }
 
-    if (!ensure_mp3_buffer()) {
+    bool isWav = has_wav_extension(filename);
+    // WAV needs no persistent decode buffer (AudioGeneratorWAV just
+    // streams PCM straight through) - only reserve/reuse the MP3 one
+    // (mp3DecodeBuffer) when actually about to decode MP3.
+    if (!isWav && !ensure_mp3_buffer()) {
         Serial.println("speaker_play: couldn't allocate MP3 decode buffer (out of memory), not playing");
         delete source;
         source = nullptr;
@@ -360,10 +341,11 @@ void speaker_play(const char *filename) {
 
     es8311_set_mute(false); // undo cleanup()'s mute from any previous track
 
-    mp3 = new AudioGeneratorMP3(mp3DecodeBuffer, AudioGeneratorMP3::preAllocSize());
+    gen = isWav ? static_cast<AudioGenerator *>(new AudioGeneratorWAV())
+                : static_cast<AudioGenerator *>(new AudioGeneratorMP3(mp3DecodeBuffer, AudioGeneratorMP3::preAllocSize()));
     playing = true;
-    bool started = mp3->begin(source, output);
-    Serial.printf("speaker_play: mp3->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
+    bool started = gen->begin(source, output);
+    Serial.printf("speaker_play: gen->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
     if (!started) {
         cleanup();
     }
@@ -371,15 +353,15 @@ void speaker_play(const char *filename) {
 
 void speaker_stop() {
     if (!playing) return;
-    if (mp3) mp3->stop();
+    if (gen) gen->stop();
     cleanup();
     Serial.println("speaker_stop: stopped");
 }
 
 void speaker_process() {
-    if (!playing || !mp3) return;
-    if (!mp3->loop()) {
-        Serial.println("speaker_process: mp3->loop() returned false, stopping (track ended or decode error - see audioLogger output above)");
+    if (!playing || !gen) return;
+    if (!gen->loop()) {
+        Serial.println("speaker_process: gen->loop() returned false, stopping (track ended or decode error - see audioLogger output above)");
         cleanup();
     }
 }
@@ -391,25 +373,18 @@ bool speaker_is_playing() {
 // -----------------------------------------------------------------------
 // Mic recording. Shares this file's I2C/I2S/PA_EN bring-up (speaker_begin())
 // and i2s_configure() with playback above - see this file's/speaker.h's
-// top comments for why recording and playback live in one module. Encoded
-// with mp3_shine_esp32 (platformio.ini's lib_deps comment), a fixed-point
-// port of the old Shine encoder - no Psychoacoustic model, so quality is
-// well below a "real" MP3 encoder's, but more than sufficient for a voice
-// memo headed for an AI transcription API (transcribe.h), and light enough
-// to run in real time on this chip.
+// top comments for why recording and playback live in one module. Written
+// straight to uncompressed 16-bit PCM WAV (write_wav_header()/
+// patch_wav_header() below) - see MIC_SAMPLE_RATE's comment above for why.
 // -----------------------------------------------------------------------
 
 namespace {
 
-shine_t shineEncoder = nullptr;
 File recordFile;
 bool recording = false;
 char recordFilename[64];
-int shineSamplesPerPass = 0;
-int16_t monoAccum[SHINE_MAX_SAMPLES]; // filled from rxChan's left channel until a full pass is ready
-int monoAccumFill = 0;
+uint32_t recordedDataBytes = 0; // PCM bytes written so far - patch_wav_header() needs the final count
 char micErrorMessage[96] = ""; // see mic_last_error()
-bool wifiWasConnectedForRecording = false; // see wifi_manager.h's wifi_suspend_for_memory()
 
 // Logs `msg` to Serial (as every failure path here already did) and also
 // stashes it for mic_last_error() - ui_epaper.cpp shows that on screen,
@@ -420,32 +395,48 @@ void set_mic_error(const char *msg) {
     micErrorMessage[sizeof(micErrorMessage) - 1] = '\0';
 }
 
-// Undoes mic_start_recording()'s wifi_suspend_for_memory(), if it did
-// one - called from every mic_start_recording() failure return (nothing
-// actually started, no reason to keep WiFi off) and from
-// mic_stop_recording() (a recording that did start is now over). Only
-// asks wifi_manager.h to reconnect if WiFi was actually up before -
-// otherwise this would pop the "couldn't connect" timeout dialog after
-// every recording on a device that was already offline on purpose.
-void restore_wifi_if_needed() {
-    if (wifiWasConnectedForRecording) {
-        wifi_request_reconnect(); // picked up by main.cpp's loop(), right after this same ui_process_input() call returns
-        wifiWasConnectedForRecording = false;
-    }
+void write_u32le(File &f, uint32_t v) {
+    uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+    f.write(b, 4);
 }
 
-// Encodes whatever's in monoAccum (padding with silence to a full pass if
-// it's short - shine only ever accepts exactly shineSamplesPerPass samples
-// per call) and writes the result out, then resets the accumulator.
-// Shared by mic_process()'s normal per-pass flushes and
-// mic_stop_recording()'s final partial one.
-void encode_and_write_accum() {
-    if (monoAccumFill == 0) return;
-    for (int i = monoAccumFill; i < shineSamplesPerPass; i++) monoAccum[i] = 0;
-    int written = 0;
-    unsigned char *data = shine_encode_buffer_interleaved(shineEncoder, monoAccum, &written);
-    if (written > 0 && data != nullptr) recordFile.write(data, written);
-    monoAccumFill = 0;
+void write_u16le(File &f, uint16_t v) {
+    uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)};
+    f.write(b, 2);
+}
+
+// Writes a canonical 44-byte PCM WAV header (RIFF/fmt/data, no extension
+// chunks) with the RIFF chunk size and data chunk size fields left as
+// zero placeholders - patch_wav_header() below overwrites just those two
+// once mic_stop_recording() knows the final PCM byte count. ESP32 is
+// little-endian, matching WAV's own byte order, so the mono int16 samples
+// mic_process() writes straight after this header need no conversion.
+void write_wav_header(File &f, uint32_t sampleRate, uint16_t channels, uint16_t bitsPerSample) {
+    uint16_t blockAlign = (uint16_t)(channels * (bitsPerSample / 8));
+    uint32_t byteRate = sampleRate * blockAlign;
+    f.write((const uint8_t *)"RIFF", 4);
+    write_u32le(f, 0); // patched by patch_wav_header()
+    f.write((const uint8_t *)"WAVE", 4);
+    f.write((const uint8_t *)"fmt ", 4);
+    write_u32le(f, 16); // fmt chunk size (PCM, no extension)
+    write_u16le(f, 1);  // audio format 1 = PCM
+    write_u16le(f, channels);
+    write_u32le(f, sampleRate);
+    write_u32le(f, byteRate);
+    write_u16le(f, blockAlign);
+    write_u16le(f, bitsPerSample);
+    f.write((const uint8_t *)"data", 4);
+    write_u32le(f, 0); // patched by patch_wav_header()
+}
+
+// Seeks back into the two size fields write_wav_header() left as
+// placeholders and fills them in now that `dataBytes` (the PCM payload
+// actually written) is known - called once, by mic_stop_recording().
+void patch_wav_header(File &f, uint32_t dataBytes) {
+    f.seek(4); // RIFF chunk size = everything after these first 8 bytes
+    write_u32le(f, 36 + dataBytes);
+    f.seek(40); // data chunk size
+    write_u32le(f, dataBytes);
 }
 
 } // namespace
@@ -453,39 +444,23 @@ void encode_and_write_accum() {
 bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
     speaker_stop(); // mutual exclusion - see this file's top comment
 
-    // This board has no PSRAM (see platformio.ini's board comment) and
-    // the encoder below needs a ~70KB working set - more than this chip
-    // has free once WiFi/LVGL/etc already claimed their share of 320KB
-    // total SRAM. WiFi's own stack normally holds tens of KB of that, so
-    // borrow it back for the duration of the recording (restored by
-    // restore_wifi_if_needed(), below and in mic_stop_recording()) -
-    // pointless (and disruptive - see that function's comment) to do this
-    // if the device wasn't even online to begin with.
-    wifiWasConnectedForRecording = (WiFi.status() == WL_CONNECTED);
-    if (wifiWasConnectedForRecording) wifi_suspend_for_memory();
-    release_mp3_buffer(); // give playback's ~29KB back too - see its own comment
-
     if (!speaker_begin()) {
         set_mic_error("Couldn't start recording: codec not responding (I2C error)");
-        restore_wifi_if_needed();
         return false;
     }
     if (!i2s_configure(MIC_SAMPLE_RATE) || rxChan == nullptr) {
         set_mic_error("Couldn't start recording: I2S setup failed");
-        restore_wifi_if_needed();
         return false;
     }
     if (!sd_begin()) {
         set_mic_error("Couldn't start recording: SD card not available");
-        restore_wifi_if_needed();
         return false;
     }
 
     char name[64];
     if (!next_recording_filename(name, sizeof(name))) {
-        set_mic_error("Couldn't start recording: no free RECnnnn.mp3 name");
+        set_mic_error("Couldn't start recording: no free RECnnnn.wav name");
         sd_end();
-        restore_wifi_if_needed();
         return false;
     }
     char path[80];
@@ -496,53 +471,19 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
         snprintf(msg, sizeof(msg), "Couldn't start recording: couldn't create %s", path);
         set_mic_error(msg);
         sd_end();
-        restore_wifi_if_needed();
         return false;
     }
 
-    shine_config_t cfg = {};
-    shine_set_config_mpeg_defaults(&cfg.mpeg);
-    cfg.mpeg.mode = MONO;
-    cfg.mpeg.bitr = MIC_BITRATE_KBPS;
-    cfg.wave.channels = PCM_MONO;
-    cfg.wave.samplerate = (int)MIC_SAMPLE_RATE;
-    if (shine_check_config(cfg.wave.samplerate, cfg.mpeg.bitr) < 0) {
-        set_mic_error("Couldn't start recording: encoder rejected samplerate/bitrate");
-        recordFile.close();
-        sd_end();
-        restore_wifi_if_needed();
-        return false;
-    }
-    shineEncoder = shine_initialise(&cfg);
-    if (!shineEncoder) {
-        // Report the actual free-heap number rather than just guessing
-        // "out of memory" - the only way to tell "genuinely too little
-        // RAM" from some other alloc failure without a serial monitor
-        // attached. Should be rare now that WiFi's RAM is freed above;
-        // if this still fires with a low number, there's nothing left to
-        // free - the encoder's footprint itself would need shrinking.
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Couldn't start recording: encoder init failed (%u bytes free internal heap)",
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL));
-        set_mic_error(msg);
-        recordFile.close();
-        sd_end();
-        restore_wifi_if_needed();
-        return false;
-    }
-    shineSamplesPerPass = shine_samples_per_pass(shineEncoder);
-    monoAccumFill = 0;
+    write_wav_header(recordFile, MIC_SAMPLE_RATE, /*channels=*/1, /*bitsPerSample=*/16);
+    recordedDataBytes = 0;
 
     es8311_set_mic_gain(MIC_GAIN_CODE);
     es8311_set_mic_enabled(true);
     if (i2s_channel_enable(rxChan) != ESP_OK) {
         set_mic_error("Couldn't start recording: I2S mic channel enable failed");
         es8311_set_mic_enabled(false);
-        shine_close(shineEncoder);
-        shineEncoder = nullptr;
         recordFile.close();
         sd_end();
-        restore_wifi_if_needed();
         return false;
     }
     rxEnabled = true;
@@ -563,23 +504,7 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
 void mic_stop_recording() {
     if (!recording) return;
 
-    encode_and_write_accum(); // flush the last, possibly partial, pass
-    int written = 0;
-    unsigned char *data = shine_flush(shineEncoder, &written);
-    if (written > 0 && data != nullptr) recordFile.write(data, written);
-    shine_close(shineEncoder);
-    shineEncoder = nullptr;
-
-    // Try reclaiming playback's buffer right now, before WiFi reconnects
-    // and starts allocating/fragmenting things again below - the
-    // least-fragmented this heap will be until the next full reboot, now
-    // that the encoder's own allocations are all freed. Best-effort:
-    // speaker_play()'s own ensure_mp3_buffer() call retries later if this
-    // doesn't happen to succeed.
-    if (!ensure_mp3_buffer()) {
-        Serial.println("mic_stop_recording: couldn't reclaim MP3 decode buffer yet - speaker_play() will retry");
-    }
-
+    patch_wav_header(recordFile, recordedDataBytes);
     size_t finalSize = recordFile.size(); // logged below, before close() invalidates it
     recordFile.close();
     sd_end();
@@ -589,7 +514,6 @@ void mic_stop_recording() {
     es8311_set_mic_enabled(false);
 
     recording = false;
-    restore_wifi_if_needed();
     Serial.printf("mic_stop_recording: saved %s (%u bytes)\n", recordFilename, (unsigned)finalSize);
 }
 
@@ -613,14 +537,17 @@ void mic_process() {
     }
 
     size_t framesRead = bytesRead / (2 * sizeof(int16_t));
-    for (size_t i = 0; i < framesRead; i++) {
-        // Codec's ADC output is stereo-framed (see this file's top
-        // comment on the shared TX/RX slot config) but the mic itself is
-        // single-ended into one input - left slot only, same channel the
-        // reference driver's own "ADCL" reference signal comment names.
-        monoAccum[monoAccumFill++] = stereoBuf[i * 2];
-        if (monoAccumFill == shineSamplesPerPass) encode_and_write_accum();
-    }
+    if (framesRead == 0) return;
+
+    // Codec's ADC output is stereo-framed (see this file's top comment on
+    // the shared TX/RX slot config) but the mic itself is single-ended
+    // into one input - left slot only, same channel the reference
+    // driver's own "ADCL" reference signal comment names. Pull those out
+    // into a mono buffer and write it straight to the WAV file.
+    int16_t monoBuf[128];
+    for (size_t i = 0; i < framesRead; i++) monoBuf[i] = stereoBuf[i * 2];
+    recordFile.write((const uint8_t *)monoBuf, framesRead * sizeof(int16_t));
+    recordedDataBytes += (uint32_t)(framesRead * sizeof(int16_t));
 }
 
 bool mic_is_recording() {

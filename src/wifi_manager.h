@@ -77,14 +77,3 @@ void wifi_process_pending_reconnect();
 // callers (ui.cpp's Settings "Delete WiFi Setup" button) must confirm with
 // the user first; this function itself does no confirmation.
 void wifi_forget_and_reboot();
-
-// Fully powers down the WiFi radio/driver (WiFi.disconnect(true) +
-// WiFi.mode(WIFI_OFF)) to free the tens of KB its stack normally holds.
-// esp32-s3-epaper154 has no PSRAM, so speaker.cpp's mic recording (a
-// memory-heavy MP3 encoder - see its own comment) borrows this RAM for
-// the duration of a recording, restoring it afterwards via
-// wifi_request_reconnect() (only worth calling if WiFi was actually
-// connected before - this function doesn't remember that itself, the
-// caller already has to check WiFi.status() to decide whether to call
-// this in the first place).
-void wifi_suspend_for_memory();
