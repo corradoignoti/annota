@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "esp32": {
+      "source": "jonatronblah/skillz",
+      "sourceType": "github",
+      "skillPath": "esp32/SKILL.md",
+      "computedHash": "913fa26aac8b1217f0d4d9e14db905800186019a7a1b15a56c1c9171d4e64a24"
+    },
+    "esp32-firmware-engineer": {
+      "source": "adamlipecz/esp32-firmware-engineer-skill",
+      "sourceType": "github",
+      "skillPath": "esp32-firmware-engineer/SKILL.md",
+      "computedHash": "3df8fc9d1ba783e4f09c59cf728cfb73cecfca89eece4a3b5b7d7e3e62068b6e"
+    },
+    "platformio": {
+      "source": "o2scale/electronics-agent-kit",
+      "sourceType": "github",
+      "skillPath": ".agent/skills/platformio/SKILL.md",
+      "computedHash": "6a717c8804ed3e96219fb22ef22b73ff2802480b1f040910fd0e8a9ec77dc2d3"
+    },
+    "release-skills": {
+      "source": "jimliu/baoyu-skills",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/release-skills/SKILL.md",
+      "computedHash": "fd4616d141589bcd23621b9ff1be30b29985f86566acf9bca7d55f0a894ab79e"
+    }
+  }
+}
