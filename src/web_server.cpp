@@ -241,10 +241,10 @@ let currentFiles = [];
 let sortKey = "name";
 let sortDir = 1; // 1 = ascending, -1 = descending
 
-// Keep in sync with web_server.cpp's audio_content_type() - only these
-// extensions get a Play button and a working /api/play.
+// Keep in sync with web_server.cpp's audio_content_type() - only this
+// extension gets a Play button and a working /api/play.
 function isAudio(name) {
-  return /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(name);
+  return /\.wav$/i.test(name);
 }
 
 function playFile(name) {
@@ -800,12 +800,7 @@ static String audio_content_type(const char *name) {
         size_t extLen = strlen(ext);
         return len > extLen && strcasecmp(name + len - extLen, ext) == 0;
     };
-    if (ends_with(".mp3")) return "audio/mpeg";
     if (ends_with(".wav")) return "audio/wav";
-    if (ends_with(".ogg")) return "audio/ogg";
-    if (ends_with(".m4a")) return "audio/mp4";
-    if (ends_with(".aac")) return "audio/aac";
-    if (ends_with(".flac")) return "audio/flac";
     return "";
 }
 
