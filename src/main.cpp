@@ -11,6 +11,7 @@
 
 void setup() {
     Serial.begin(115200);
+    Serial.println("annota: boot");
 
     display_init_panel();
 
@@ -34,6 +35,12 @@ void setup() {
 
 void loop() {
     lv_timer_handler();
+    // esp32-s3-epaper154's button-driven nav (no-op on esp32-cyd, where
+    // touch flows through LVGL's indev above instead) - see ui.h's
+    // comment. Placed before the pumps below since a button press here
+    // can queue work (transcribe_request()) those pumps pick up in this
+    // same loop() iteration.
+    ui_process_input();
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();

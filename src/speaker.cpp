@@ -1,0 +1,294 @@
+#include "speaker.h"
+
+// See speaker.h's top comment for why this whole file only exists in the
+// esp32-s3-epaper154 build - it's excluded from esp32-cyd's build_src_filter
+// entirely (platformio.ini), and this #ifdef is defense-in-depth on top of
+// that, same reasoning as display_epaper.cpp/ui_epaper.cpp's own.
+#ifdef BOARD_ESP32S3_EPAPER154
+
+#include <Arduino.h>
+#include <AudioFileSourceFS.h>
+#include <AudioGeneratorMP3.h>
+#include <AudioOutput.h>
+#include <Wire.h>
+#include <driver/i2s_std.h>
+
+#include "es8311.h"
+#include "storage.h"
+
+// -----------------------------------------------------------------------
+// Hardware, read straight off Waveshare's own schematic for this board
+// (ESP32-S3-Touch-ePaper-1.54-Schematic.pdf, "Codec"/"PA&SPEAKER&MIC"
+// blocks) - nothing about this pinout is documented anywhere else
+// reachable (see the git history for how this was tracked down: even
+// Waveshare's own audio example names a board type string,
+// "S3_ePaper_1_54", that isn't in its own vendored pin-table component).
+//
+//   I2S_MCLK  -> GPIO14      I2S_LRCK (WS)   -> GPIO38
+//   I2S_SCLK  -> GPIO15      I2S_DSDIN (out) -> GPIO45
+//   PA_EN     -> GPIO42 (codec+amp analog rail switch - matches Waveshare's
+//                own user_config.h Audio_PWR_PIN)
+//   PA_CTRL   -> GPIO46 (NS4150B amp shutdown/enable)
+//   Codec I2C -> shared RTC/SHTC3 bus: SDA=GPIO47, SCL=GPIO48, addr 0x18
+//
+// I2S_ASDOUT (codec's mic-in data, GPIO16) isn't wired up here - this file
+// only ever plays files, never records.
+//
+// This pinout was reverse-engineered from the schematic before Waveshare's
+// own ESP-IDF audio example (waveshareteam/ESP32-S3-ePaper-1.54G,
+// Example/ESP-IDF_5.5.1/07_Audio_Test/components/codec_board/board_cfg.txt,
+// board "S3_ePaper_1_54") surfaced - it confirms every pin here except WS,
+// which that file gives as GPIO38, not GPIO21. GPIO21 was the actual
+// silent-output bug: with WS never toggling, the codec has no valid LRCK
+// and never latches DAC samples no matter what else is configured
+// correctly.
+// -----------------------------------------------------------------------
+
+namespace {
+
+constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_14;
+constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_15;
+constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_38;
+constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_45;
+constexpr int PA_EN_PIN = 42;
+constexpr int PA_CTRL_PIN = 46;
+constexpr int I2C_SDA_PIN = 47;
+constexpr int I2C_SCL_PIN = 48;
+
+constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
+constexpr int DEFAULT_VOLUME = 85;
+
+i2s_chan_handle_t txChan = nullptr;
+uint32_t i2sConfiguredRate = 0;
+bool hwReady = false;
+
+// Sets up (or reconfigures) the I2S TX channel for `rate`. Slot width is
+// forced to 32 bits despite 16-bit data - the ES8311's fixed clock plan
+// (see es8311.h) runs BCLK at 64x the sample rate (2 slots x 32 bits),
+// not the 32x a plain 16-bit slot would give; the driver pads the 16-bit
+// samples we write into that wider slot on its own.
+bool i2s_configure(uint32_t rate) {
+    if (rate == i2sConfiguredRate) return true;
+
+    i2s_std_slot_config_t slotCfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    slotCfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
+
+    i2s_std_clk_config_t clkCfg = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+    clkCfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+
+    if (txChan == nullptr) {
+        i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+        // A little deeper than the default 6x240 frames, so a slow
+        // web_server.cpp request or transcribe_process_pending() call
+        // elsewhere in loop() doesn't starve playback into an audible
+        // glitch before its next speaker_process() turn.
+        chanCfg.dma_desc_num = 8;
+        chanCfg.dma_frame_num = 480;
+        if (i2s_new_channel(&chanCfg, &txChan, nullptr) != ESP_OK) return false;
+
+        i2s_std_gpio_config_t gpioCfg = {};
+        gpioCfg.mclk = I2S_MCLK_PIN;
+        gpioCfg.bclk = I2S_BCLK_PIN;
+        gpioCfg.ws = I2S_WS_PIN;
+        gpioCfg.dout = I2S_DOUT_PIN;
+        gpioCfg.din = I2S_GPIO_UNUSED;
+
+        i2s_std_config_t stdCfg = {};
+        stdCfg.clk_cfg = clkCfg;
+        stdCfg.slot_cfg = slotCfg;
+        stdCfg.gpio_cfg = gpioCfg;
+        if (i2s_channel_init_std_mode(txChan, &stdCfg) != ESP_OK) return false;
+        if (i2s_channel_enable(txChan) != ESP_OK) return false;
+    } else {
+        if (i2s_channel_disable(txChan) != ESP_OK) return false;
+        if (i2s_channel_reconfig_std_clock(txChan, &clkCfg) != ESP_OK) return false;
+        if (i2s_channel_enable(txChan) != ESP_OK) return false;
+    }
+
+    i2sConfiguredRate = rate;
+    return true;
+}
+
+// Buffers decoded samples and blocking-writes them to the I2S DMA in
+// chunks - that block is what paces playback to the real sample rate.
+class Es8311Output : public AudioOutput {
+public:
+    bool SetRate(int hz) override {
+        AudioOutput::SetRate(hz);
+        return i2s_configure((uint32_t)hz);
+    }
+
+    bool begin() override {
+        return hwReady;
+    }
+
+    bool ConsumeSample(int16_t sample[2]) override {
+        MakeSampleStereo16(sample);
+        buf[fill * 2] = Amplify(sample[LEFTCHANNEL]);
+        buf[fill * 2 + 1] = Amplify(sample[RIGHTCHANNEL]);
+        fill++;
+        if (fill == BUF_FRAMES) flushBuf();
+        return true;
+    }
+
+    void flush() override {
+        flushBuf();
+    }
+
+    bool stop() override {
+        flushBuf();
+        return true;
+    }
+
+private:
+    void flushBuf() {
+        if (fill == 0 || txChan == nullptr) {
+            fill = 0;
+            return;
+        }
+        size_t written = 0;
+        i2s_channel_write(txChan, buf, fill * sizeof(int16_t) * 2, &written, portMAX_DELAY);
+        fill = 0;
+    }
+
+    static constexpr int BUF_FRAMES = 256;
+    int16_t buf[BUF_FRAMES * 2];
+    int fill = 0;
+};
+
+Es8311Output *output = nullptr;
+AudioFileSourceFS *source = nullptr;
+AudioGeneratorMP3 *mp3 = nullptr;
+bool playing = false;
+
+void cleanup() {
+    delete mp3;
+    mp3 = nullptr;
+    delete source;
+    source = nullptr;
+    if (playing) {
+        sd_end();
+        // BCLK/WS keep toggling once the I2S channel is enabled regardless
+        // of whether anything new is being written to it - with no more
+        // real samples coming in, the DMA just keeps re-clocking out
+        // whatever was left in its last descriptor(s), which the codec
+        // dutifully turns into audible noise. Muting the codec's DAC
+        // output (not just stopping our own writes) is what actually
+        // silences it; es8311_set_mute(false) in speaker_play() undoes
+        // this for the next track.
+        es8311_set_mute(true);
+    }
+    playing = false;
+}
+
+} // namespace
+
+bool speaker_begin() {
+    if (hwReady) return true;
+
+    pinMode(PA_EN_PIN, OUTPUT);
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    // Active-LOW, not active-high like every other enable pin here - per
+    // Waveshare's own ESP-IDF example (board_power_bsp.cpp's
+    // POWEER_Audio_ON()/OFF(), same GPIO42/Audio_PWR_PIN), 0=on, 1=off.
+    // Driving it HIGH (this file's original guess, matching the *other*
+    // enable pins' polarity) left the analog audio rail powered off the
+    // whole time - I2C still ACKed every register write because the
+    // digital/logic rail is separate, which is what made this so
+    // confusing to track down: every codec register readback matched a
+    // known-good driver exactly, yet no sound, because the rail those
+    // registers actually control was never powered.
+    digitalWrite(PA_EN_PIN, LOW); // power the codec+amp analog rail
+    delay(10); // let the rail settle before talking I2C to the codec
+
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setClock(400000);
+
+    // ESP8266Audio's own errors (bad frame sync, I/O errors, ...) go to
+    // audioLogger, which defaults to a silent sink - point it at Serial so
+    // they actually show up instead of just failing quietly.
+    audioLogger = &Serial;
+
+    bool codecOk = es8311_init(DEFAULT_SAMPLE_RATE, DEFAULT_VOLUME);
+    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding on SDA=47/SCL=48 @0x18?)");
+    if (!codecOk) {
+        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+        return false;
+    }
+    bool i2sOk = i2s_configure(DEFAULT_SAMPLE_RATE);
+    Serial.printf("speaker: i2s_configure -> %s\n", i2sOk ? "ok" : "FAILED");
+    if (!i2sOk) {
+        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+        return false;
+    }
+
+    digitalWrite(PA_CTRL_PIN, HIGH); // un-shutdown the NS4150B amp
+    hwReady = true;
+    output = new Es8311Output();
+    // AudioOutput's own constructor (ESP8266Audio/src/AudioOutput.h) never
+    // initializes gainF2P6 (the fixed-point gain Amplify() multiplies every
+    // decoded sample by) - it's whatever garbage byte `new` happened to
+    // hand back, and nothing else in this codebase calls SetGain() to
+    // give it a real value. That's what made the raw-tone test (which
+    // writes straight to I2S, bypassing Amplify() entirely) audible while
+    // real MP3 playback (which routes every sample through it) stayed
+    // silent even with the PA_EN fix in place.
+    output->SetGain(1.0f);
+    Serial.println("speaker: hardware ready");
+    return true;
+}
+
+void speaker_play(const char *filename) {
+    speaker_stop();
+
+    if (!speaker_begin()) {
+        Serial.println("speaker_play: speaker_begin() failed, not playing");
+        return;
+    }
+    if (!sd_begin()) {
+        Serial.println("speaker_play: sd_begin() failed, not playing");
+        return;
+    }
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    source = new AudioFileSourceFS(sd_fs(), path);
+    if (!source->isOpen()) {
+        Serial.printf("speaker_play: couldn't open %s\n", path);
+        delete source;
+        source = nullptr;
+        sd_end();
+        return;
+    }
+
+    es8311_set_mute(false); // undo cleanup()'s mute from any previous track
+
+    mp3 = new AudioGeneratorMP3();
+    playing = true;
+    bool started = mp3->begin(source, output);
+    Serial.printf("speaker_play: mp3->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
+    if (!started) {
+        cleanup();
+    }
+}
+
+void speaker_stop() {
+    if (!playing) return;
+    if (mp3) mp3->stop();
+    cleanup();
+    Serial.println("speaker_stop: stopped");
+}
+
+void speaker_process() {
+    if (!playing || !mp3) return;
+    if (!mp3->loop()) {
+        Serial.println("speaker_process: mp3->loop() returned false, stopping (track ended or decode error - see audioLogger output above)");
+        cleanup();
+    }
+}
+
+bool speaker_is_playing() {
+    return playing;
+}
+
+#endif // BOARD_ESP32S3_EPAPER154

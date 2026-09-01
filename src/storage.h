@@ -1,5 +1,7 @@
 #pragma once
 
+#include <FS.h>
+
 #include <cstddef>
 #include <cstdint>
 
@@ -7,8 +9,13 @@ constexpr size_t MAX_MP3_FILES = 64;
 
 // Extensions load_mp3_catalog() and the UI's audio/text toggle treat as
 // audio - pass to load_file_catalog() (see has_ext() in storage.cpp for
-// the '|'-separated format).
-#define AUDIO_EXTS ".mp3|.m4a"
+// the '|'-separated format). .mp3 only: this project only ever decodes
+// MP3 (esp32-s3-epaper154's speaker.cpp is AudioGeneratorMP3, no AAC/m4a
+// decoder anywhere in this codebase), and both AI providers' transcribe
+// path only ever reads whatever's already on the card, so there's no
+// path that can do anything useful with an .m4a file - keeping it listed
+// (as this used to) just let it show up as a dead end.
+#define AUDIO_EXTS ".mp3"
 
 struct Mp3Entry {
     char filename[64];
@@ -40,6 +47,15 @@ bool sd_begin();
 
 // Unmounts the card and releases the SPI peripheral claimed by sd_begin().
 void sd_end();
+
+// The mounted filesystem object itself (SD on esp32-cyd, SD_MMC on
+// esp32-s3-epaper154 - see storage.cpp's top comment). Callers that need
+// direct fs::FS calls (web_server.cpp's file manager: list/open/remove)
+// must go through this instead of naming `SD`/`SD_MMC` themselves - doing
+// so would silently operate on the wrong (unmounted) backend on whichever
+// board doesn't use that library. Only valid between sd_begin() and
+// sd_end().
+fs::FS &sd_fs();
 
 struct SdInfo {
     uint64_t cardBytes;    // raw card capacity (SD.cardSize())

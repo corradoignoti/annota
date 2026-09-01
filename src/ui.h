@@ -59,3 +59,14 @@ void ui_show_transcribe_progress(const char *filename);
 // Close button) and forces one repaint. Same calling constraints as
 // ui_show_transcribe_progress().
 void ui_show_transcribe_result(bool ok, const char *message);
+
+// esp32-s3-epaper154 only: polls the two onboard buttons and drives that
+// board's list/action-menu state machine (see ui_epaper.cpp) - selecting a
+// file's Transcribe action calls transcribe.h's transcribe_request() (safe
+// here since, unlike ui.cpp's touch click handlers, this runs at loop()'s
+// top level, not nested inside lv_timer_handler()); selecting Delete calls
+// storage.h's delete_file() directly, same reasoning. Call once per loop()
+// iteration, after lv_timer_handler(). No-op stub on esp32-cyd, where
+// input flows through LVGL's touch indev instead - so callers don't need
+// their own board #ifdef.
+void ui_process_input();

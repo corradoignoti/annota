@@ -4,24 +4,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Firmware (PlatformIO/Arduino, C++) for the ESP32-2432S028R "Cheap Yellow
-Display" (CYD): a 2.8" ILI9341 TFT + XPT2046 resistive touch, generic 30-pin
-ESP32 dev module. It's an MP3 file browser: scans an SD card's root for
-`.mp3` files and lists them on an LVGL touch UI, with a WiFi connection
-manager (captive-portal setup) and an HTTP file manager for the SD card
-alongside. Long-pressing an audio file's card offers to transcribe it via
-an AI provider's API (OpenAI by default, selected at compile time — see
-`transcribe.cpp/h` below), saving the result as a sibling `.txt` file.
+Firmware (PlatformIO/Arduino, C++), targeting two boards (see
+`platformio.ini`'s two envs and "Board variants" below): the
+ESP32-2432S028R "Cheap Yellow Display" (CYD) — a 2.8" ILI9341 TFT +
+XPT2046 resistive touch, generic 30-pin ESP32 dev module — and the
+Waveshare ESP32-S3-ePaper-1.54 — a 1.54" 200x200 mono e-paper panel + 2
+onboard buttons, ESP32-S3, no touch. It's an MP3 file browser: scans an SD
+card's root for `.mp3` files and lists them on an LVGL UI, with a WiFi
+connection manager (captive-portal setup) and an HTTP file manager for the
+SD card alongside. Long-pressing (CYD) or selecting (e-paper) an audio
+file offers to transcribe it via an AI provider's API (OpenAI by default,
+selected at compile time — see `transcribe.cpp/h` below), saving the
+result as a sibling `.txt` file.
 
 ## Commands
 
-Build (`esp32-cyd` is the only environment defined):
+Build (`esp32-cyd` and `esp32-s3-epaper154` are the two environments defined):
 ```
 pio run -e esp32-cyd
+pio run -e esp32-s3-epaper154
 ```
 Flash to a connected board:
 ```
 pio run -e esp32-cyd -t upload
+pio run -e esp32-s3-epaper154 -t upload
 ```
 Serial monitor (115200 baud, set in platformio.ini):
 ```
@@ -38,15 +44,33 @@ click handler can't safely trigger directly —
 `wifi_process_pending_reconnect()` and `transcribe_process_pending()` (see
 their bullets below) — then `web_server_handle()`.
 
-- **display.cpp/h** — TFT_eSPI panel + XPT2046 touch, bridged into LVGL v9.
-  `display_init_panel()` brings up the raw TFT_eSPI panel only.
-  `display_init_input()` brings up touch (running one-time two-corner
-  calibration, cached in NVS via Preferences) and creates the LVGL display
-  + input device (`disp_flush_cb` / `touchpad_read_cb`).
+- **display.cpp/h** (esp32-cyd only — see "Board variants") — TFT_eSPI
+  panel + XPT2046 touch, bridged into LVGL v9. `display_init_panel()`
+  brings up the raw TFT_eSPI panel only. `display_init_input()` brings up
+  touch (running one-time two-corner calibration, cached in NVS via
+  Preferences) and creates the LVGL display + input device (`disp_flush_cb`
+  / `touchpad_read_cb`).
+- **display_epaper.cpp** (esp32-s3-epaper154 only) — the same `display.h`
+  interface's other implementation: an SSD1681-class e-paper panel driver
+  (command/LUT sequence ported from Waveshare's own example repo,
+  waveshareteam/ESP32-S3-ePaper-1.54) bridged into LVGL v9, plus the two
+  onboard buttons (`display_button_poll()`, declared in `display.h` behind
+  `#ifdef BOARD_ESP32S3_EPAPER154`). `disp_flush_cb` renders LVGL's normal
+  RGB565 framebuffer (`LV_DISPLAY_RENDER_MODE_FULL`, so it always sees the
+  whole 200x200 screen in one call — there's no such thing as updating a
+  sub-rect on this controller) and thresholds it to 1bpp on the way out,
+  rather than switching `lv_conf.h` to a monochrome color depth. No touch,
+  no backlight, no shared-SPI peripheral to hand off (see "Board
+  variants") — `display_suspend_touch()`/`display_resume_touch()`/
+  `display_set_backlight()` are no-op stubs here so their callers
+  (`web_server.cpp`, `transcribe.cpp`) don't need their own board `#ifdef`.
 - **storage.cpp/h** — `load_mp3_catalog()` scans the SD root into the global
   `mp3Files`/`mp3FileCount` arrays (`storage.h`), filtering directories and
-  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`).
-- **ui.cpp/h** — `build_main_screen(sd_present)` builds the whole screen:
+  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). One file for
+  both boards (unlike display/ui below) since only `sd_begin()`/`sd_end()`
+  and the pin defines actually differ per board — see "Board variants".
+- **ui.cpp/h** (esp32-cyd only — see "Board variants") —
+  `build_main_screen(sd_present)` builds the whole screen:
   file list (or an "insert an SD card" prompt), plus a WiFi status label
   and `ui_show_wifi_setup_dialog()`/`ui_hide_wifi_setup_dialog()` (a modal
   on `lv_layer_top()`, so it floats over the screen's content untouched).
@@ -65,6 +89,26 @@ their bullets below) — then `web_server_handle()`.
   `ui_show_transcribe_progress()`/`ui_show_transcribe_result()` are what
   `transcribe_process_pending()` calls back into once it's actually safe
   to block and repaint.
+- **ui_epaper.cpp** (esp32-s3-epaper154 only) — the same `ui.h` interface's
+  other implementation, deliberately smaller in scope than `ui.cpp`: WiFi
+  status, a scrollable file list, and per-file Transcribe/Delete — no
+  on-screen Settings, WiFi credential entry, or text-file preview, all of
+  which stay on `web_server.cpp`'s existing web UI (works unchanged on
+  this board too). A small explicit state machine (`Screen` enum) driven
+  by `display.h`'s `display_button_poll()` via `ui_process_input()` (a
+  no-op stub on esp32-cyd, where input flows through LVGL's touch indev
+  instead — `main.cpp`'s `loop()` calls it unconditionally either way),
+  not a port of `ui.cpp`'s touch-driven widget tree: Next cycles the
+  current selection/menu option, Select opens/confirms (short press) or
+  backs out (long press). Every screen is rebuilt from scratch
+  (`lv_obj_clean()` + repopulate) on each state change rather than kept as
+  a tree of show/hide-toggled widgets — cheap next to the e-paper refresh
+  itself dominating either way. Selecting Transcribe calls
+  `transcribe.h`'s `transcribe_request()` directly rather than through a
+  confirm dialog — safe here (unlike a hypothetical touch click handler)
+  since `ui_process_input()` runs at `loop()`'s top level, not nested
+  inside `lv_timer_handler()`; selecting Delete calls `storage.h`'s
+  `delete_file()` directly, same reasoning.
 - **wifi_manager.cpp/h** — `wifi_connect()` via tzapu/WiFiManager. Two
   paths depending on whether a network is already saved in NVS: none
   saved opens a captive portal AP ("Annota-Setup", no password) with no
@@ -142,7 +186,47 @@ their bullets below) — then `web_server_handle()`.
   never displays the current value. Uploads/deletes don't refresh the
   on-screen MP3 list (`mp3Files`); that only happens on reboot.
 
-### Shared SPI peripheral gotcha
+### Board variants
+
+Two `platformio.ini` envs, selected by exactly one `BOARD_*` build flag
+(`storage.cpp` `#error`s at compile time if neither is defined, same
+pattern as `transcribe.cpp`'s `AI_PROVIDER_*` check): `esp32-cyd` defines
+`BOARD_CYD=1`, `esp32-s3-epaper154` defines `BOARD_ESP32S3_EPAPER154=1`.
+`display.h`/`ui.h` are the shared interfaces; which board-specific file
+implements each is picked by `build_src_filter` per env (`display.cpp` vs
+`display_epaper.cpp`, `ui.cpp` vs `ui_epaper.cpp`), *not* the
+`#ifdef`-wrapped-single-file trick `transcribe_<provider>.cpp` uses — see
+`platformio.ini`'s comment on why: those provider files all share the same
+`lib_deps` regardless of which one compiles to something, so PlatformIO's
+library dependency finder (LDF) is happy either way, but `display.cpp`
+`#include`s TFT_eSPI/XPT2046_Touchscreen, which are only in `esp32-cyd`'s
+`lib_deps` — the LDF's textual `#include` scan doesn't evaluate
+`#ifdef`/`#endif` the way the compiler does, so it'd fail resolving those
+headers if `esp32-s3-epaper154` tried to compile that file too. `lv_conf.h`
+is shared by both envs (`LV_CONF_INCLUDE_SIMPLE=1` in both), so its
+`LV_USE_TFT_ESPI` is itself `#ifdef BOARD_ESP32S3_EPAPER154`-gated to 0 for
+the same reason — left at 1 unconditionally, lvgl's own
+`drivers/display/tft_espi/lv_tft_espi.cpp` fails the same missing-header
+way, deeper inside a lib_dep than `build_src_filter` can reach. Files with
+only a small, genuinely-shared-dependency difference between boards
+(`storage.cpp`'s SD-over-SPI vs SD-over-SDMMC; `antiburn.cpp`'s
+CYD-backlight-only blanking) keep the single-file-with-`#ifdef` pattern,
+same as the provider split - see each file's own comment.
+
+`esp32-s3-epaper154`'s on-device UI (`ui_epaper.cpp`) is deliberately
+smaller in scope than the CYD's touch UI - see its bullet above.
+
+### Shared SPI peripheral gotcha (esp32-cyd only)
+
+`esp32-s3-epaper154` has no equivalent constraint: its e-paper panel is on
+its own dedicated `SPI2_HOST` and its SD card on the ESP32-S3's dedicated
+SDMMC peripheral (1-bit mode, pins 39/41/40 - see `storage.cpp`) - two
+separate peripherals, neither shared with anything, so
+`display_suspend_touch()`/`display_resume_touch()` are no-ops there (see
+`display_epaper.cpp`'s bullet above) and there's no boot-order constraint
+between `load_mp3_catalog()` and `display_init_input()` either - `main.cpp`
+just keeps the same call order as `esp32-cyd` regardless, so `setup()`
+doesn't need its own board `#ifdef`.
 
 The ESP32 has only two general-purpose SPI peripherals. The display panel
 (`TFT_MISO`/`MOSI`/`SCLK` in `include/User_Setup.h`) occupies one full-time.
