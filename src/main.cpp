@@ -12,6 +12,7 @@
 void setup() {
     Serial.begin(115200);
     Serial.println("annota: boot");
+    Serial.printf("annota: boot free heap=%u largest block=%u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     display_init_panel();
 

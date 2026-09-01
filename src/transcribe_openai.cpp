@@ -174,6 +174,15 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     // MITM presenting a fake cert.
     client.setInsecure();
 
+    // TLS handshake needs a large contiguous heap block - on a no-PSRAM
+    // board with LVGL and the SD/JSON machinery already holding heap, a
+    // fragmented free-heap total can still fail to satisfy it, and
+    // sendRequest() below then returns HTTPC_ERROR_CONNECTION_REFUSED (-1)
+    // before any HTTP response exists. Logged here so a report of "-1"
+    // can be told apart from an actual TLS/network failure.
+    Serial.printf("[transcribe] connecting, free heap=%u largest block=%u\n", ESP.getFreeHeap(),
+                  ESP.getMaxAllocHeap());
+
     HTTPClient http;
     http.setTimeout(60000);
     if (!http.begin(client, TRANSCRIBE_URL)) {
@@ -196,6 +205,12 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
             message = doc["error"]["message"].as<const char *>();
+        } else if (code < 0) {
+            // Negative codes are HTTPClient's own connection-layer errors
+            // (see HTTPClient.h's HTTPC_ERROR_* enum), not an HTTP status -
+            // errorToString() turns -1 into "connection refused" etc.
+            // instead of a bare number with no clue what failed.
+            message = "Connect failed: " + http.errorToString(code) + " (heap " + String(ESP.getFreeHeap()) + ")";
         } else {
             message = "HTTP " + String(code);
         }
