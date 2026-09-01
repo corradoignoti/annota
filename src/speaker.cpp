@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <cstring>
 
+#include <AudioFileSourceBuffer.h>
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioGeneratorWAV.h>
@@ -63,16 +64,39 @@ constexpr int DEFAULT_VOLUME = 85;
 // Recording is voice-memo/transcription-oriented (not music), so mono at a
 // speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
 // (write_wav_header()/patch_wav_header() below) - no encoder, no encoder
-// working set to allocate, at the cost of a bigger file than a
-// compressed format would give (fine for a short
-// voice memo headed straight to transcribe.cpp's AI provider). 16kHz is
-// one of es8311.h's fixed 256x-MCLK family members, so no codec
-// clock-plan changes are needed switching between this and playback's
-// 44.1kHz. ES8311_MIC_GAIN_24DB (see es8311.h) is a reasonable starting
-// gain for a board-mounted mic at conversational distance - not tuned
-// against real hardware yet, may need adjusting once it is.
+// working set to allocate, at the cost of a bigger file than a compressed
+// format would give (fine for a short voice memo headed straight to
+// transcribe.cpp's AI provider).
+//
+// MUST stay well under DEFAULT_SAMPLE_RATE, not just "a speech-typical
+// rate" - this was briefly bumped to DEFAULT_SAMPLE_RATE (44100) to chase
+// a playback-tail glitch (see below) and that broke recording outright,
+// real voice replaced by noise throughout. Mono 16-bit at 44100 is 88,200
+// bytes/sec that mic_process() has to get onto the SD card in real time,
+// on top of every other loop() iteration's work (LVGL, web server, ...) -
+// over 2.75x what 16kHz needs, and enough to overrun sd_begin()'s 1-bit
+// SDMMC mode (storage.cpp, deliberately not 4-bit) and corrupt far more of
+// the stream than the tail-glitch below ever did. 16kHz is comfortably
+// sustainable and is one of es8311.h's fixed 256x-MCLK family members, so
+// no codec clock-plan changes are needed switching between this and
+// playback's 44.1kHz in principle - though on real hardware, playing back
+// a 16kHz recording currently loops its last second or two several times
+// over; not yet root-caused (a read-ahead buffer on the playback source,
+// ruling out SD-read starvation, made no difference; bumping this constant
+// to dodge a codec clock-relock theory is what caused the regression
+// above, and got reverted). Fix that on the *playback* side only, without
+// touching this rate. ES8311_MIC_GAIN_24DB (see es8311.h) is a reasonable
+// starting gain for a board-mounted mic at conversational distance - not
+// tuned against real hardware yet, may need adjusting once it is.
 constexpr uint32_t MIC_SAMPLE_RATE = 16000;
 constexpr int MIC_GAIN_CODE = 4; // ES8311_MIC_GAIN_24DB
+
+// TX DMA ring depth - see i2s_configure()'s chanCfg for why (a little
+// deeper than the esp-idf default), and prime_tx_silence() below for why
+// this needs its own name instead of staying inline magic numbers there.
+constexpr int TX_DMA_DESC_NUM = 8;
+constexpr int TX_DMA_FRAME_NUM = 480;
+constexpr int TX_DMA_RING_FRAMES = TX_DMA_DESC_NUM * TX_DMA_FRAME_NUM;
 
 i2s_chan_handle_t txChan = nullptr;
 i2s_chan_handle_t rxChan = nullptr;
@@ -104,8 +128,8 @@ bool i2s_configure(uint32_t rate) {
         // glitch before its next speaker_process() turn (and, now, so a
         // slow loop() iteration doesn't overflow the RX side into dropped
         // mic samples before its next mic_process() turn either).
-        chanCfg.dma_desc_num = 8;
-        chanCfg.dma_frame_num = 480;
+        chanCfg.dma_desc_num = TX_DMA_DESC_NUM;
+        chanCfg.dma_frame_num = TX_DMA_FRAME_NUM;
         // Request both directions from the same I2S controller in one
         // call - the only way to get them sharing one BCLK/WS master
         // clock plan off one physical bus, matching the schematic (this
@@ -188,12 +212,24 @@ public:
     // tail of the file doesn't get silently dropped. Fine to block here,
     // unlike ConsumeSample() above: this runs once per track, not once
     // per BUF_FRAMES samples.
+    //
+    // Mute right here, not just in cleanup() after gen->loop() returns -
+    // AudioGeneratorWAV's own stop() (which calls this) goes on to close
+    // its SD file *after* this returns, and that close (real card I/O) can
+    // take real time - time this file's own now-real-data-exhausted DMA
+    // ring spends re-clocking its last content on a still-unmuted DAC if
+    // muting waits for cleanup(). Muting here, right after every real
+    // sample has been handed to the DMA, closes that window; cleanup()'s
+    // own mute stays as a harmless no-op/insurance for the manual-stop and
+    // begin()-failed paths.
     void flush() override {
         drain_blocking();
+        es8311_set_mute(true);
     }
 
     bool stop() override {
         drain_blocking();
+        es8311_set_mute(true);
         return true;
     }
 
@@ -234,6 +270,22 @@ private:
 
 Es8311Output *output = nullptr;
 AudioFileSourceFS *source = nullptr;
+// Read-ahead RAM buffer wrapped around `source` (see speaker_play()) - not
+// AudioFileSourceFS's own doing, that's a bare passthrough to File::read().
+// AudioGeneratorWAV (unlike the MP3 decoder) pulls from its source in tiny
+// hardcoded 128-byte gulps (its own buffSize, not ours to tune), one SD
+// read per gulp - fine for MP3, where one SD read feeds many more
+// milliseconds of *decoded* audio, but for raw PCM WAV each gulp is only a
+// few ms of playtime, so playback lives or dies on every single SD read
+// latency spike. Without this, an ordinary SD latency blip starves the
+// I2S TX DMA faster than it can be refilled, and the codec's underrun
+// behavior is to keep re-clocking out its last-received samples rather
+// than go silent - heard as the same second or two of audio looping
+// several times in a row. AudioFileSourceBuffer pre-fills a RAM buffer
+// ahead of the decoder's tiny reads (both opportunistically on read() and
+// via loop(), pumped every AudioGenerator::loop() call), so those SD
+// latency blips get absorbed by RAM instead of stalling the DMA feed.
+AudioFileSourceBuffer *bufferedSource = nullptr;
 // Base-class pointer - either an AudioGeneratorMP3 or an AudioGeneratorWAV,
 // chosen by speaker_play() from the file's extension. Both share the same
 // AudioGenerator interface (begin()/loop()/stop()), so nothing past that
@@ -247,6 +299,34 @@ bool playing = false;
 bool has_wav_extension(const char *filename) {
     size_t len = strlen(filename);
     return len >= 4 && strcasecmp(filename + len - 4, ".wav") == 0;
+}
+
+// Overwrites the whole TX DMA ring with silence - called from
+// speaker_play(), before that track's own real audio starts flowing and
+// before it unmutes. txChan is never disabled between tracks (see
+// cleanup()'s comment on why: BCLK/WS have to keep toggling), so whatever
+// the *previous* track's own last few descriptors happened to hold is
+// still sitting there, physically queued, when the next track unmutes -
+// on real hardware that's audible as the new track starting with a
+// snippet of the *previous* one repeated a handful of times before its
+// own content takes over (confirmed: same file played three times in a
+// row glitches at the end the first time, then at the *start* the next
+// two - the previous play's leftover tail, not this play's own content).
+// Blocking is fine here (unlike ConsumeSample()'s own non-blocking
+// writes): this is a one-time, track-start cost - one ring's worth of
+// frames, well under half a second even at MIC_SAMPLE_RATE - not a
+// per-sample one.
+void prime_tx_silence() {
+    if (txChan == nullptr) return;
+    static const int16_t silence[256 * 2] = {0};
+    int framesLeft = TX_DMA_RING_FRAMES;
+    while (framesLeft > 0) {
+        int batch = framesLeft < 256 ? framesLeft : 256;
+        size_t toWrite = (size_t)batch * sizeof(int16_t) * 2;
+        size_t written = 0;
+        i2s_channel_write(txChan, silence, toWrite, &written, portMAX_DELAY);
+        framesLeft -= batch;
+    }
 }
 
 // AudioGeneratorMP3's own buff/mad_stream/mad_frame/mad_synth (~29KB
@@ -267,19 +347,26 @@ bool ensure_mp3_buffer() {
 void cleanup() {
     delete gen;
     gen = nullptr;
+    delete bufferedSource; // must go before `source` - wraps it, doesn't own it
+    bufferedSource = nullptr;
     delete source;
     source = nullptr;
     if (playing) {
-        sd_end();
         // BCLK/WS keep toggling once the I2S channel is enabled regardless
         // of whether anything new is being written to it - with no more
         // real samples coming in, the DMA just keeps re-clocking out
-        // whatever was left in its last descriptor(s), which the codec
-        // dutifully turns into audible noise. Muting the codec's DAC
-        // output (not just stopping our own writes) is what actually
-        // silences it; es8311_set_mute(false) in speaker_play() undoes
-        // this for the next track.
+        // whatever was left in its last descriptor(s) (this track's own
+        // tail), which the codec dutifully turns into audible noise until
+        // muted. Muting the codec's DAC output (not just stopping our own
+        // writes) is what actually silences it - es8311_set_mute(false) in
+        // speaker_play() undoes this for the next track. Mute FIRST, then
+        // sd_end(): SD_MMC.end() isn't instant, and every ms it spends
+        // unmounting was, with the order this used to be, a ms of that
+        // leftover tail playing on a still-unmuted DAC - on real hardware
+        // that was long enough to be heard as this track's own ending
+        // looping, every single time.
         es8311_set_mute(true);
+        sd_end();
     }
     playing = false;
 }
@@ -348,6 +435,12 @@ void speaker_play(const char *filename) {
         Serial.println("speaker_play: speaker_begin() failed, not playing");
         return;
     }
+    // Insurance against the DAC being unmuted here with nothing real ever
+    // written to the TX ring yet - es8311_init() (inside speaker_begin(),
+    // only on this device's very first speaker_begin() call) unmutes right
+    // after bringing the codec up, before this function has primed
+    // anything into the ring below.
+    es8311_set_mute(true);
     if (!sd_begin()) {
         Serial.println("speaker_play: sd_begin() failed, not playing");
         return;
@@ -376,14 +469,25 @@ void speaker_play(const char *filename) {
         return;
     }
 
-    es8311_set_mute(false); // undo cleanup()'s mute from any previous track
+    // Stay muted through setup below (gen->begin() finalizes the I2S rate
+    // for this track, and prime_tx_silence() clears the TX ring right
+    // after) - only unmute once that's all done, see prime_tx_silence()'s
+    // comment for why unmuting any earlier lets the *previous* track's
+    // leftover DMA content bleed into this one's start.
+
+    // See bufferedSource's own comment (above) for why this wrapper exists -
+    // gen decodes from it, never straight from `source`.
+    bufferedSource = new AudioFileSourceBuffer(source, 4096);
 
     gen = isWav ? static_cast<AudioGenerator *>(new AudioGeneratorWAV())
                 : static_cast<AudioGenerator *>(new AudioGeneratorMP3(mp3DecodeBuffer, AudioGeneratorMP3::preAllocSize()));
     playing = true;
-    bool started = gen->begin(source, output);
+    bool started = gen->begin(bufferedSource, output);
     Serial.printf("speaker_play: gen->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
-    if (!started) {
+    if (started) {
+        prime_tx_silence();
+        es8311_set_mute(false); // undo cleanup()'s mute from any previous track
+    } else {
         cleanup();
     }
 }
@@ -485,6 +589,16 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
         set_mic_error("Couldn't start recording: codec not responding (I2C error)");
         return false;
     }
+    // Mute DAC before recording, unconditionally - cleanup() (see its
+    // comment) only mutes on the playback-stop path, so a fresh boot that
+    // goes straight to Record (es8311_init() leaves the DAC unmuted) never
+    // hits that. With the DAC unmuted, txChan stays enabled the whole time
+    // (i2s_configure() below always re-enables it) with nothing ever
+    // written to it during a pure recording session, so it just re-clocks
+    // whatever garbage was left in its DMA descriptors out the speaker -
+    // which the mic, inches away at 24dB gain, faithfully records as
+    // noise that was never actually in the room.
+    es8311_set_mute(true);
     if (!i2s_configure(MIC_SAMPLE_RATE) || rxChan == nullptr) {
         set_mic_error("Couldn't start recording: I2S setup failed");
         return false;
