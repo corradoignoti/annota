@@ -4,10 +4,14 @@
 
 // -----------------------------------------------------------------------
 // Minimal driver for the ES8311 audio codec - esp32-s3-epaper154's onboard
-// codec (see speaker.h/.cpp), used by nothing else, so this is playback-
-// only: no microphone/ADC setup. Plain functions over static state rather
-// than a handle, matching storage.cpp's style - there's only ever one
-// ES8311 on this board.
+// codec (see speaker.h/.cpp), used by nothing else. Drives both the DAC
+// (speaker playback) and ADC (mic recording) paths - the two are never
+// active at once on this board (speaker.cpp's mic_start_recording() always
+// stops playback first), so es8311_set_mic_enabled() below just toggles
+// the ADC path on top of whatever es8311_init() already set up for
+// playback, rather than needing a real simultaneous-duplex mode. Plain
+// functions over static state rather than a handle, matching storage.cpp's
+// style - there's only ever one ES8311 on this board.
 //
 // I2C-only; the codec's I2S side is speaker.cpp's job. Register map and
 // the clock-divider coefficients are ported from Espressif's own
@@ -39,3 +43,16 @@ bool es8311_init(uint32_t sampleRate, int volume);
 void es8311_set_volume(int volume);
 
 void es8311_set_mute(bool mute);
+
+// Enables/disables the ADC (mic) input path, independently of the DAC
+// path es8311_init() already brought up - see es8311.cpp's
+// es8311_set_mic_enabled() comment for the register sequence and where
+// it's ported from (Espressif's own es8311 driver, which this whole file
+// is otherwise not based on - that one only ever ran in playback mode).
+void es8311_set_mic_enabled(bool enable);
+
+// PGA gain, 0 (0dB) through 7 (42dB) in 6dB steps - matches the ES8311
+// datasheet's REG16 field and Espressif's own es8311_mic_gain_t enum
+// (ES8311_MIC_GAIN_0DB..ES8311_MIC_GAIN_42DB; that enum's MIN/MAX
+// sentinels, -1 and 8, are never valid here).
+void es8311_set_mic_gain(int gainCode);

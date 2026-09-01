@@ -24,6 +24,11 @@ constexpr uint8_t REG_SYSTEM_0D = 0x0D;
 constexpr uint8_t REG_SYSTEM_0E = 0x0E;
 constexpr uint8_t REG_SYSTEM_12 = 0x12;
 constexpr uint8_t REG_SYSTEM_13 = 0x13;
+constexpr uint8_t REG_SYSTEM_14 = 0x14; // mic select (analog/digital) + PGA gain field
+constexpr uint8_t REG_ADC_15 = 0x15;    // adc ramp rate
+constexpr uint8_t REG_ADC_16 = 0x16;    // mic PGA gain (es8311_set_mic_gain())
+constexpr uint8_t REG_ADC_17 = 0x17;    // adc digital volume/mute
+constexpr uint8_t REG_ADC_1B = 0x1B;
 constexpr uint8_t REG_ADC_1C = 0x1C;
 constexpr uint8_t REG_DAC_MUTE_31 = 0x31;
 constexpr uint8_t REG_DAC_VOL_32 = 0x32;
@@ -106,7 +111,19 @@ bool es8311_init(uint32_t sampleRate, int volume) {
     ok &= write_reg(REG_SYSTEM_0E, 0x02);
     ok &= write_reg(REG_SYSTEM_12, 0x00);
     ok &= write_reg(REG_SYSTEM_13, 0x10); // enable output to HP drive
-    ok &= write_reg(REG_ADC_1C, 0x6A); // unused ADC path, quiesced
+    ok &= write_reg(REG_ADC_1B, 0x0A); // adc hpf s1 - fixed value, always written
+    ok &= write_reg(REG_ADC_1C, 0x6A); // adc hpf s2/equalizer - fixed value, always written
+    // Baseline ADC/mic register state - a previous version of this comment
+    // called REG_ADC_1C above "unused ADC path, quiesced", but Espressif's
+    // own reference driver (esp-bsp, components/es8311) writes both 1B and
+    // 1C unconditionally regardless of playback-only or record use, so
+    // that read was wrong; the *actual* mic on/off switch is REG_ADC_17
+    // below (silent here, same 0x00 its own suspend() path uses - mirrored
+    // in es8311_set_mic_enabled()) plus the mic select/PGA registers this
+    // driver never touched before mic support existed:
+    ok &= write_reg(REG_SYSTEM_14, 0x1A); // analog mic select (not PDM digital mic)
+    ok &= write_reg(REG_ADC_16, 0x24);    // mic PGA gain - placeholder until es8311_set_mic_gain()
+    ok &= write_reg(REG_ADC_17, 0x00);    // adc output muted/silent until es8311_set_mic_enabled(true)
     ok &= write_reg(REG_DAC_37, 0x08); // bypass DAC equalizer
 
     // CSM_ON (bit 7 of the RESET register, chip state machine power-on)
@@ -133,4 +150,23 @@ void es8311_set_volume(int volume) {
 
 void es8311_set_mute(bool mute) {
     rmw_reg(REG_DAC_MUTE_31, (uint8_t)~0x60, mute ? 0x60 : 0x00);
+}
+
+void es8311_set_mic_enabled(bool enable) {
+    if (enable) {
+        write_reg(REG_ADC_15, 0x40); // ramp rate - matches reference driver's ADC-enabled value
+        write_reg(REG_ADC_17, 0xBF); // un-mute/near-max ADC digital volume
+    } else {
+        // Same values es8311_init()'s baseline and the reference driver's
+        // own suspend() path use - silences the ADC path without touching
+        // anything the DAC/playback side depends on.
+        write_reg(REG_ADC_15, 0x00);
+        write_reg(REG_ADC_17, 0x00);
+    }
+}
+
+void es8311_set_mic_gain(int gainCode) {
+    if (gainCode < 0) gainCode = 0;
+    if (gainCode > 7) gainCode = 7;
+    write_reg(REG_ADC_16, (uint8_t)gainCode);
 }

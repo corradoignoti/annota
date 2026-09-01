@@ -204,6 +204,21 @@ bool delete_file(const char *filename) {
     return ok;
 }
 
+bool next_recording_filename(char *out, size_t outLen) {
+    for (int n = 1; n <= 9999; n++) {
+        char candidate[32];
+        snprintf(candidate, sizeof(candidate), "REC%04d.wav", n);
+        char path[40];
+        snprintf(path, sizeof(path), "/%s", candidate);
+        if (!SD_FS.exists(path)) {
+            strncpy(out, candidate, outLen - 1);
+            out[outLen - 1] = '\0';
+            return true;
+        }
+    }
+    return false;
+}
+
 bool load_mp3_catalog() {
     return load_file_catalog(AUDIO_EXTS);
 }

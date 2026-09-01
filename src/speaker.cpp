@@ -9,9 +9,11 @@
 #include <Arduino.h>
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
+#include <AudioGeneratorWAV.h>
 #include <AudioOutput.h>
 #include <Wire.h>
 #include <driver/i2s_std.h>
+#include <esp_heap_caps.h>
 
 #include "es8311.h"
 #include "storage.h"
@@ -26,13 +28,11 @@
 //
 //   I2S_MCLK  -> GPIO14      I2S_LRCK (WS)   -> GPIO38
 //   I2S_SCLK  -> GPIO15      I2S_DSDIN (out) -> GPIO45
+//   I2S_ASDOUT (mic in)      -> GPIO16 (see mic_start_recording() below)
 //   PA_EN     -> GPIO42 (codec+amp analog rail switch - matches Waveshare's
 //                own user_config.h Audio_PWR_PIN)
 //   PA_CTRL   -> GPIO46 (NS4150B amp shutdown/enable)
 //   Codec I2C -> shared RTC/SHTC3 bus: SDA=GPIO47, SCL=GPIO48, addr 0x18
-//
-// I2S_ASDOUT (codec's mic-in data, GPIO16) isn't wired up here - this file
-// only ever plays files, never records.
 //
 // This pinout was reverse-engineered from the schematic before Waveshare's
 // own ESP-IDF audio example (waveshareteam/ESP32-S3-ePaper-1.54G,
@@ -41,7 +41,12 @@
 // which that file gives as GPIO38, not GPIO21. GPIO21 was the actual
 // silent-output bug: with WS never toggling, the codec has no valid LRCK
 // and never latches DAC samples no matter what else is configured
-// correctly.
+// correctly. That same example (audio_bsp.c, via esp_codec_dev) is also
+// the source for the mic path below: it opens the codec's ADC and DAC
+// together (esp_codec_dev_open() on both an `in`/`out` handle) over one
+// shared full-duplex I2S pair, at 16kHz mono for the mic side - the same
+// plan i2s_configure()/mic_start_recording() follow here, just against the
+// raw i2s_std/es8311 driver instead of esp_codec_dev's C++-unfriendly API.
 // -----------------------------------------------------------------------
 
 namespace {
@@ -50,6 +55,7 @@ constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_14;
 constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_15;
 constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_38;
 constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_45;
+constexpr gpio_num_t I2S_DIN_PIN = GPIO_NUM_16; // mic ADC data in (I2S_ASDOUT)
 constexpr int PA_EN_PIN = 42;
 constexpr int PA_CTRL_PIN = 46;
 constexpr int I2C_SDA_PIN = 47;
@@ -58,15 +64,33 @@ constexpr int I2C_SCL_PIN = 48;
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
 
+// Recording is voice-memo/transcription-oriented (not music), so mono at a
+// speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
+// (write_wav_header()/patch_wav_header() below) - no encoder, no working
+// set to size for this no-PSRAM board's tight RAM budget, at the cost of
+// a bigger file than a compressed format would give (fine for a short
+// voice memo headed straight to transcribe.cpp's AI provider). 16kHz is
+// one of es8311.h's fixed 256x-MCLK family members, so no codec
+// clock-plan changes are needed switching between this and playback's
+// 44.1kHz. ES8311_MIC_GAIN_24DB (see es8311.h) is a reasonable starting
+// gain for a board-mounted mic at conversational distance - not tuned
+// against real hardware yet, may need adjusting once it is.
+constexpr uint32_t MIC_SAMPLE_RATE = 16000;
+constexpr int MIC_GAIN_CODE = 4; // ES8311_MIC_GAIN_24DB
+
 i2s_chan_handle_t txChan = nullptr;
+i2s_chan_handle_t rxChan = nullptr;
 uint32_t i2sConfiguredRate = 0;
+bool rxEnabled = false; // mic_start_recording()/mic_stop_recording() only
 bool hwReady = false;
 
-// Sets up (or reconfigures) the I2S TX channel for `rate`. Slot width is
-// forced to 32 bits despite 16-bit data - the ES8311's fixed clock plan
-// (see es8311.h) runs BCLK at 64x the sample rate (2 slots x 32 bits),
-// not the 32x a plain 16-bit slot would give; the driver pads the 16-bit
-// samples we write into that wider slot on its own.
+// Sets up (or reconfigures) the I2S TX+RX channel pair for `rate`. Slot
+// width is forced to 32 bits despite 16-bit data - the ES8311's fixed
+// clock plan (see es8311.h) runs BCLK at 64x the sample rate (2 slots x
+// 32 bits), not the 32x a plain 16-bit slot would give; the driver pads
+// (TX) / strips (RX) the 16-bit samples we write/read against that wider
+// slot on its own - same as the existing TX-only code already relied on,
+// now true for rxChan's i2s_channel_read() too.
 bool i2s_configure(uint32_t rate) {
     if (rate == i2sConfiguredRate) return true;
 
@@ -81,28 +105,43 @@ bool i2s_configure(uint32_t rate) {
         // A little deeper than the default 6x240 frames, so a slow
         // web_server.cpp request or transcribe_process_pending() call
         // elsewhere in loop() doesn't starve playback into an audible
-        // glitch before its next speaker_process() turn.
+        // glitch before its next speaker_process() turn (and, now, so a
+        // slow loop() iteration doesn't overflow the RX side into dropped
+        // mic samples before its next mic_process() turn either).
         chanCfg.dma_desc_num = 8;
         chanCfg.dma_frame_num = 480;
-        if (i2s_new_channel(&chanCfg, &txChan, nullptr) != ESP_OK) return false;
+        // Request both directions from the same I2S controller in one
+        // call - the only way to get them sharing one BCLK/WS master
+        // clock plan off one physical bus, matching the schematic (this
+        // file's top comment): DOUT feeds the codec's DAC, DIN reads its
+        // ADC. rxChan is left disabled below - mic_start_recording() is
+        // the only thing that ever enables it, so the DMA doesn't spend
+        // however long the device is only ever playing (never recording)
+        // silently filling up with unread mic samples.
+        if (i2s_new_channel(&chanCfg, &txChan, &rxChan) != ESP_OK) return false;
 
         i2s_std_gpio_config_t gpioCfg = {};
         gpioCfg.mclk = I2S_MCLK_PIN;
         gpioCfg.bclk = I2S_BCLK_PIN;
         gpioCfg.ws = I2S_WS_PIN;
         gpioCfg.dout = I2S_DOUT_PIN;
-        gpioCfg.din = I2S_GPIO_UNUSED;
+        gpioCfg.din = I2S_DIN_PIN;
 
         i2s_std_config_t stdCfg = {};
         stdCfg.clk_cfg = clkCfg;
         stdCfg.slot_cfg = slotCfg;
         stdCfg.gpio_cfg = gpioCfg;
         if (i2s_channel_init_std_mode(txChan, &stdCfg) != ESP_OK) return false;
+        if (i2s_channel_init_std_mode(rxChan, &stdCfg) != ESP_OK) return false;
         if (i2s_channel_enable(txChan) != ESP_OK) return false;
+        // rxChan intentionally left disabled - see comment above.
     } else {
         if (i2s_channel_disable(txChan) != ESP_OK) return false;
+        if (rxEnabled && i2s_channel_disable(rxChan) != ESP_OK) return false;
         if (i2s_channel_reconfig_std_clock(txChan, &clkCfg) != ESP_OK) return false;
+        if (i2s_channel_reconfig_std_clock(rxChan, &clkCfg) != ESP_OK) return false;
         if (i2s_channel_enable(txChan) != ESP_OK) return false;
+        if (rxEnabled && i2s_channel_enable(rxChan) != ESP_OK) return false;
     }
 
     i2sConfiguredRate = rate;
@@ -158,12 +197,39 @@ private:
 
 Es8311Output *output = nullptr;
 AudioFileSourceFS *source = nullptr;
-AudioGeneratorMP3 *mp3 = nullptr;
+// Base-class pointer - either an AudioGeneratorMP3 or an AudioGeneratorWAV,
+// chosen by speaker_play() from the file's extension. Both share the same
+// AudioGenerator interface (begin()/loop()/stop()), so nothing past that
+// choice needs to know which one it actually is.
+AudioGenerator *gen = nullptr;
 bool playing = false;
 
+// True if `filename` ends in ".wav" (case-insensitive) - the only other
+// extension AUDIO_EXTS (storage.h) lists is ".mp3", so anything that isn't
+// this is assumed to be that.
+bool has_wav_extension(const char *filename) {
+    size_t len = strlen(filename);
+    return len >= 4 && strcasecmp(filename + len - 4, ".wav") == 0;
+}
+
+// AudioGeneratorMP3's own buff/mad_stream/mad_frame/mad_synth (~29KB
+// combined, mostly libmad's mad_frame/mad_synth structs) default to a
+// plain `new`/malloc() each time speaker_play() creates one - lazily
+// allocated once here instead and kept for the process's lifetime, so a
+// long-running device only ever pays that ~29KB allocation's
+// fragmentation risk once, on the first MP3 played, rather than on every
+// track.
+uint8_t *mp3DecodeBuffer = nullptr;
+
+bool ensure_mp3_buffer() {
+    if (mp3DecodeBuffer) return true;
+    mp3DecodeBuffer = (uint8_t *)heap_caps_malloc(AudioGeneratorMP3::preAllocSize(), MALLOC_CAP_8BIT | MALLOC_CAP_INTERNAL);
+    return mp3DecodeBuffer != nullptr;
+}
+
 void cleanup() {
-    delete mp3;
-    mp3 = nullptr;
+    delete gen;
+    gen = nullptr;
     delete source;
     source = nullptr;
     if (playing) {
@@ -261,12 +327,25 @@ void speaker_play(const char *filename) {
         return;
     }
 
+    bool isWav = has_wav_extension(filename);
+    // WAV needs no persistent decode buffer (AudioGeneratorWAV just
+    // streams PCM straight through) - only reserve/reuse the MP3 one
+    // (mp3DecodeBuffer) when actually about to decode MP3.
+    if (!isWav && !ensure_mp3_buffer()) {
+        Serial.println("speaker_play: couldn't allocate MP3 decode buffer (out of memory), not playing");
+        delete source;
+        source = nullptr;
+        sd_end();
+        return;
+    }
+
     es8311_set_mute(false); // undo cleanup()'s mute from any previous track
 
-    mp3 = new AudioGeneratorMP3();
+    gen = isWav ? static_cast<AudioGenerator *>(new AudioGeneratorWAV())
+                : static_cast<AudioGenerator *>(new AudioGeneratorMP3(mp3DecodeBuffer, AudioGeneratorMP3::preAllocSize()));
     playing = true;
-    bool started = mp3->begin(source, output);
-    Serial.printf("speaker_play: mp3->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
+    bool started = gen->begin(source, output);
+    Serial.printf("speaker_play: gen->begin(%s) -> %s\n", path, started ? "ok" : "FAILED");
     if (!started) {
         cleanup();
     }
@@ -274,21 +353,209 @@ void speaker_play(const char *filename) {
 
 void speaker_stop() {
     if (!playing) return;
-    if (mp3) mp3->stop();
+    if (gen) gen->stop();
     cleanup();
     Serial.println("speaker_stop: stopped");
 }
 
 void speaker_process() {
-    if (!playing || !mp3) return;
-    if (!mp3->loop()) {
-        Serial.println("speaker_process: mp3->loop() returned false, stopping (track ended or decode error - see audioLogger output above)");
+    if (!playing || !gen) return;
+    if (!gen->loop()) {
+        Serial.println("speaker_process: gen->loop() returned false, stopping (track ended or decode error - see audioLogger output above)");
         cleanup();
     }
 }
 
 bool speaker_is_playing() {
     return playing;
+}
+
+// -----------------------------------------------------------------------
+// Mic recording. Shares this file's I2C/I2S/PA_EN bring-up (speaker_begin())
+// and i2s_configure() with playback above - see this file's/speaker.h's
+// top comments for why recording and playback live in one module. Written
+// straight to uncompressed 16-bit PCM WAV (write_wav_header()/
+// patch_wav_header() below) - see MIC_SAMPLE_RATE's comment above for why.
+// -----------------------------------------------------------------------
+
+namespace {
+
+File recordFile;
+bool recording = false;
+char recordFilename[64];
+uint32_t recordedDataBytes = 0; // PCM bytes written so far - patch_wav_header() needs the final count
+char micErrorMessage[96] = ""; // see mic_last_error()
+
+// Logs `msg` to Serial (as every failure path here already did) and also
+// stashes it for mic_last_error() - ui_epaper.cpp shows that on screen,
+// since normal use has no serial monitor attached to see the Serial line.
+void set_mic_error(const char *msg) {
+    Serial.println(msg);
+    strncpy(micErrorMessage, msg, sizeof(micErrorMessage) - 1);
+    micErrorMessage[sizeof(micErrorMessage) - 1] = '\0';
+}
+
+void write_u32le(File &f, uint32_t v) {
+    uint8_t b[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+    f.write(b, 4);
+}
+
+void write_u16le(File &f, uint16_t v) {
+    uint8_t b[2] = {(uint8_t)v, (uint8_t)(v >> 8)};
+    f.write(b, 2);
+}
+
+// Writes a canonical 44-byte PCM WAV header (RIFF/fmt/data, no extension
+// chunks) with the RIFF chunk size and data chunk size fields left as
+// zero placeholders - patch_wav_header() below overwrites just those two
+// once mic_stop_recording() knows the final PCM byte count. ESP32 is
+// little-endian, matching WAV's own byte order, so the mono int16 samples
+// mic_process() writes straight after this header need no conversion.
+void write_wav_header(File &f, uint32_t sampleRate, uint16_t channels, uint16_t bitsPerSample) {
+    uint16_t blockAlign = (uint16_t)(channels * (bitsPerSample / 8));
+    uint32_t byteRate = sampleRate * blockAlign;
+    f.write((const uint8_t *)"RIFF", 4);
+    write_u32le(f, 0); // patched by patch_wav_header()
+    f.write((const uint8_t *)"WAVE", 4);
+    f.write((const uint8_t *)"fmt ", 4);
+    write_u32le(f, 16); // fmt chunk size (PCM, no extension)
+    write_u16le(f, 1);  // audio format 1 = PCM
+    write_u16le(f, channels);
+    write_u32le(f, sampleRate);
+    write_u32le(f, byteRate);
+    write_u16le(f, blockAlign);
+    write_u16le(f, bitsPerSample);
+    f.write((const uint8_t *)"data", 4);
+    write_u32le(f, 0); // patched by patch_wav_header()
+}
+
+// Seeks back into the two size fields write_wav_header() left as
+// placeholders and fills them in now that `dataBytes` (the PCM payload
+// actually written) is known - called once, by mic_stop_recording().
+void patch_wav_header(File &f, uint32_t dataBytes) {
+    f.seek(4); // RIFF chunk size = everything after these first 8 bytes
+    write_u32le(f, 36 + dataBytes);
+    f.seek(40); // data chunk size
+    write_u32le(f, dataBytes);
+}
+
+} // namespace
+
+bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
+    speaker_stop(); // mutual exclusion - see this file's top comment
+
+    if (!speaker_begin()) {
+        set_mic_error("Couldn't start recording: codec not responding (I2C error)");
+        return false;
+    }
+    if (!i2s_configure(MIC_SAMPLE_RATE) || rxChan == nullptr) {
+        set_mic_error("Couldn't start recording: I2S setup failed");
+        return false;
+    }
+    if (!sd_begin()) {
+        set_mic_error("Couldn't start recording: SD card not available");
+        return false;
+    }
+
+    char name[64];
+    if (!next_recording_filename(name, sizeof(name))) {
+        set_mic_error("Couldn't start recording: no free RECnnnn.wav name");
+        sd_end();
+        return false;
+    }
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", name);
+    recordFile = sd_fs().open(path, FILE_WRITE);
+    if (!recordFile) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Couldn't start recording: couldn't create %s", path);
+        set_mic_error(msg);
+        sd_end();
+        return false;
+    }
+
+    write_wav_header(recordFile, MIC_SAMPLE_RATE, /*channels=*/1, /*bitsPerSample=*/16);
+    recordedDataBytes = 0;
+
+    es8311_set_mic_gain(MIC_GAIN_CODE);
+    es8311_set_mic_enabled(true);
+    if (i2s_channel_enable(rxChan) != ESP_OK) {
+        set_mic_error("Couldn't start recording: I2S mic channel enable failed");
+        es8311_set_mic_enabled(false);
+        recordFile.close();
+        sd_end();
+        return false;
+    }
+    rxEnabled = true;
+
+    micErrorMessage[0] = '\0'; // clear any previous failure now that this one succeeded
+
+    strncpy(recordFilename, name, sizeof(recordFilename) - 1);
+    recordFilename[sizeof(recordFilename) - 1] = '\0';
+    if (filenameOut) {
+        strncpy(filenameOut, name, filenameOutLen - 1);
+        filenameOut[filenameOutLen - 1] = '\0';
+    }
+    recording = true;
+    Serial.printf("mic_start_recording: recording to %s\n", path);
+    return true;
+}
+
+void mic_stop_recording() {
+    if (!recording) return;
+
+    patch_wav_header(recordFile, recordedDataBytes);
+    size_t finalSize = recordFile.size(); // logged below, before close() invalidates it
+    recordFile.close();
+    sd_end();
+
+    i2s_channel_disable(rxChan);
+    rxEnabled = false;
+    es8311_set_mic_enabled(false);
+
+    recording = false;
+    Serial.printf("mic_stop_recording: saved %s (%u bytes)\n", recordFilename, (unsigned)finalSize);
+}
+
+void mic_process() {
+    if (!recording) return;
+
+    // A modest chunk per call, read non-blockingly (timeout 0) - loop()
+    // calls this every iteration regardless of recording state (same as
+    // speaker_process()), so there's no need to wait around here for a
+    // full DMA descriptor; whatever's already landed gets drained, the
+    // rest comes on the next call.
+    int16_t stereoBuf[128 * 2];
+    size_t bytesRead = 0;
+    esp_err_t err = i2s_channel_read(rxChan, stereoBuf, sizeof(stereoBuf), &bytesRead, 0);
+    if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Recording stopped: I2S read failed (%d)", (int)err);
+        set_mic_error(msg);
+        mic_stop_recording();
+        return;
+    }
+
+    size_t framesRead = bytesRead / (2 * sizeof(int16_t));
+    if (framesRead == 0) return;
+
+    // Codec's ADC output is stereo-framed (see this file's top comment on
+    // the shared TX/RX slot config) but the mic itself is single-ended
+    // into one input - left slot only, same channel the reference
+    // driver's own "ADCL" reference signal comment names. Pull those out
+    // into a mono buffer and write it straight to the WAV file.
+    int16_t monoBuf[128];
+    for (size_t i = 0; i < framesRead; i++) monoBuf[i] = stereoBuf[i * 2];
+    recordFile.write((const uint8_t *)monoBuf, framesRead * sizeof(int16_t));
+    recordedDataBytes += (uint32_t)(framesRead * sizeof(int16_t));
+}
+
+bool mic_is_recording() {
+    return recording;
+}
+
+const char *mic_last_error() {
+    return micErrorMessage;
 }
 
 #endif // BOARD_ESP32S3_EPAPER154

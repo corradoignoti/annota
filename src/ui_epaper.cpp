@@ -38,6 +38,8 @@ enum class Screen {
     kActionMenu,
     kDeleteConfirm,
     kPlaying,
+    kRecording,
+    kMicError,
     kWifiSetup,
     kWifiTimeoutDialog,
     kTranscribeProgress,
@@ -83,13 +85,28 @@ static char transcribe_message[128];
 
 static void render_body();
 
+// kList shows a synthetic "+ Record new" row pinned above the real files
+// - but only while showing_audio_files (a recording is itself an audio
+// file; there's nothing to record onto the .txt transcript list), same
+// rule ui.cpp's own Transcribe entry follows. Kept as index 0 ahead of
+// mp3Files rather than a separate widget/button so it reuses the same
+// Next/Select navigation and clamp_selection() as every real row.
+static bool has_record_option() {
+    return showing_audio_files;
+}
+
+static size_t list_item_count() {
+    return has_record_option() ? mp3FileCount + 1 : mp3FileCount;
+}
+
 static void clamp_selection() {
-    if (mp3FileCount == 0) {
+    size_t count = list_item_count();
+    if (count == 0) {
         selected_index = 0;
         top_index = 0;
         return;
     }
-    if (selected_index >= mp3FileCount) selected_index = mp3FileCount - 1;
+    if (selected_index >= count) selected_index = count - 1;
     if (selected_index < top_index) top_index = selected_index;
     if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
 }
@@ -157,18 +174,21 @@ static void render_body() {
 
         case Screen::kList: {
             add_row(0, showing_audio_files ? "Audio Files" : "Text Files", false);
-            if (mp3FileCount == 0) {
+            size_t count = list_item_count();
+            if (count == 0) {
                 add_centered_message(showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
                 add_hint("Sel(hold): rescan   Next(hold): switch");
                 break;
             }
             clamp_selection();
+            bool recordOption = has_record_option();
             int16_t y = ROW_H;
-            for (size_t i = top_index; i < mp3FileCount && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
-                add_row(y, mp3Files[i].filename, i == selected_index);
+            for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
+                const char *label = (recordOption && i == 0) ? "+ Record new" : mp3Files[recordOption ? i - 1 : i].filename;
+                add_row(y, label, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move, hold: switch   Sel: menu, hold: rescan");
+            add_hint("Next: move, hold: switch   Sel: open, hold: rescan");
             break;
         }
 
@@ -201,6 +221,19 @@ static void render_body() {
             add_hint("Select: stop");
             break;
         }
+
+        case Screen::kRecording: {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Recording %s...", active_filename);
+            add_centered_message(msg);
+            add_hint("Select: stop");
+            break;
+        }
+
+        case Screen::kMicError:
+            add_centered_message(mic_last_error());
+            add_hint("Select: close");
+            break;
 
         case Screen::kWifiSetup: {
             char msg[128];
@@ -303,14 +336,23 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 void ui_process_input() {
-    // Cheap no-op when nothing's playing (see speaker.h) - called
-    // unconditionally so playback keeps decoding every loop() iteration,
-    // not just on a button edge like everything below.
+    // Cheap no-ops when nothing's playing/recording (see speaker.h) -
+    // called unconditionally so playback/recording keeps pumping every
+    // loop() iteration, not just on a button edge like everything below.
     speaker_process();
+    mic_process();
     if (state == Screen::kPlaying && !speaker_is_playing()) {
         // Track ended on its own (no Select press involved) - leave the
         // Playing screen the same way Select does.
         state = sd_present ? Screen::kList : Screen::kNoCard;
+        render_body();
+    }
+    if (state == Screen::kRecording && !mic_is_recording()) {
+        // mic_process() force-stopped on its own (I2S read error) - same
+        // idea as the speaker_is_playing() check above, but recording
+        // failing mid-way is worth surfacing rather than just dropping
+        // back to the list silently.
+        state = Screen::kMicError;
         render_body();
     }
 
@@ -331,27 +373,46 @@ void ui_process_input() {
                 render_body();
                 break;
             }
-            if (mp3FileCount == 0) {
-                if (selEv == DisplayButtonEvent::kLong) {
+            {
+                size_t count = list_item_count();
+                if (count == 0) {
+                    if (selEv == DisplayButtonEvent::kLong) {
+                        load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                        render_body();
+                    }
+                    break;
+                }
+                if (nextEv == DisplayButtonEvent::kShort) {
+                    selected_index = (selected_index + 1) % count;
+                    render_body();
+                } else if (selEv == DisplayButtonEvent::kShort) {
+                    if (has_record_option() && selected_index == 0) {
+                        char filename[64];
+                        if (mic_start_recording(filename, sizeof(filename))) {
+                            strncpy(active_filename, filename, sizeof(active_filename) - 1);
+                            active_filename[sizeof(active_filename) - 1] = '\0';
+                            state = Screen::kRecording;
+                        } else {
+                            // mic_last_error() has the reason - shown on
+                            // screen since there's normally no serial
+                            // monitor attached to see it logged there.
+                            state = Screen::kMicError;
+                        }
+                        render_body();
+                    } else {
+                        size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
+                        strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
+                        active_filename[sizeof(active_filename) - 1] = '\0';
+                        menu_index = 0;
+                        state = Screen::kActionMenu;
+                        render_body();
+                    }
+                } else if (selEv == DisplayButtonEvent::kLong) {
                     load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                    selected_index = 0;
+                    top_index = 0;
                     render_body();
                 }
-                break;
-            }
-            if (nextEv == DisplayButtonEvent::kShort) {
-                selected_index = (selected_index + 1) % mp3FileCount;
-                render_body();
-            } else if (selEv == DisplayButtonEvent::kShort) {
-                strncpy(active_filename, mp3Files[selected_index].filename, sizeof(active_filename) - 1);
-                active_filename[sizeof(active_filename) - 1] = '\0';
-                menu_index = 0;
-                state = Screen::kActionMenu;
-                render_body();
-            } else if (selEv == DisplayButtonEvent::kLong) {
-                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
-                selected_index = 0;
-                top_index = 0;
-                render_body();
             }
             break;
 
@@ -415,6 +476,26 @@ void ui_process_input() {
         case Screen::kPlaying:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 speaker_stop();
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kRecording:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                mic_stop_recording();
+                // Refresh so the just-finished recording shows up in the
+                // list right away, same reason Delete re-scans below.
+                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                selected_index = 0;
+                top_index = 0;
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kMicError:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }
