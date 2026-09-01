@@ -1,6 +1,8 @@
 #include "speaker.h"
 
 #include <Arduino.h>
+#include <cstring>
+
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
 #include <AudioGeneratorWAV.h>
@@ -142,8 +144,25 @@ bool i2s_configure(uint32_t rate) {
     return true;
 }
 
-// Buffers decoded samples and blocking-writes them to the I2S DMA in
-// chunks - that block is what paces playback to the real sample rate.
+// Buffers decoded samples and, once BUF_FRAMES have piled up, writes them
+// to the I2S DMA - non-blockingly (try_flush(), timeout_ms=0). Once the
+// DMA's own buffer (dma_desc_num*dma_frame_num frames - see
+// i2s_configure()) is full, which is the normal steady state once
+// playback catches up (we produce samples far faster than 44.1kHz real
+// time whenever we're not blocked), that write returns having written
+// nothing - ConsumeSample() reports the *current* sample as not consumed
+// (false) instead of blocking here to wait for room. AudioGeneratorMP3/
+// WAV's decode loop (both have the same
+// `do { ... } while (running && output->ConsumeSample(...))`) treats a
+// false return as "can't take more right now" and returns out of
+// loop() - back to speaker_process(), and from there back to loop() - so
+// something else (ui_epaper.cpp's button polling, notably a Stop press)
+// gets a turn too. A previous version of this class always returned true
+// from ConsumeSample() and paced itself with a blocking portMAX_DELAY
+// write instead: since ESP8266Audio's decode loop only ever yields when
+// ConsumeSample() says it must, that meant one gen->loop() call decoded
+// and played the *entire* file before returning, and Stop had no chance
+// to be noticed until the track ended on its own.
 class Es8311Output : public AudioOutput {
 public:
     bool SetRate(int hz) override {
@@ -156,32 +175,56 @@ public:
     }
 
     bool ConsumeSample(int16_t sample[2]) override {
+        if (fill == BUF_FRAMES && !try_flush()) return false;
         MakeSampleStereo16(sample);
         buf[fill * 2] = Amplify(sample[LEFTCHANNEL]);
         buf[fill * 2 + 1] = Amplify(sample[RIGHTCHANNEL]);
         fill++;
-        if (fill == BUF_FRAMES) flushBuf();
         return true;
     }
 
+    // Track end (natural EOF or speaker_stop()'s gen->stop()) - block
+    // until every already-decoded sample actually reaches the DMA, so the
+    // tail of the file doesn't get silently dropped. Fine to block here,
+    // unlike ConsumeSample() above: this runs once per track, not once
+    // per BUF_FRAMES samples.
     void flush() override {
-        flushBuf();
+        drain_blocking();
     }
 
     bool stop() override {
-        flushBuf();
+        drain_blocking();
         return true;
     }
 
 private:
-    void flushBuf() {
+    // Non-blocking: writes as much of buf as the DMA will accept right
+    // now, shifts any unwritten leftover to the front, and reports
+    // whether it fully drained.
+    bool try_flush() {
         if (fill == 0 || txChan == nullptr) {
             fill = 0;
-            return;
+            return true;
         }
+        size_t toWrite = (size_t)fill * sizeof(int16_t) * 2;
         size_t written = 0;
-        i2s_channel_write(txChan, buf, fill * sizeof(int16_t) * 2, &written, portMAX_DELAY);
-        fill = 0;
+        i2s_channel_write(txChan, buf, toWrite, &written, 0);
+        size_t framesWritten = written / (sizeof(int16_t) * 2);
+        if (framesWritten == (size_t)fill) {
+            fill = 0;
+            return true;
+        }
+        if (framesWritten > 0) {
+            memmove(buf, buf + framesWritten * 2, (fill - framesWritten) * sizeof(int16_t) * 2);
+            fill -= (int)framesWritten;
+        }
+        return false;
+    }
+
+    void drain_blocking() {
+        while (!try_flush()) {
+            delay(1);
+        }
     }
 
     static constexpr int BUF_FRAMES = 256;
