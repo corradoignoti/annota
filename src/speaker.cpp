@@ -78,6 +78,18 @@ constexpr int DEFAULT_VOLUME = 85;
 constexpr uint32_t MIC_SAMPLE_RATE = 16000;
 constexpr int MIC_GAIN_CODE = 4; // ES8311_MIC_GAIN_24DB
 
+// es8311_set_mic_enabled(true)/i2s_channel_enable(rxChan) at the start of a
+// recording, and es8311_set_mic_enabled(false)/i2s_channel_disable() at the
+// end, each produce a brief audible pop/click on this hardware (ADC/PGA
+// ramp-up and ramp-down transients). Rather than chase that in the codec
+// register sequence, mic_process()/mic_stop_recording() below just trim a
+// short window off both ends of the captured PCM before it reaches the
+// file - see mic_start_recording()'s samplesToDropAtStart and
+// mic_process()'s pendingTail delay line. Not tuned against real hardware
+// yet (same caveat as MIC_GAIN_CODE above) - just a starting guess.
+constexpr uint32_t MIC_TRIM_MS = 150;
+constexpr uint32_t MIC_TRIM_SAMPLES = MIC_SAMPLE_RATE * MIC_TRIM_MS / 1000; // 2400 @16kHz/150ms
+
 i2s_chan_handle_t txChan = nullptr;
 i2s_chan_handle_t rxChan = nullptr;
 uint32_t i2sConfiguredRate = 0;
@@ -386,6 +398,19 @@ char recordFilename[64];
 uint32_t recordedDataBytes = 0; // PCM bytes written so far - patch_wav_header() needs the final count
 char micErrorMessage[96] = ""; // see mic_last_error()
 
+// Head/tail click trim - see MIC_TRIM_MS's comment above. samplesToDropAtStart
+// counts down from MIC_TRIM_SAMPLES and those samples are discarded outright
+// (never even enter pendingTail); pendingTail is a delay line holding the
+// most recent (at most) MIC_TRIM_SAMPLES samples not yet written to file, so
+// whatever's still sitting in it when mic_stop_recording() is called - the
+// trailing MIC_TRIM_MS worth of audio - never gets written either. Sized for
+// one mic_process() chunk (128 frames) of headroom on top of the trim
+// window itself.
+uint32_t samplesToDropAtStart = 0;
+constexpr size_t PENDING_TAIL_CAP = MIC_TRIM_SAMPLES + 128;
+int16_t pendingTail[PENDING_TAIL_CAP];
+size_t pendingTailCount = 0;
+
 // Logs `msg` to Serial (as every failure path here already did) and also
 // stashes it for mic_last_error() - ui_epaper.cpp shows that on screen,
 // since normal use has no serial monitor attached to see the Serial line.
@@ -490,6 +515,9 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
 
     micErrorMessage[0] = '\0'; // clear any previous failure now that this one succeeded
 
+    samplesToDropAtStart = MIC_TRIM_SAMPLES; // see MIC_TRIM_MS's comment above
+    pendingTailCount = 0;
+
     strncpy(recordFilename, name, sizeof(recordFilename) - 1);
     recordFilename[sizeof(recordFilename) - 1] = '\0';
     if (filenameOut) {
@@ -503,6 +531,12 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
 
 void mic_stop_recording() {
     if (!recording) return;
+
+    // Whatever's still buffered in pendingTail (up to MIC_TRIM_SAMPLES, the
+    // trailing MIC_TRIM_MS of audio) is deliberately dropped here, not
+    // flushed - that's the end-of-recording click trim. See MIC_TRIM_MS's
+    // comment above.
+    pendingTailCount = 0;
 
     patch_wav_header(recordFile, recordedDataBytes);
     size_t finalSize = recordFile.size(); // logged below, before close() invalidates it
@@ -543,11 +577,35 @@ void mic_process() {
     // the shared TX/RX slot config) but the mic itself is single-ended
     // into one input - left slot only, same channel the reference
     // driver's own "ADCL" reference signal comment names. Pull those out
-    // into a mono buffer and write it straight to the WAV file.
+    // into a mono buffer.
     int16_t monoBuf[128];
     for (size_t i = 0; i < framesRead; i++) monoBuf[i] = stereoBuf[i * 2];
-    recordFile.write((const uint8_t *)monoBuf, framesRead * sizeof(int16_t));
-    recordedDataBytes += (uint32_t)(framesRead * sizeof(int16_t));
+
+    // Head trim: samples still owed to samplesToDropAtStart are discarded
+    // outright, never reaching pendingTail or the file. See MIC_TRIM_MS's
+    // comment above.
+    size_t offset = 0;
+    if (samplesToDropAtStart > 0) {
+        size_t drop = (framesRead < samplesToDropAtStart) ? framesRead : (size_t)samplesToDropAtStart;
+        samplesToDropAtStart -= (uint32_t)drop;
+        offset = drop;
+    }
+    size_t count = framesRead - offset;
+    if (count == 0) return;
+
+    // Tail trim delay line: buffer the newest MIC_TRIM_SAMPLES samples and
+    // only write out whatever falls off the back beyond that window - if
+    // mic_stop_recording() is called before a given sample falls off, it
+    // never gets written at all. See MIC_TRIM_MS's comment above.
+    memcpy(pendingTail + pendingTailCount, monoBuf + offset, count * sizeof(int16_t));
+    pendingTailCount += count;
+    if (pendingTailCount > MIC_TRIM_SAMPLES) {
+        size_t flushCount = pendingTailCount - MIC_TRIM_SAMPLES;
+        recordFile.write((const uint8_t *)pendingTail, flushCount * sizeof(int16_t));
+        recordedDataBytes += (uint32_t)(flushCount * sizeof(int16_t));
+        memmove(pendingTail, pendingTail + flushCount, (pendingTailCount - flushCount) * sizeof(int16_t));
+        pendingTailCount -= flushCount;
+    }
 }
 
 bool mic_is_recording() {
