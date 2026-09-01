@@ -3,55 +3,16 @@
 #include <cstddef>
 
 // -----------------------------------------------------------------------
-// Owns esp32-s3-epaper154's onboard audio hardware end to end: an ES8311
-// I2C codec (es8311.h/.cpp) on a shared I2S bus, feeding an NS4150B amp for
-// playback and reading the codec's own mic ADC for recording - see
-// speaker.cpp's top comment for the full pin/hardware rundown (from the
-// board's own schematic) and why the codec/amp/mic pins live where they
-// do. Playback (speaker_*) and recording (mic_*) live in one file/module
-// rather than two because they're the same physical peripherals (one I2C
-// bus, one I2S controller, one PA_EN power rail) taking turns, never both
-// at once - mic_start_recording() always stops playback first, the same
-// way storage.cpp keeps one file for both boards where only a couple of
-// functions actually differ.
-//
-// esp32-cyd has no such hardware, and speaker.cpp itself is excluded from
-// that env's build (see platformio.ini's board-split comment - it #includes
-// ESP8266Audio/I2S headers that aren't in esp32-cyd's lib_deps, which would
-// trip the same LDF gotcha display.cpp/display_epaper.cpp's split avoids).
-// So BOARD_CYD gets inline no-op stubs right here instead, keeping the
-// callers (ui_epaper.cpp) free of a board #ifdef of their own.
+// Owns the board's onboard audio hardware end to end: an ES8311 I2C codec
+// (es8311.h/.cpp) on a shared I2S bus, feeding an NS4150B amp for playback
+// and reading the codec's own mic ADC for recording - see speaker.cpp's
+// top comment for the full pin/hardware rundown (from the board's own
+// schematic) and why the codec/amp/mic pins live where they do. Playback
+// (speaker_*) and recording (mic_*) live in one file/module rather than
+// two because they're the same physical peripherals (one I2C bus, one I2S
+// controller, one PA_EN power rail) taking turns, never both at once -
+// mic_start_recording() always stops playback first.
 // -----------------------------------------------------------------------
-
-#if defined(BOARD_CYD)
-
-inline bool speaker_begin() {
-    return false;
-}
-inline void speaker_play(const char *filename) {
-    (void)filename;
-}
-inline void speaker_stop() {}
-inline void speaker_process() {}
-inline bool speaker_is_playing() {
-    return false;
-}
-
-inline bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
-    (void)filenameOut;
-    (void)filenameOutLen;
-    return false;
-}
-inline void mic_stop_recording() {}
-inline void mic_process() {}
-inline bool mic_is_recording() {
-    return false;
-}
-inline const char *mic_last_error() {
-    return "no mic hardware on this board";
-}
-
-#else
 
 // Lazily powers up the codec/amp and brings up I2C + I2S - called once,
 // internally, by the first speaker_play() or mic_start_recording(). Returns
@@ -104,5 +65,3 @@ bool mic_is_recording();
 // screen on failure, since there's no serial monitor attached in normal
 // use to see the Serial.println() speaker.cpp also logs it to.
 const char *mic_last_error();
-
-#endif

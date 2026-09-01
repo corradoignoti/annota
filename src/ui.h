@@ -5,7 +5,8 @@
 // Builds the main screen: with sd_present, a title plus a scrollable list
 // of rounded cards, one per entry in mp3Files/mp3FileCount (see
 // storage.h); without it, a message inviting the user to insert an SD
-// card. Call once, after display_init() and load_mp3_catalog().
+// card. Call once, after display_init_panel()/display_init_input() and
+// load_mp3_catalog().
 void build_main_screen(bool sd_present);
 
 // Updates the WiFi status line at the top of the main screen and forces
@@ -29,22 +30,21 @@ void ui_hide_wifi_setup_dialog();
 // Shows a modal dialog warning that WiFi connection attempts gave up
 // after timing out, with a Close button wired to close_cb (fires on
 // LV_EVENT_CLICKED) - dismissing it is all this dialog does; reconnecting
-// is a separate, explicit action via the Settings "Reconnect WiFi"
-// button (see wifi_request_reconnect()). Forces one LVGL repaint. Same
-// single-dialog slot as ui_show_wifi_setup_dialog() - showing one while
-// the other is up is not supported; hide with ui_hide_wifi_setup_dialog().
+// is a separate, explicit action via the web UI's "Reconnect WiFi" button
+// (see wifi_request_reconnect()) - there's no on-screen Settings on this
+// board. Forces one LVGL repaint. Same single-dialog slot as
+// ui_show_wifi_setup_dialog() - showing one while the other is up is not
+// supported; hide with ui_hide_wifi_setup_dialog().
 void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb);
 
-// Re-checks live WiFi status and reflects it: disables the Settings
-// view's "Reconnect WiFi" button while already connected, and replaces
-// a stale top-of-screen status line with an explicit offline notice if
-// the connection has actually dropped (the device just keeps working
-// offline either way - this is purely informational). No-op before
-// build_main_screen(), or if it was built without an SD card present
-// (no Settings view/button exists in that case, though the status line
-// still refreshes). Called by wifi_manager.cpp after every connect/retry
-// attempt, in case Settings is already open when one finishes, and by
-// the Settings view itself every time it's opened.
+// Re-checks live WiFi status and replaces a stale top-of-screen status
+// line with an explicit offline notice if the connection has actually
+// dropped (the device just keeps working offline either way - this is
+// purely informational). No-op before build_main_screen(). Called by
+// wifi_manager.cpp after every connect/retry attempt. A no-op stub on
+// this board - there's no on-screen "Reconnect WiFi" button to disable
+// while connected (that lives only on the web UI's /settings page); kept
+// so wifi_manager.cpp doesn't need a special case.
 void ui_refresh_wifi_retry_button();
 
 // Shows a modal "Transcribing <filename>..." status, floated above
@@ -60,13 +60,10 @@ void ui_show_transcribe_progress(const char *filename);
 // ui_show_transcribe_progress().
 void ui_show_transcribe_result(bool ok, const char *message);
 
-// esp32-s3-epaper154 only: polls the two onboard buttons and drives that
-// board's list/action-menu state machine (see ui_epaper.cpp) - selecting a
-// file's Transcribe action calls transcribe.h's transcribe_request() (safe
-// here since, unlike ui.cpp's touch click handlers, this runs at loop()'s
-// top level, not nested inside lv_timer_handler()); selecting Delete calls
-// storage.h's delete_file() directly, same reasoning. Call once per loop()
-// iteration, after lv_timer_handler(). No-op stub on esp32-cyd, where
-// input flows through LVGL's touch indev instead - so callers don't need
-// their own board #ifdef.
+// Polls the two onboard buttons and drives the list/action-menu state
+// machine (see ui_epaper.cpp) - selecting a file's Transcribe action calls
+// transcribe.h's transcribe_request() (safe here since this runs at
+// loop()'s top level, not nested inside lv_timer_handler()); selecting
+// Delete calls storage.h's delete_file() directly, same reasoning. Call
+// once per loop() iteration, after lv_timer_handler().
 void ui_process_input();

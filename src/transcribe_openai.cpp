@@ -186,6 +186,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     http.addHeader("Content-Type", String("multipart/form-data; boundary=") + BOUNDARY);
 
     MultipartStream body(preamble, src, trailer);
+    Serial.printf("ai_transcribe_file: connecting, free heap %u bytes\n", (unsigned)ESP.getFreeHeap());
     int code = http.sendRequest("POST", &body, contentLength);
     String response = http.getString();
     http.end();
@@ -196,6 +197,21 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
             message = doc["error"]["message"].as<const char *>();
+        } else if (code < 0) {
+            // Negative codes are HTTPClient's own connection-layer errors
+            // (never reached the server, so no JSON body to parse to blame
+            // instead) - the request never got past client.connect()
+            // inside sendRequest(). errorToString() names which stage
+            // failed (DNS, socket connect, read timeout, ...); when it's
+            // the TLS handshake itself, mbedtls_strerror() (via
+            // client.lastError()) gives the actual mbedTLS reason - often
+            // a heap allocation failure if the free heap logged just above
+            // is only tens of KB (this board has PSRAM, but mbedTLS's own
+            // buffers still have to compete with whatever else hasn't been
+            // pushed off internal RAM).
+            char tlsErr[100];
+            client.lastError(tlsErr, sizeof(tlsErr));
+            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + "; TLS: " + tlsErr + ")";
         } else {
             message = "HTTP " + String(code);
         }

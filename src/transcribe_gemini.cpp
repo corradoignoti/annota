@@ -226,6 +226,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     }
     http.addHeader("Content-Type", "application/json");
 
+    Serial.printf("ai_transcribe_file: connecting, free heap %u bytes\n", (unsigned)ESP.getFreeHeap());
     int code = http.sendRequest("POST", &body, contentLength);
     String response = http.getString();
     http.end();
@@ -236,6 +237,14 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
             message = doc["error"]["message"].as<const char *>();
+        } else if (code < 0) {
+            // Negative codes are HTTPClient's own connection-layer errors -
+            // see transcribe_openai.cpp's identical branch for what each
+            // piece means and why a heap-starved TLS handshake is a
+            // plausible culprit.
+            char tlsErr[100];
+            client.lastError(tlsErr, sizeof(tlsErr));
+            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + "; TLS: " + tlsErr + ")";
         } else {
             message = "HTTP " + String(code);
         }

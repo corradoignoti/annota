@@ -39,24 +39,21 @@ bool load_mp3_catalog();
 // the UI's audio/text list toggle. Returns false if no SD card is present.
 bool load_file_catalog(const char *ext);
 
-// Claims the shared SPI peripheral and mounts the SD card for a one-off
-// operation outside the boot-time catalog scan (web_server.cpp's file
-// manager). Touch owns that peripheral after display_init_input(), so call
-// display_suspend_touch() first - and display_resume_touch() after sd_end()
-// - or touch and SD will stomp on each other's SPI transactions. Returns
-// false if the card can't be opened.
+// Mounts the SD card for a one-off operation outside the boot-time
+// catalog scan (web_server.cpp's file manager). Callers bracket this with
+// display_suspend_touch()/display_resume_touch() (no-ops on this board -
+// see display.h) for symmetry with any future board that does share the
+// card's peripheral with something else. Returns false if the card can't
+// be opened.
 bool sd_begin();
 
-// Unmounts the card and releases the SPI peripheral claimed by sd_begin().
+// Unmounts the card mounted by sd_begin().
 void sd_end();
 
-// The mounted filesystem object itself (SD on esp32-cyd, SD_MMC on
-// esp32-s3-epaper154 - see storage.cpp's top comment). Callers that need
-// direct fs::FS calls (web_server.cpp's file manager: list/open/remove)
-// must go through this instead of naming `SD`/`SD_MMC` themselves - doing
-// so would silently operate on the wrong (unmounted) backend on whichever
-// board doesn't use that library. Only valid between sd_begin() and
-// sd_end().
+// The mounted filesystem object itself (SD_MMC - see storage.cpp's top
+// comment). Callers that need direct fs::FS calls (web_server.cpp's file
+// manager: list/open/remove) must go through this instead of naming
+// `SD_MMC` directly. Only valid between sd_begin() and sd_end().
 fs::FS &sd_fs();
 
 struct SdInfo {
@@ -76,9 +73,10 @@ bool get_sd_info(SdInfo &out);
 // Claims the SD card via sd_begin() just long enough to read a root-level
 // file's contents into `out` (NUL-terminated, truncated to outLen - 1 bytes
 // if longer), then releases it via sd_end(). Returns false if the card or
-// the file can't be opened. Caller (ui.cpp) is responsible for the same
-// display_suspend_touch()/display_resume_touch() dance as every other
-// after-boot SD access - see the SPI note in CLAUDE.md.
+// the file can't be opened. Caller is responsible for the same
+// display_suspend_touch()/display_resume_touch() calls as every other
+// after-boot SD access (no-ops on this board, kept for symmetry with
+// web_server.cpp's SD handlers).
 bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 
 // Claims the SD card via sd_begin(), deletes a root-level file, then

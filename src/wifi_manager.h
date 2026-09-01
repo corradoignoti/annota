@@ -18,7 +18,7 @@
 //    Only if that portal itself is exited without connecting does this
 //    give up, show a warning dialog with a Close button, and let the
 //    device run offline - reconnecting again is then a separate, explicit
-//    action via the Settings "Reconnect WiFi" button (see
+//    action via the web UI's "Reconnect WiFi" button (see
 //    wifi_request_reconnect()).
 // Also registers a WiFi.onEvent() handler (once) that (re)starts the
 // SNTP client on every got-IP event, including ones try_connect() never
@@ -42,24 +42,20 @@ bool wifi_connect();
 // client (started elsewhere, asynchronously) has actually finished by
 // now, so a sync that completes in the background after whatever
 // triggered it gave up waiting still gets picked up next time anything
-// asks - e.g. the Settings clock label's once-a-second tick.
+// asks - e.g. the web UI's clock status field, polled from /api/settings.
 bool wifi_clock_synced();
 
 // Asks for the same connect attempt wifi_connect() makes to run again -
-// wired to the Settings "Reconnect WiFi" button's LV_EVENT_CLICKED
-// handler (ui.cpp), so this only flags the request; it does not block or
-// touch LVGL itself (that handler runs nested inside the very
-// lv_timer_handler() call dispatching the click, which refuses to run
-// itself again while it's running - see lv_timer.c - so any repaint the
-// actual retry does there would silently no-op). Call
-// wifi_process_pending_reconnect() to actually run it. Since this is
-// only reachable once the device has booted past wifi_connect(), a
-// network is always already saved at this point, so the run always
-// takes the reconnect path, never the setup portal - unlike the boot-time
-// connect, a manual click here never wipes saved credentials on failure;
-// it just fails the same way it always did (see wifi_connect()'s comment)
-// so the user isn't dropped into AP setup mode by a button that looks
-// like a simple retry.
+// wired to the web UI's "Reconnect WiFi" button (web_server.cpp's
+// handle_settings_reconnect()), so this only flags the request; it does
+// not block. Call wifi_process_pending_reconnect() to actually run it.
+// Since this is only reachable once the device has booted past
+// wifi_connect(), a network is always already saved at this point, so the
+// run always takes the reconnect path, never the setup portal - unlike
+// the boot-time connect, a manual click here never wipes saved
+// credentials on failure; it just fails the same way it always did (see
+// wifi_connect()'s comment) so the user isn't dropped into AP setup mode
+// by a button that looks like a simple retry.
 void wifi_request_reconnect();
 
 // Runs the reconnect attempt requested by wifi_request_reconnect(), if
@@ -74,6 +70,6 @@ void wifi_process_pending_reconnect();
 // immediately reboots (ESP.restart()) so the next boot has nothing saved
 // and falls straight into wifi_connect()'s first-time setup portal - same
 // recovery path as a factory-fresh board. Never returns. Irreversible -
-// callers (ui.cpp's Settings "Delete WiFi Setup" button) must confirm with
+// callers (web_server.cpp's "Delete WiFi Setup" button) must confirm with
 // the user first; this function itself does no confirmation.
 void wifi_forget_and_reboot();

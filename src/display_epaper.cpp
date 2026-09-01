@@ -1,10 +1,5 @@
 #include "display.h"
 
-// Compiled only for the esp32-s3-epaper154 env (see platformio.ini's
-// build_src_filter - display.cpp, the esp32-cyd implementation of this
-// same interface, is excluded there and vice versa).
-#ifdef BOARD_ESP32S3_EPAPER154
-
 #include <Arduino.h>
 #include <SPI.h>
 #include <lvgl.h>
@@ -17,9 +12,9 @@
 // Waveshare's own example repo (waveshareteam/ESP32-S3-ePaper-1.54,
 // 02_Example/Arduino/10_LVGL_V9_Test/src/display/epaper_driver_bsp.cpp) -
 // ported from raw ESP-IDF spi_master calls to Arduino's SPIClass to match
-// the rest of this codebase's style (display.cpp/storage.cpp both use
-// SPIClass directly rather than pulling in a panel-specific SPI wrapper
-// lib). The full/partial LUT tables are copied verbatim; hand-rolling
+// the rest of this codebase's style (uses SPIClass directly rather than
+// pulling in a panel-specific SPI wrapper lib). The full/partial LUT
+// tables are copied verbatim; hand-rolling
 // e-paper waveform LUTs from scratch isn't something to improvise.
 // -----------------------------------------------------------------------
 
@@ -289,8 +284,8 @@ static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
         for (int x = area->x1; x <= area->x2; x++) {
             // RGB565: anything past the midpoint reads as white, else black
             // - this UI is built for a light background with dark text
-            // (see ui_epaper.cpp), not a straight port of ui.cpp's dark
-            // theme, which would threshold to mostly-black on this panel.
+            // (see ui_epaper.cpp); a dark theme would threshold to
+            // mostly-black on this panel.
             epd_set_pixel(x, y, *px >= 0x7FFF);
             px++;
         }
@@ -342,7 +337,6 @@ void display_init_input() {
 
 void display_suspend_touch() {} // no shared SPI peripheral to hand off - see display.h
 void display_resume_touch() {}
-void display_set_backlight(bool) {} // no backlight to blank - see display.h
 
 // -----------------------------------------------------------------------
 // Button polling - see display.h's DisplayButton/display_button_poll().
@@ -357,7 +351,6 @@ struct ButtonState {
     bool longFired = false;
 };
 static ButtonState buttonStates[2] = {{BOOT_BUTTON_PIN}, {PWR_BUTTON_PIN}};
-static uint32_t lastButtonActivityMs = 0;
 
 DisplayButtonEvent display_button_poll(DisplayButton b) {
     ButtonState &s = buttonStates[(int)b];
@@ -370,7 +363,6 @@ DisplayButtonEvent display_button_poll(DisplayButton b) {
             s.longFired = false;
         } else if (!s.longFired && (now - s.pressedSinceMs) >= BUTTON_LONG_PRESS_MS) {
             s.longFired = true;
-            lastButtonActivityMs = now;
             return DisplayButtonEvent::kLong;
         }
         return DisplayButtonEvent::kNone;
@@ -382,15 +374,8 @@ DisplayButtonEvent display_button_poll(DisplayButton b) {
         s.pressedSinceMs = 0;
         s.longFired = false;
         if (!wasLong && heldMs >= BUTTON_DEBOUNCE_MS) {
-            lastButtonActivityMs = now;
             return DisplayButtonEvent::kShort;
         }
     }
     return DisplayButtonEvent::kNone;
 }
-
-uint32_t display_idle_ms() {
-    return millis() - lastButtonActivityMs;
-}
-
-#endif // BOARD_ESP32S3_EPAPER154

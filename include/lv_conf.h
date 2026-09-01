@@ -907,17 +907,11 @@
 /*Driver for /dev/dri/card*/
 #define LV_USE_LINUX_DRM        0
 
-/*Interface for TFT_eSPI - esp32-cyd only. This lv_conf.h is shared by both
- *boards (see platformio.ini), and TFT_eSPI is only in esp32-cyd's
- *lib_deps - left at 1 unconditionally, the esp32-s3-epaper154 build fails
- *deep inside lvgl's own driver sources (lv_tft_espi.cpp) with a missing
- *TFT_eSPI.h, since that file's LV_USE_TFT_ESPI guard is checked at
- *compile time, by which point this macro is already resolved either way.*/
-#ifdef BOARD_ESP32S3_EPAPER154
+/*Interface for TFT_eSPI - not used; this board's panel is driven directly
+ *by display_epaper.cpp. Left at 0: TFT_eSPI isn't in this project's
+ *lib_deps, and lvgl's own driver sources (lv_tft_espi.cpp) fail to find
+ *TFT_eSPI.h if this is left at 1.*/
 #define LV_USE_TFT_ESPI         0
-#else
-#define LV_USE_TFT_ESPI         1
-#endif
 
 /*Driver for evdev input devices*/
 #define LV_USE_EVDEV    0

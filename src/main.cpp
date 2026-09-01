@@ -1,7 +1,6 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
-#include "antiburn.h"
 #include "display.h"
 #include "storage.h"
 #include "transcribe.h"
@@ -15,9 +14,6 @@ void setup() {
 
     display_init_panel();
 
-    // Must run before display_init_input(): SD and touch share the one
-    // spare SPI peripheral the display isn't already using full-time (see
-    // storage.cpp).
     bool sd_present = load_mp3_catalog();
 
     display_init_input();
@@ -35,11 +31,10 @@ void setup() {
 
 void loop() {
     lv_timer_handler();
-    // esp32-s3-epaper154's button-driven nav (no-op on esp32-cyd, where
-    // touch flows through LVGL's indev above instead) - see ui.h's
-    // comment. Placed before the pumps below since a button press here
-    // can queue work (transcribe_request()) those pumps pick up in this
-    // same loop() iteration.
+    // Button-driven nav - see ui.h's comment. Placed before the pumps
+    // below since a button press here can queue work
+    // (transcribe_request()) those pumps pick up in this same loop()
+    // iteration.
     ui_process_input();
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
@@ -48,6 +43,5 @@ void loop() {
     // comment.
     transcribe_process_pending();
     web_server_handle();
-    antiburn_process();
     delay(5);
 }

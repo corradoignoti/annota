@@ -1,11 +1,5 @@
 #include "speaker.h"
 
-// See speaker.h's top comment for why this whole file only exists in the
-// esp32-s3-epaper154 build - it's excluded from esp32-cyd's build_src_filter
-// entirely (platformio.ini), and this #ifdef is defense-in-depth on top of
-// that, same reasoning as display_epaper.cpp/ui_epaper.cpp's own.
-#ifdef BOARD_ESP32S3_EPAPER154
-
 #include <Arduino.h>
 #include <AudioFileSourceFS.h>
 #include <AudioGeneratorMP3.h>
@@ -66,9 +60,9 @@ constexpr int DEFAULT_VOLUME = 85;
 
 // Recording is voice-memo/transcription-oriented (not music), so mono at a
 // speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
-// (write_wav_header()/patch_wav_header() below) - no encoder, no working
-// set to size for this no-PSRAM board's tight RAM budget, at the cost of
-// a bigger file than a compressed format would give (fine for a short
+// (write_wav_header()/patch_wav_header() below) - no encoder, no encoder
+// working set to allocate, at the cost of a bigger file than a
+// compressed format would give (fine for a short
 // voice memo headed straight to transcribe.cpp's AI provider). 16kHz is
 // one of es8311.h's fixed 256x-MCLK family members, so no codec
 // clock-plan changes are needed switching between this and playback's
@@ -557,5 +551,3 @@ bool mic_is_recording() {
 const char *mic_last_error() {
     return micErrorMessage;
 }
-
-#endif // BOARD_ESP32S3_EPAPER154

@@ -16,8 +16,8 @@ static bool clockSynced = false;
 
 // Budget for reconnecting to the network already saved in NVS before
 // giving up and asking the user to hit Retry (in the timeout dialog or
-// Settings) instead of retrying forever. Doesn't apply to first-time
-// setup - see run_setup_portal().
+// the web UI's Settings page) instead of retrying forever. Doesn't apply
+// to first-time setup - see run_setup_portal().
 static const unsigned long WIFI_RECONNECT_TIMEOUT_SECONDS = 30;
 
 // UTC, no daylight offset - storage.cpp only needs a sane wall clock for
@@ -61,7 +61,8 @@ static void on_wifi_got_ip(WiFiEvent_t event, WiFiEventInfo_t info) {
 // false, cheaply rechecks (getLocalTime() with a 0ms wait returns
 // immediately either way - see esp32-hal-time.c) so a background SNTP
 // completion we didn't wait around for gets picked up the next time
-// anything asks, e.g. the Settings clock label's once-a-second tick.
+// anything asks, e.g. the web UI's clock status field, polled from
+// /api/settings.
 bool wifi_clock_synced() {
     if (!clockSynced) {
         struct tm timeInfo;
@@ -128,13 +129,13 @@ static bool reconnect_saved_network() {
 
 // allowPortalFallback gates the stale-creds recovery below: true from
 // wifi_connect() at boot, false from wifi_process_pending_reconnect() (the
-// Settings "Reconnect WiFi" button). A manual reconnect click is the user
+// web UI's "Reconnect WiFi" button). A manual reconnect click is the user
 // explicitly asking to retry the *same* saved network right now - usually
 // because they just fixed the router - so it must stay a quick retry that
 // either succeeds or shows the familiar Close-able timeout dialog, not
 // something that can silently wipe their saved credentials and dump them
-// into AP setup mode out from under a Settings button they didn't expect
-// to reconfigure anything.
+// into AP setup mode out from under a button they didn't expect to
+// reconfigure anything.
 static bool try_connect(bool allowPortalFallback) {
     WiFiManager wm;
     // getWiFiIsSaved() reads ESP-IDF's own station config out of NVS, not
@@ -179,9 +180,9 @@ static bool try_connect(bool allowPortalFallback) {
 }
 
 // The timeout dialog only dismisses itself on Close - reconnecting is a
-// separate, explicit action via the Settings "Reconnect WiFi" button
-// (ui.cpp, calls wifi_request_reconnect() directly), not something
-// giving up on the dialog re-triggers. ui_hide_wifi_setup_dialog() is
+// separate, explicit action via the web UI's "Reconnect WiFi" button
+// (web_server.cpp, calls wifi_request_reconnect() directly), not
+// something giving up on the dialog re-triggers. ui_hide_wifi_setup_dialog() is
 // safe to call straight from here even though it's this button's own
 // click event still being dispatched - it defers the actual delete (see
 // its _async comment).

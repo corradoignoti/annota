@@ -3,10 +3,10 @@
 #include <cstddef>
 
 // -----------------------------------------------------------------------
-// AI transcription: saves/reads a provider API key (Settings view, both
-// on-screen and web) and uploads an SD-root .mp3 to that provider for
-// transcription, writing the result to a sibling .txt file - triggered
-// by long-pressing a file card in ui.cpp.
+// AI transcription: saves/reads a provider API key (web_server.cpp's
+// /settings page) and uploads an SD-root audio file to that provider for
+// transcription, writing the result to a sibling .txt file - triggered by
+// selecting a file's Transcribe action in ui_epaper.cpp.
 //
 // Which provider is compiled in is a build-time choice, not a runtime
 // one: platformio.ini's build_flags define exactly one `AI_PROVIDER_*`
@@ -15,9 +15,9 @@
 // the others compile to nothing) implements ai_provider_name() and the
 // functions below. transcribe.cpp itself is provider-agnostic - see its
 // top for the compile-time check that exactly one provider is selected -
-// and everything else in this codebase (ui.cpp, web_server.cpp) only
-// ever calls the generic names here, never anything OpenAI-specific, so
-// adding a new provider file plus a new build flag is the only change
+// and everything else in this codebase (ui_epaper.cpp, web_server.cpp)
+// only ever calls the generic names here, never anything OpenAI-specific,
+// so adding a new provider file plus a new build flag is the only change
 // needed to switch.
 // -----------------------------------------------------------------------
 
@@ -25,7 +25,7 @@
 constexpr size_t AI_API_KEY_MAX = 200;
 
 // Short display name of the compiled-in provider (e.g. "OpenAI"), used
-// to label the API key field in both Settings UIs without either of them
+// to label the API key field on the web UI's /settings page without it
 // needing to know which provider is actually active.
 const char *ai_provider_name();
 
@@ -35,20 +35,17 @@ bool ai_provider_has_api_key();
 // Copies the saved API key into out (empty string if none saved yet).
 void ai_provider_get_api_key(char *out, size_t outLen);
 
-// Saves the provider API key to NVS. An empty string clears it. Called
-// by both Settings views' Save button (ui.cpp on-screen, web_server.cpp
-// /api/settings/ai-key).
+// Saves the provider API key to NVS. An empty string clears it. Called by
+// web_server.cpp's /api/settings/ai-key handler.
 void ai_provider_set_api_key(const char *key);
 
 // Requests that transcribe_process_pending() transcribe `filename` (an
-// .mp3 on the SD root) the next time it's called from loop() - mirrors
-// wifi_manager.h's wifi_request_reconnect()/wifi_process_pending_reconnect()
-// pair: the actual work blocks and repaints the screen, which can't
-// happen safely from inside the LVGL click handler (ui.cpp's long-press
-// confirm dialog) that calls this, since that handler runs nested inside
-// the very lv_timer_handler() call dispatching it, which refuses to run
-// itself again while it's running. filename is copied, so the caller's
-// buffer can be reused or go out of scope immediately after this returns.
+// audio file on the SD root) the next time it's called from loop() -
+// mirrors wifi_manager.h's wifi_request_reconnect()/
+// wifi_process_pending_reconnect() pair, keeping the actual (blocking,
+// screen-repainting) work out of the button handler that calls this.
+// filename is copied, so the caller's buffer can be reused or go out of
+// scope immediately after this returns.
 void transcribe_request(const char *filename);
 
 // Runs the transcription requested by transcribe_request(), if any - a

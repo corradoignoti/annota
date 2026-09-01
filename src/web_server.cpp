@@ -38,8 +38,9 @@ static bool sanitize_name(const String &raw, char *out, size_t outLen) {
     return true;
 }
 
-// Claims the shared SPI peripheral for one request: pause touch, then mount
-// the card. Pair every successful call with sd_release().
+// Brackets one request's SD access with display_suspend_touch()/sd_begin()
+// (no-ops/real mount respectively on this board - see display.h). Pair
+// every successful call with sd_release().
 static bool sd_claim() {
     display_suspend_touch();
     if (!sd_begin()) {
@@ -62,8 +63,8 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annota - SD files</title>
 <style>
-  /* Palette lifted straight from the device's own screen (ui.cpp): bg
-     0x14161C, card bg 0x2A2E3A, radius 12px, secondary text 0x9AA0AC. */
+  /* Palette lifted straight from the device's own screen (ui_epaper.cpp):
+     bg 0x14161C, card bg 0x2A2E3A, radius 12px, secondary text 0x9AA0AC. */
   :root {
     color-scheme: dark;
     --bg: #14161c;
@@ -402,9 +403,10 @@ refresh();
 </html>
 )rawliteral";
 
-// Mirrors ui.cpp's on-screen Settings view: WiFi/clock status, SD card
-// info, Reconnect WiFi, and the Delete WiFi Setup danger button - same
-// palette and card look as INDEX_HTML above.
+// The device's only Settings UI (there's no on-screen equivalent on this
+// board): WiFi/clock status, SD card info, Reconnect WiFi, and the Delete
+// WiFi Setup danger button - same palette and card look as INDEX_HTML
+// above.
 static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 <!doctype html>
 <html>
@@ -677,12 +679,12 @@ static void handle_settings_page() {
 }
 
 // GET /api/settings - snapshot for the settings page: live WiFi status
-// (not cached - same WiFi.status() check ui.cpp's refresh_wifi_connection_ui()
-// does), NTP sync state, and SD capacity/usage. SD access shares the
-// display's SPI peripheral with touch, so it needs the same
-// suspend/query/resume dance as everywhere else in this file - unlike
+// (not cached - a plain WiFi.status() check), NTP sync state, and SD
+// capacity/usage. SD access goes through the same
+// display_suspend_touch()/display_resume_touch() bracket as everywhere
+// else in this file (no-ops on this board, kept for symmetry) - unlike
 // sd_claim()/sd_release(), get_sd_info() already calls sd_begin()/sd_end()
-// itself, so only the touch suspend/resume wraps it here.
+// itself, so only that bracket wraps it here.
 static void handle_settings_info() {
     JsonDocument doc;
     bool connected = WiFi.status() == WL_CONNECTED;
@@ -691,10 +693,9 @@ static void handle_settings_info() {
     doc["clockSynced"] = wifi_clock_synced();
     // Never echoes the key itself back over the network - this server is
     // plain HTTP, so the page only learns whether one's saved and shows a
-    // placeholder; ui.cpp's on-screen field is the only place the actual
-    // value is ever displayed. aiProviderName lets the page label the
-    // field correctly without knowing which AI_PROVIDER_* is compiled in
-    // (transcribe.h).
+    // placeholder; the actual value is never displayed anywhere.
+    // aiProviderName lets the page label the field correctly without
+    // knowing which AI_PROVIDER_* is compiled in (transcribe.h).
     doc["aiProviderName"] = ai_provider_name();
     doc["aiKeyConfigured"] = ai_provider_has_api_key();
 
@@ -718,8 +719,8 @@ static void handle_settings_info() {
 }
 
 // POST /api/settings/reconnect - same request wifi_manager.h's
-// wifi_request_reconnect() documents for the on-screen Settings button:
-// only flags it, loop() actually runs it (wifi_process_pending_reconnect())
+// wifi_request_reconnect() documents: only flags it, loop() actually
+// runs it (wifi_process_pending_reconnect())
 // once this handler has returned and lv_timer_handler() has run again, so
 // this responds immediately rather than blocking the request for up to 30
 // seconds. web_server_handle() itself won't run again until that attempt
@@ -730,8 +731,8 @@ static void handle_settings_reconnect() {
     server.send(200, "text/plain", "Reconnecting");
 }
 
-// POST /api/settings/forget - web equivalent of the on-screen Settings
-// "Delete WiFi Setup" button; the confirmation happens client-side
+// POST /api/settings/forget - the "Delete WiFi Setup" button's handler;
+// the confirmation happens client-side
 // (confirm() in SETTINGS_HTML) since wifi_forget_and_reboot() itself does
 // none and never returns. The response must be sent *before* calling it -
 // once called, the device reboots and no code after it ever runs.
@@ -740,11 +741,10 @@ static void handle_settings_forget() {
     wifi_forget_and_reboot();
 }
 
-// POST /api/settings/ai-key - web equivalent of the on-screen Settings
-// API key field (ui.cpp's api_key_save_event_cb), for whichever
-// AI_PROVIDER_* is compiled in (transcribe.h). An empty `key` clears the
-// saved one, same as there. Doesn't touch the SD card or shared SPI
-// peripheral - ai_provider_set_api_key() is pure NVS (Preferences), so no
+// POST /api/settings/ai-key - saves the API key field from SETTINGS_HTML,
+// for whichever AI_PROVIDER_* is compiled in (transcribe.h). An empty
+// `key` clears the saved one. Doesn't touch the SD card -
+// ai_provider_set_api_key() is pure NVS (Preferences), so no
 // sd_claim()/sd_release() dance is needed here.
 static void handle_settings_set_ai_key() {
     if (!server.hasArg("key")) {

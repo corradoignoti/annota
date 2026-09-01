@@ -1,10 +1,5 @@
 #include "ui.h"
 
-// Compiled only for the esp32-s3-epaper154 env (see platformio.ini's
-// build_src_filter - ui.cpp, the esp32-cyd implementation of this same
-// interface, is excluded there and vice versa).
-#ifdef BOARD_ESP32S3_EPAPER154
-
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
@@ -15,21 +10,19 @@
 #include "transcribe.h"
 
 // -----------------------------------------------------------------------
-// esp32-s3-epaper154's on-device screen: WiFi status, a scrollable file
-// list, and per-file Transcribe/Delete - deliberately smaller in scope
-// than ui.cpp's touch UI (no on-device Settings, WiFi credential entry, or
-// text-file preview - all of those stay on the existing web UI, which
-// works unchanged on this board too; see web_server.cpp). The panel is
-// 200x200 mono with only 2 buttons and a slow (~1-2s) refresh, so this is
-// a small explicit state machine driven by display.h's
-// display_button_poll(), not a port of ui.cpp's touch-driven widget tree:
+// The on-device screen: WiFi status, a scrollable file list, and per-file
+// Transcribe/Delete - deliberately small in scope (no on-device Settings,
+// WiFi credential entry, or text-file preview - all of those stay on the
+// existing web UI; see web_server.cpp). The panel is 200x200 mono with
+// only 2 buttons and a slow (~1-2s) refresh, so this is a small explicit
+// state machine driven by display.h's display_button_poll(), not a
+// touch-driven widget tree:
 //   Next (BOOT)   - cycle the current selection/menu option
 //   Select (PWR)  - short press: open/confirm; long press: back out
 // Every screen is rebuilt from scratch on each state change
 // (lv_obj_clean() + repopulate) rather than kept as a tree of
-// show/hide-toggled widgets like ui.cpp's dialogs - simpler to keep
-// correct, and cheap next to the e-paper refresh itself dominating either
-// way.
+// show/hide-toggled widgets - simpler to keep correct, and cheap next to
+// the e-paper refresh itself dominating either way.
 // -----------------------------------------------------------------------
 
 enum class Screen {
@@ -58,9 +51,9 @@ static lv_obj_t *body = nullptr;
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
 
-// kList. showing_audio_files mirrors ui.cpp's toggle: true while
-// mp3Files/mp3FileCount hold AUDIO_EXTS, false while showing .txt -
-// toggled by a long Next press (see ui_process_input()'s kList case).
+// kList. showing_audio_files: true while mp3Files/mp3FileCount hold
+// AUDIO_EXTS, false while showing .txt - toggled by a long Next press
+// (see ui_process_input()'s kList case).
 static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
@@ -88,7 +81,7 @@ static void render_body();
 // kList shows a synthetic "+ Record new" row pinned above the real files
 // - but only while showing_audio_files (a recording is itself an audio
 // file; there's nothing to record onto the .txt transcript list), same
-// rule ui.cpp's own Transcribe entry follows. Kept as index 0 ahead of
+// rule the Transcribe entry below follows. Kept as index 0 ahead of
 // mp3Files rather than a separate widget/button so it reuses the same
 // Next/Select navigation and clamp_selection() as every real row.
 static bool has_record_option() {
@@ -194,8 +187,7 @@ static void render_body() {
 
         case Screen::kActionMenu: {
             // Play/Transcription only make sense for audio files, not the
-            // .txt transcripts this same list shows when toggled - see
-            // ui.cpp's identical Transcribe rule.
+            // .txt transcripts this same list shows when toggled.
             if (showing_audio_files) {
                 static const char *options[] = {"Play", "Transcribe", "Delete", "Cancel"};
                 render_option_menu(active_filename, options, 4);
@@ -521,5 +513,3 @@ void ui_process_input() {
             break;
     }
 }
-
-#endif // BOARD_ESP32S3_EPAPER154
