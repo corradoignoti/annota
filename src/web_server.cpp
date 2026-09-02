@@ -71,81 +71,95 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annota - SD files</title>
 <style>
-  /* Palette lifted straight from the device's own screen (ui_epaper.cpp):
-     bg 0x14161C, card bg 0x2A2E3A, radius 12px, secondary text 0x9AA0AC. */
+  /* Visual language borrowed straight from the device's own e-paper screen
+     (ui_epaper.cpp): a black status bar pinned across the top, bordered
+     rounded "cards" for every row, and inversion (black bg / paper text)
+     as the only hover/focus cue - in place of touch highlighting there,
+     mouse hover here. Paper tone instead of pure white, sharp 1.5px black
+     borders instead of shadows, no gradients or blur - mono first, color
+     used only where it earns its keep (destructive actions). */
   :root {
-    color-scheme: dark;
-    --bg: #14161c;
-    --surface: #2a2e3a;
-    --surface-2: #343947;
-    --on-surface: #ffffff;
-    --on-surface-secondary: #9aa0ac;
-    --accent: #3498db;
-    --danger: #e06a5a;
-    --divider: rgba(255, 255, 255, 0.08);
+    color-scheme: light;
+    --paper: #eeece6;
+    --surface: #fffffc;
+    --ink: #14140f;
+    --ink-soft: #5a594f;
+    --border: #14140f;
+    --danger: #a3271d;
+    --danger-bg: rgba(163, 39, 29, 0.08);
   }
   * { box-sizing: border-box; }
   body {
     font-family: "Roboto", -apple-system, system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--on-surface);
+    background: var(--paper);
+    color: var(--ink);
     max-width: 640px;
     margin: 0 auto;
     padding: 0 0 2rem;
   }
   .appbar {
-    padding: 1.1rem 1rem;
+    background: var(--ink);
+    color: var(--surface);
+    padding: 0.9rem 1rem;
     margin-bottom: 1rem;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
   .appbar h1 {
     margin: 0;
-    font-size: 1.15rem;
-    font-weight: 500;
-    letter-spacing: 0.01em;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
-  .appbar .sub { color: var(--on-surface-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
+  .appbar .sub { color: rgba(255, 255, 255, 0.6); font-size: 0.75rem; margin-top: 0.15rem; letter-spacing: 0.02em; }
   .appbar .row { display: flex; align-items: baseline; justify-content: space-between; }
   .appbar nav a {
-    color: var(--on-surface-secondary);
+    color: rgba(255, 255, 255, 0.6);
     text-decoration: none;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
     margin-left: 1rem;
+    padding-bottom: 2px;
+    border-bottom: 1px solid transparent;
   }
-  .appbar nav a.active { color: var(--accent); }
+  .appbar nav a.active { color: var(--surface); border-bottom-color: var(--surface); }
   .card {
     background: var(--surface);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
     margin: 0 1rem 1.2rem;
     overflow: hidden;
   }
   #files-card { overflow-x: auto; }
   #player { padding: 0.9rem 1rem; }
   #player #playerName { font-size: 0.85rem; margin-bottom: 0.5rem; word-break: break-all; }
+  #player #playerName::before { content: "\25B6  "; }
   #player audio { width: 100%; height: 32px; }
-  #player #playerClose { margin-top: 0.4rem; color: var(--danger); }
-  #player #playerClose:hover { background: rgba(224, 106, 90, 0.15); }
+  #player #playerClose { margin-top: 0.4rem; color: var(--danger); border-color: var(--danger); }
+  #player #playerClose:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   td.play { white-space: nowrap; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 0.7rem 0.8rem; }
+  th, td { text-align: left; padding: 0.65rem 0.8rem; vertical-align: middle; }
   thead th {
-    font-size: 0.72rem;
-    font-weight: 500;
+    font-size: 0.7rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--on-surface-secondary);
-    border-bottom: 1px solid var(--divider);
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+    border-bottom: 1.5px solid var(--border);
   }
-  tbody tr { border-bottom: 1px solid var(--divider); }
+  tbody tr { border-bottom: 1px solid rgba(20, 20, 15, 0.12); }
   tbody tr:last-child { border-bottom: none; }
-  tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+  tbody tr:hover { background: var(--ink); color: var(--surface); }
+  tbody tr:hover td.date { color: rgba(255, 255, 255, 0.65); }
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
-  th.sortable:hover { color: var(--on-surface); }
-  .arrow { color: var(--accent); }
+  th.sortable:hover { color: var(--ink); }
+  .arrow { color: var(--ink); }
   td.size, th.size { text-align: right; white-space: nowrap; }
-  td.date, th.date { white-space: nowrap; color: var(--on-surface-secondary); font-size: 0.85rem; }
-  td.actions { text-align: right; }
+  td.date, th.date { white-space: nowrap; color: var(--ink-soft); font-size: 0.85rem; }
+  td.actions { text-align: right; white-space: nowrap; }
+  td.name { white-space: nowrap; }
+  .file-icon { display: inline-block; width: 1.1em; text-align: center; opacity: 0.75; margin-right: 0.5rem; }
   table td:first-child, table th:first-child {
     max-width: 40vw;
     overflow: hidden;
@@ -160,29 +174,46 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     text-transform: uppercase;
     letter-spacing: 0.03em;
     cursor: pointer;
-    border: none;
+    border: 1.5px solid var(--border);
     background: transparent;
-    color: var(--accent);
+    color: var(--ink);
     padding: 0.4rem 0.6rem;
-    border-radius: 6px;
-    transition: background 0.15s ease;
+    border-radius: 4px;
+    transition: background 0.12s ease, color 0.12s ease;
   }
-  button:hover, .btn:hover { background: rgba(52, 152, 219, 0.15); }
-  button.danger { color: var(--danger); }
-  button.danger:hover { background: rgba(224, 106, 90, 0.15); }
+  button:hover, .btn:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.danger:hover { background: var(--danger); color: var(--surface); border-color: var(--danger); }
+
+  /* Table actions are icon-only (title attr carries the label) and a fixed
+     square, so up to four in a row never wrap on narrow viewports. */
+  td.actions button, td.actions .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    font-size: 0.85rem;
+    text-decoration: none;
+  }
+  td.actions button + button, td.actions button + a, td.actions a + button { margin-left: 0.3rem; }
+  tbody tr:hover td.actions button, tbody tr:hover td.actions .btn { border-color: var(--surface); color: var(--surface); }
+  tbody tr:hover td.actions button:hover, tbody tr:hover td.actions .btn:hover { background: var(--surface); color: var(--ink); }
+  tbody tr:hover button.danger, tbody tr:hover .btn.danger { color: var(--danger); border-color: var(--danger); }
 
   #drop {
     margin: 0 1rem 1.2rem;
     padding: 1.6rem 1rem;
-    border: 2px dashed rgba(255, 255, 255, 0.15);
-    border-radius: 12px;
+    border: 1.5px dashed rgba(20, 20, 15, 0.3);
+    border-radius: 6px;
     text-align: center;
-    color: var(--on-surface-secondary);
+    color: var(--ink-soft);
   }
-  #drop.over { border-color: var(--accent); background: rgba(52, 152, 219, 0.06); }
-  #drop .btn { background: var(--surface-2); color: var(--on-surface); display: inline-block; margin-top: 0.4rem; }
-  #drop .btn:hover { background: #3d4353; }
-  #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--on-surface-secondary); }
+  #drop.over { border-color: var(--ink); border-style: solid; background: rgba(20, 20, 15, 0.04); }
+  #drop .btn { background: var(--surface); color: var(--ink); display: inline-block; margin-top: 0.4rem; }
+  #drop .btn:hover { background: var(--ink); color: var(--surface); }
+  #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--ink-soft); }
   progress {
     width: 100%;
     margin-top: 0.7rem;
@@ -190,12 +221,12 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     height: 6px;
     border-radius: 3px;
     overflow: hidden;
-    border: none;
+    border: 1px solid var(--border);
   }
-  progress::-webkit-progress-bar { background: var(--surface-2); border-radius: 3px; }
-  progress::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
-  progress::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
-  #empty { color: var(--on-surface-secondary); text-align: center; padding: 1.2rem; margin: 0 1rem 1.2rem; }
+  progress::-webkit-progress-bar { background: var(--surface); }
+  progress::-webkit-progress-value { background: var(--ink); }
+  progress::-moz-progress-bar { background: var(--ink); }
+  #empty { color: var(--ink-soft); text-align: center; padding: 1.2rem; margin: 0 1rem 1.2rem; }
 </style>
 </head>
 <body>
@@ -210,7 +241,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <div id="player" class="card" hidden>
   <div id="playerName"></div>
   <audio id="playerAudio" controls></audio>
-  <button id="playerClose" class="btn">Stop</button>
+  <button id="playerClose" class="btn">✕ Stop</button>
 </div>
 
 <div class="card" id="files-card">
@@ -371,7 +402,12 @@ function render() {
     const tr = document.createElement("tr");
 
     const name = document.createElement("td");
-    name.textContent = f.name;
+    name.className = "name";
+    const icon = document.createElement("span");
+    icon.className = "file-icon";
+    icon.textContent = isAudio(f.name) ? "♪" : "☰"; // matches ui_epaper.cpp's LV_SYMBOL_AUDIO / LV_SYMBOL_FILE distinction
+    name.appendChild(icon);
+    name.appendChild(document.createTextNode(f.name));
     tr.appendChild(name);
 
     const date = document.createElement("td");
@@ -387,31 +423,33 @@ function render() {
     const actions = document.createElement("td");
     actions.className = "actions";
 
+    // Icon-only (see td.actions' CSS comment) - title carries the label
+    // for a11y/tooltip instead of visible text, so up to four fit one row.
     if (isAudio(f.name)) {
       const play = document.createElement("button");
-      play.textContent = "Play";
+      play.textContent = "▶";
+      play.title = "Play";
       play.onclick = () => playFile(f.name);
       actions.appendChild(play);
-      actions.appendChild(document.createTextNode(" "));
 
       const transcribe = document.createElement("button");
-      transcribe.textContent = "Transcribe";
+      transcribe.textContent = "✎";
+      transcribe.title = "Transcribe";
       transcribe.onclick = () => transcribeFile(f.name, transcribe);
       actions.appendChild(transcribe);
-      actions.appendChild(document.createTextNode(" "));
     }
 
     const dl = document.createElement("a");
     dl.className = "btn";
     dl.href = "/api/download?name=" + encodeURIComponent(f.name);
-    dl.textContent = "Download";
+    dl.textContent = "⬇";
+    dl.title = "Download";
     actions.appendChild(dl);
-
-    actions.appendChild(document.createTextNode(" "));
 
     const del = document.createElement("button");
     del.className = "danger";
-    del.textContent = "Delete";
+    del.textContent = "✕";
+    del.title = "Delete";
     del.onclick = () => removeFile(f.name);
     actions.appendChild(del);
 
@@ -449,7 +487,7 @@ document.querySelectorAll("th.sortable").forEach((th) => {
 // in it.
 async function transcribeFile(name, btn) {
   const status = document.getElementById("status");
-  const label = btn.textContent;
+  const icon = btn.textContent; // restored in finally - button stays icon-only, see td.actions' CSS comment
   btn.disabled = true;
   try {
     const keyRes = await fetch("/api/transcript-key");
@@ -459,7 +497,7 @@ async function transcribeFile(name, btn) {
       return;
     }
 
-    btn.textContent = "Transcribing...";
+    btn.textContent = "…";
     status.textContent = "Transcribing " + name + "...";
     const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
 
@@ -478,7 +516,7 @@ async function transcribeFile(name, btn) {
     status.textContent = "Transcribe failed: " + e.message;
   } finally {
     btn.disabled = false;
-    btn.textContent = label;
+    btn.textContent = icon;
   }
 }
 
@@ -547,76 +585,82 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Annota - Settings</title>
 <style>
+  /* Same paper/ink language as INDEX_HTML - see its <style> comment. */
   :root {
-    color-scheme: dark;
-    --bg: #14161c;
-    --surface: #2a2e3a;
-    --surface-2: #343947;
-    --on-surface: #ffffff;
-    --on-surface-secondary: #9aa0ac;
-    --accent: #3498db;
-    --danger: #e06a5a;
-    --divider: rgba(255, 255, 255, 0.08);
+    color-scheme: light;
+    --paper: #eeece6;
+    --surface: #fffffc;
+    --ink: #14140f;
+    --ink-soft: #5a594f;
+    --border: #14140f;
+    --danger: #a3271d;
   }
   * { box-sizing: border-box; }
   body {
     font-family: "Roboto", -apple-system, system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--on-surface);
+    background: var(--paper);
+    color: var(--ink);
     max-width: 640px;
     margin: 0 auto;
     padding: 0 0 2rem;
   }
   .appbar {
-    padding: 1.1rem 1rem;
+    background: var(--ink);
+    color: var(--surface);
+    padding: 0.9rem 1rem;
     margin-bottom: 1rem;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   }
-  .appbar h1 { margin: 0; font-size: 1.15rem; font-weight: 500; letter-spacing: 0.01em; }
-  .appbar .sub { color: var(--on-surface-secondary); font-size: 0.8rem; margin-top: 0.15rem; }
+  .appbar h1 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .appbar .sub { color: rgba(255, 255, 255, 0.6); font-size: 0.75rem; margin-top: 0.15rem; letter-spacing: 0.02em; }
   .appbar .row { display: flex; align-items: baseline; justify-content: space-between; }
   .appbar nav a {
-    color: var(--on-surface-secondary);
+    color: rgba(255, 255, 255, 0.6);
     text-decoration: none;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
     margin-left: 1rem;
+    padding-bottom: 2px;
+    border-bottom: 1px solid transparent;
   }
-  .appbar nav a.active { color: var(--accent); }
+  .appbar nav a.active { color: var(--surface); border-bottom-color: var(--surface); }
   .card {
     background: var(--surface);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
     margin: 0 1rem 1.2rem;
     padding: 1rem;
   }
   .card h2 {
     margin: 0 0 0.7rem;
-    font-size: 0.72rem;
-    font-weight: 500;
+    font-size: 0.7rem;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--on-surface-secondary);
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
   }
   .row-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
     padding: 0.5rem 0;
-    border-bottom: 1px solid var(--divider);
+    border-bottom: 1px solid rgba(20, 20, 15, 0.12);
   }
   .row-item:last-child { border-bottom: none; }
-  .row-item .label { color: var(--on-surface-secondary); font-size: 0.85rem; }
+  .row-item .label { color: var(--ink-soft); font-size: 0.85rem; }
   .row-item .value { font-size: 0.9rem; text-align: right; }
-  .value.ok { color: var(--accent); }
-  .value.warn { color: var(--danger); }
+  .value.ok::before { content: "● "; }
+  .value.warn::before { content: "▲ "; color: var(--danger); }
+  .value.ok, .value.warn { color: var(--ink); }
   .bar {
     height: 6px;
     border-radius: 3px;
-    background: var(--surface-2);
+    background: var(--surface);
+    border: 1px solid var(--border);
     overflow: hidden;
     margin-top: 0.6rem;
   }
-  .bar .fill { height: 100%; background: var(--accent); }
+  .bar .fill { height: 100%; background: var(--ink); }
 
   button, .btn {
     font: inherit;
@@ -625,21 +669,21 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
     text-transform: uppercase;
     letter-spacing: 0.03em;
     cursor: pointer;
-    border: none;
+    border: 1.5px solid var(--border);
     width: 100%;
-    background: var(--surface-2);
-    color: var(--on-surface);
-    padding: 0.7rem 0.8rem;
-    border-radius: 8px;
-    transition: background 0.15s ease;
+    background: var(--surface);
+    color: var(--ink);
+    padding: 0.65rem 0.8rem;
+    border-radius: 4px;
+    transition: background 0.12s ease, color 0.12s ease;
   }
-  button:hover { background: #3d4353; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button.accent { background: var(--accent); color: #fff; }
-  button.accent:hover { background: #2f87c4; }
-  button.danger { background: var(--danger); color: #fff; }
-  button.danger:hover { background: #c85848; }
-  #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--on-surface-secondary); text-align: center; }
+  button:hover { background: var(--ink); color: var(--surface); }
+  button:disabled { opacity: 0.5; cursor: default; background: var(--surface); color: var(--ink); }
+  button.accent { background: var(--ink); color: var(--surface); }
+  button.accent:hover { background: var(--surface); color: var(--ink); }
+  button.danger { color: var(--danger); border-color: var(--danger); background: var(--surface); }
+  button.danger:hover { background: var(--danger); color: var(--surface); }
+  #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--ink-soft); text-align: center; }
 </style>
 </head>
 <body>
@@ -668,21 +712,21 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 
 <div class="card">
   <h2>WiFi</h2>
-  <button class="accent" id="reconnectBtn">Reconnect WiFi</button>
+  <button class="accent" id="reconnectBtn">↻ Reconnect WiFi</button>
 </div>
 
 <div class="card">
   <h2 id="keyTitle">AI API Key</h2>
   <div class="row-item"><span class="label">Status</span><span class="value" id="keyValue">-</span></div>
   <input id="keyInput" type="password" placeholder="sk-... (leave blank to keep current)"
-    style="width:100%;margin-top:0.6rem;padding:0.6rem 0.7rem;border-radius:8px;border:1px solid var(--divider);background:var(--surface-2);color:var(--on-surface);font:inherit;box-sizing:border-box;">
+    style="width:100%;margin-top:0.6rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
   <button class="accent" id="keySaveBtn" style="margin-top:0.6rem;">Save API Key</button>
-  <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">Clear API Key</button>
+  <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">✕ Clear API Key</button>
 </div>
 
 <div class="card">
   <h2>Danger zone</h2>
-  <button class="danger" id="forgetBtn">Delete WiFi Setup</button>
+  <button class="danger" id="forgetBtn">✕ Delete WiFi Setup</button>
 </div>
 
 <div id="status"></div>
