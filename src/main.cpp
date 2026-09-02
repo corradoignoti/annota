@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
+#include "battery.h"
 #include "display.h"
 #include "storage.h"
 #include "transcribe.h"
@@ -32,6 +33,7 @@ void setup() {
 
     display_init_input();
     build_main_screen(sd_present);
+    ui_set_battery_percent(battery_read_percent());
 
     // wifi_connect() paints its own status onto the screen it finds here
     // (ui_set_wifi_status() forces a repaint) before it can block on the
@@ -57,5 +59,18 @@ void loop() {
     // comment.
     transcribe_process_pending();
     web_server_handle();
+
+    // Battery percentage: polled on a timer, not every iteration - a full
+    // e-paper repaint (~1-2s) per loop() pass just to catch a 1% ADC
+    // wobble would burn the panel's limited refresh life for nothing.
+    // ui_set_battery_percent() itself is a no-op repaint-wise if the
+    // rounded percentage hasn't moved since the last call.
+    static uint32_t lastBatteryCheckMs = 0;
+    uint32_t nowMs = millis();
+    if (nowMs - lastBatteryCheckMs >= 60000) {
+        lastBatteryCheckMs = nowMs;
+        ui_set_battery_percent(battery_read_percent());
+    }
+
     delay(5);
 }

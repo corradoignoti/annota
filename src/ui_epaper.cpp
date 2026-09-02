@@ -57,6 +57,8 @@ static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
 static lv_obj_t *header_label = nullptr;
+static lv_obj_t *battery_label = nullptr;
+static uint8_t battery_last_percent = 255; // sentinel - forces the first ui_set_battery_percent() paint
 static lv_obj_t *body = nullptr;
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
@@ -411,16 +413,34 @@ void build_main_screen(bool sdPresent) {
     lv_label_set_text(header_label, "");
     lv_obj_align(header_label, LV_ALIGN_LEFT_MID, 6, 0);
 
+    // Right-side status icons: battery percentage (always) plus the SD
+    // card icon (only if present) - grouped in one flex-row container so
+    // battery text width (1-3 digits) doesn't need manual offset math
+    // against the SD icon next to it.
+    lv_obj_t *status_icons = lv_obj_create(header_bar);
+    lv_obj_remove_style_all(status_icons);
+    lv_obj_set_size(status_icons, LV_SIZE_CONTENT, HEADER_H);
+    lv_obj_set_style_bg_opa(status_icons, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(status_icons, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(status_icons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(status_icons, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(status_icons, 4, 0);
+    lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
+
+    battery_label = lv_label_create(status_icons);
+    lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
+    lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
+    battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
+
     if (sdPresent) {
-        lv_obj_t *sd_icon = lv_label_create(header_bar);
+        lv_obj_t *sd_icon = lv_label_create(status_icons);
         lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
         lv_obj_set_style_text_font(sd_icon, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
-        lv_obj_align(sd_icon, LV_ALIGN_RIGHT_MID, -6, 0);
-        lv_obj_set_width(header_label, SCREEN_W - 34); // leaves room for the SD icon
-    } else {
-        lv_obj_set_width(header_label, SCREEN_W - 12);
     }
+
+    lv_obj_set_width(header_label, SCREEN_W - 60); // leaves room for status_icons
 
     body = lv_obj_create(scr);
     lv_obj_remove_style_all(body);
@@ -437,6 +457,20 @@ void build_main_screen(bool sdPresent) {
 void ui_set_wifi_status(const char *text) {
     if (!header_label) return;
     lv_label_set_text(header_label, text);
+    lv_timer_handler();
+}
+
+void ui_set_battery_percent(uint8_t percent) {
+    if (!battery_label) return;
+    if (percent > 100) percent = 100;
+    if (percent == battery_last_percent) return; // unchanged - skip the full e-paper repaint
+    battery_last_percent = percent;
+    const char *icon = percent >= 90   ? LV_SYMBOL_BATTERY_FULL
+                        : percent >= 60 ? LV_SYMBOL_BATTERY_3
+                        : percent >= 40 ? LV_SYMBOL_BATTERY_2
+                        : percent >= 15 ? LV_SYMBOL_BATTERY_1
+                                        : LV_SYMBOL_BATTERY_EMPTY;
+    lv_label_set_text_fmt(battery_label, "%s %u%%", icon, (unsigned)percent);
     lv_timer_handler();
 }
 

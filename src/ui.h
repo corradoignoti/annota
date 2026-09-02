@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <lvgl.h>
 
 // Builds the main screen: with sd_present, a title plus a scrollable list
@@ -14,6 +15,15 @@ void build_main_screen(bool sd_present);
 // else (e.g. WiFiManager's captive portal) is blocking loop(). No-op if
 // called before build_main_screen(). Pass "" to clear it.
 void ui_set_wifi_status(const char *text);
+
+// Updates the battery percentage (icon + "NN%") shown in the header, and
+// forces one repaint only if the displayed value actually changed. No-op
+// before build_main_screen(). Call periodically from loop() (see
+// main.cpp) - not every iteration: committing a full e-paper refresh for
+// each 1% wobble would burn the panel's limited refresh life for no
+// visible benefit. Reading itself comes from battery.h's
+// battery_read_percent().
+void ui_set_battery_percent(uint8_t percent);
 
 // Shows a modal dialog, floated above whatever's on screen, inviting the
 // user to join the given setup-AP SSID and configure WiFi from there.
