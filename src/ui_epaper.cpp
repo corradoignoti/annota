@@ -9,6 +9,7 @@
 #include "speaker.h"
 #include "storage.h"
 #include "transcribe.h"
+#include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
 // The on-device screen: WiFi status, a scrollable file list, and per-file
@@ -49,6 +50,7 @@ enum class Screen {
     kTranscribeResult,
     kDetails,
     kSleeping,
+    kForgetWifiConfirm,
 };
 
 static const int16_t HEADER_H = 20;
@@ -358,6 +360,13 @@ static void render_body() {
             break;
         }
 
+        case Screen::kForgetWifiConfirm: {
+            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+            static const char *options[] = {"Forget & reboot", "Cancel"};
+            render_option_menu("Forget saved WiFi?", icons, options, 2);
+            break;
+        }
+
         case Screen::kPlaying: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Playing %s...", active_filename);
@@ -569,6 +578,26 @@ void ui_process_input() {
         render_body();
     }
 
+    // Checked ahead of display_button_poll() below, and independent of it -
+    // see display.h's comment on why a two-button hold must never also
+    // reach that per-button state machine (it would fire its own,
+    // shorter-threshold kLong on one of them first). While both are held,
+    // skip the individual poll entirely for this iteration: nextEv/selEv
+    // both come back kNone below either way, since bothHeld's early return
+    // never even reaches the poll calls.
+    if (display_forget_wifi_combo_poll()) {
+        sleep_reset_activity();
+        if (state == Screen::kRecording) mic_stop_recording();
+        if (state == Screen::kPlaying) speaker_stop();
+        state = Screen::kForgetWifiConfirm;
+        menu_index = 0;
+        render_body();
+        return;
+    }
+    if (display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect)) {
+        return;
+    }
+
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
@@ -747,5 +776,23 @@ void ui_process_input() {
 
         case Screen::kSleeping:
             break; // device deep-sleeps right after showing this - never reached
+
+        case Screen::kForgetWifiConfirm:
+            if (nextEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 2;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                if (menu_index == 0) {
+                    // Never returns (ESP.restart()) - no state/render
+                    // needed after.
+                    wifi_forget_and_reboot();
+                }
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
     }
 }

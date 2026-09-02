@@ -18,7 +18,7 @@ static bool clockSynced = false;
 // giving up and asking the user to hit Retry (in the timeout dialog or
 // the web UI's Settings page) instead of retrying forever. Doesn't apply
 // to first-time setup - see run_setup_portal().
-static const unsigned long WIFI_RECONNECT_TIMEOUT_SECONDS = 30;
+static const unsigned long WIFI_RECONNECT_TIMEOUT_SECONDS = 10;
 
 // UTC, no daylight offset - storage.cpp only needs a sane wall clock for
 // file timestamps, not a local-time display, so no timezone UI exists yet.
@@ -118,7 +118,7 @@ static bool reconnect_saved_network() {
         int remainingSecs = (deadline - millis() + 999) / 1000;  // round up
         if (remainingSecs != lastShownSecs) {
             char msg[48];
-            snprintf(msg, sizeof(msg), "Connecting to WiFi... %ds", remainingSecs);
+            snprintf(msg, sizeof(msg), "WiFi chk... %ds", remainingSecs);
             ui_set_wifi_status(msg);
             lastShownSecs = remainingSecs;
         }
@@ -127,39 +127,41 @@ static bool reconnect_saved_network() {
     return WiFi.status() == WL_CONNECTED;
 }
 
-// allowPortalFallback gates the stale-creds recovery below: true from
-// wifi_connect() at boot, false from wifi_process_pending_reconnect() (the
-// web UI's "Reconnect WiFi" button). A manual reconnect click is the user
-// explicitly asking to retry the *same* saved network right now - usually
-// because they just fixed the router - so it must stay a quick retry that
-// either succeeds or shows the familiar Close-able timeout dialog, not
-// something that can silently wipe their saved credentials and dump them
-// into AP setup mode out from under a button they didn't expect to
-// reconfigure anything.
-static bool try_connect(bool allowPortalFallback) {
+// No portal-fallback param anymore: the setup portal only ever appears
+// when nothing is saved yet. A saved network that fails to answer never
+// gets wiped and never drops the user into AP setup out from under
+// them - it just leaves the device offline (Close-able timeout dialog),
+// same whether this runs at boot or from the web UI's "Reconnect WiFi"
+// button. Getting back to setup is only ever the explicit, irreversible
+// "Delete WiFi Setup" action (wifi_forget_and_reboot()).
+static bool try_connect() {
+    // getWiFiIsSaved() below reads NVS through esp_wifi_get_config(), which
+    // needs the wifi driver already initialized - on a fresh boot (driver
+    // never touched yet) it fails and leaves its output struct as
+    // uninitialized stack garbage, which getWiFiIsSaved() then reads as a
+    // bogus non-empty "saved" SSID. That false positive skips the setup
+    // portal entirely on an unconfigured device (goes to
+    // reconnect_saved_network() instead, which just times out against
+    // nothing real, then stops - no portal, no way online). WiFi.mode()
+    // here guarantees the driver is initialized (idempotent - a no-op if
+    // reconnect_saved_network() below is about to call it again anyway) so
+    // the saved-network check reads real NVS state.
+    WiFi.mode(WIFI_STA);
+
     WiFiManager wm;
     // getWiFiIsSaved() reads ESP-IDF's own station config out of NVS, not
     // anything wifi_manager.cpp itself wrote - it persists across reflashes
-    // and even across different sketches ever run on this board. So "saved"
-    // here can mean stale/unreachable creds left over from something else
-    // entirely, not "the user configured this device". Falling through to
-    // the setup portal below (instead of just giving up offline) is what
-    // recovers from that case - but only at boot (see allowPortalFallback).
+    // and even across different sketches ever run on this board. Doesn't
+    // matter here whether it's stale: saved is saved, and only an explicit
+    // "Delete WiFi Setup" clears it - a failed connect attempt never does.
     bool hasSavedNetwork = wm.getWiFiIsSaved();
 
     ui_set_wifi_status("Connecting to WiFi...");
     bool connected = hasSavedNetwork ? reconnect_saved_network() : false;
 
-    if (!connected && hasSavedNetwork && allowPortalFallback) {
-        // The saved network didn't answer in time - could be genuinely
-        // stale creds, could just be the router being off right now. Either
-        // way, don't strand the user on a Close-only dialog with no path
-        // back to setup: wipe the saved config and drop straight into the
-        // same captive portal first-time setup uses.
-        Serial.println("WiFi: saved network unreachable after 30 seconds - falling back to setup portal");
-        wm.resetSettings();
-    }
-    if (!connected && (allowPortalFallback || !hasSavedNetwork)) {
+    if (!connected && !hasSavedNetwork) {
+        // Nothing configured at all - the only way online is the setup
+        // portal, same as a factory-fresh board.
         connected = run_setup_portal();
     }
 
@@ -171,8 +173,9 @@ static bool try_connect(bool allowPortalFallback) {
         sync_clock_via_ntp();
     } else {
         ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
-        Serial.println(allowPortalFallback ? "WiFi: setup portal exited without a connection - continuing offline"
-                                            : "WiFi: no connection after 30 seconds - continuing offline");
+        Serial.println(hasSavedNetwork
+                            ? "WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)"
+                            : "WiFi: setup portal exited without a connection - continuing offline");
         ui_show_wifi_timeout_dialog(close_button_event_cb);
     }
     ui_refresh_wifi_retry_button();
@@ -193,7 +196,7 @@ static void close_button_event_cb(lv_event_t *e) {
 
 bool wifi_connect() {
     WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    return try_connect(/*allowPortalFallback=*/true);
+    return try_connect();
 }
 
 void wifi_request_reconnect() {
@@ -204,7 +207,43 @@ void wifi_process_pending_reconnect() {
     if (!reconnectRequested) return;
     reconnectRequested = false;
     ui_hide_wifi_setup_dialog();
-    try_connect(/*allowPortalFallback=*/false);
+    try_connect();
+}
+
+// Used by transcribe.cpp right before a transcription attempt: if already
+// online, returns true with no side effects; otherwise makes one blocking
+// reconnect attempt to the saved network (same 30s budget and status
+// feedback as try_connect()'s own reconnect path) so a device that's
+// offline only because it booted with the router unreachable doesn't
+// force the user to go find "Reconnect WiFi" first. Never opens the
+// setup portal - transcribing doesn't imply the user wants to
+// reconfigure the network, and there may be nothing saved to fall back
+// from anyway. Safe to call from loop() top level (transcribe_process_pending()'s
+// call site) for the same reentrancy reason wifi_process_pending_reconnect() is.
+bool wifi_ensure_connected() {
+    if (WiFi.status() == WL_CONNECTED) return true;
+
+    // See try_connect()'s comment: getWiFiIsSaved() needs the wifi driver
+    // initialized to read real NVS state instead of stack garbage.
+    WiFi.mode(WIFI_STA);
+
+    WiFiManager wm;
+    if (!wm.getWiFiIsSaved()) return false;
+
+    ui_set_wifi_status("Connecting to WiFi...");
+    bool connected = reconnect_saved_network();
+    if (connected) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        ui_set_wifi_status(msg);
+        Serial.println(msg);
+        sync_clock_via_ntp();
+    } else {
+        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        Serial.println("WiFi: reconnect for transcription failed - still offline");
+    }
+    ui_refresh_wifi_retry_button();
+    return connected;
 }
 
 // Unlike wifi_request_reconnect(), this doesn't need to defer through

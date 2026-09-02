@@ -1,10 +1,12 @@
 #include "transcribe.h"
 
+#include <WiFi.h>
 #include <cstring>
 
 #include "display.h"
 #include "sleep.h"
 #include "ui.h"
+#include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
 // Provider-agnostic half of transcribe.h: the deferred-dispatch pair
@@ -38,6 +40,17 @@ void transcribe_process_pending() {
     transcribeRequested = false;
 
     ui_show_transcribe_progress(transcribeTargetFilename);
+
+    // Transcribing needs the AI provider's network API. Recording,
+    // deleting, and previewing all work fine offline (see wifi_manager.h),
+    // so this is the one place that needs the device online - retry the
+    // saved network once here rather than making the user go find
+    // "Reconnect WiFi" first.
+    if (WiFi.status() != WL_CONNECTED && !wifi_ensure_connected()) {
+        sleep_reset_activity();
+        ui_show_transcribe_result(false, "No WiFi connection.");
+        return;
+    }
 
     display_suspend_touch();
     char err[96];

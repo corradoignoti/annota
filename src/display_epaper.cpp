@@ -379,3 +379,33 @@ DisplayButtonEvent display_button_poll(DisplayButton b) {
     }
     return DisplayButtonEvent::kNone;
 }
+
+bool display_button_raw_pressed(DisplayButton b) {
+    return digitalRead(buttonStates[(int)b].pin) == LOW; // active-low
+}
+
+// See display.h's comment for why this runs its own hold timer instead of
+// reusing display_button_poll()'s per-button one.
+static const uint32_t FORGET_WIFI_COMBO_HOLD_MS = 5000;
+static uint32_t comboPressedSinceMs = 0; // 0 while not both held
+static bool comboFired = false;
+
+bool display_forget_wifi_combo_poll() {
+    bool bothPressed = display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect);
+    if (!bothPressed) {
+        comboPressedSinceMs = 0;
+        comboFired = false;
+        return false;
+    }
+
+    uint32_t now = millis();
+    if (comboPressedSinceMs == 0) {
+        comboPressedSinceMs = now;
+        return false;
+    }
+    if (!comboFired && (now - comboPressedSinceMs) >= FORGET_WIFI_COMBO_HOLD_MS) {
+        comboFired = true;
+        return true;
+    }
+    return false;
+}

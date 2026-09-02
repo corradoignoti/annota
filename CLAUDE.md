@@ -124,23 +124,30 @@ has had a chance to reset its clock.
   saved opens a captive portal AP ("Annota-Setup", no password) with no
   timeout and shows the on-screen dialog, blocking until the user
   configures one from a phone/laptop; one saved reconnects to it directly
-  (no portal) for up to 30 seconds. WiFiManager's "saved" check reads
-  ESP-IDF's own NVS station config, which can be stale (left over from a
-  different sketch ever flashed to this board) rather than something the
-  user actually set up here, so a timeout there wipes the saved
-  credentials and falls back to the same setup portal instead of
-  stranding the device offline with no way back to configuring an AP.
-  Only if that fallback portal itself is exited without connecting does
-  it show a warning dialog with a Close button and let the device run
-  offline — that dialog only dismisses itself; reconnecting again from
-  there is a separate, explicit action via the Settings page's "Reconnect
-  WiFi" button, which only calls `wifi_request_reconnect()` (it fires from
-  an LVGL click handler already nested inside `lv_timer_handler()`, which
-  refuses to run itself again while it's running — so the actual retry
-  can't happen there); `loop()` picks up the request via
-  `wifi_process_pending_reconnect()`, called right after
-  `lv_timer_handler()` returns, never nested inside it. Must be called
-  after `build_main_screen()` so it has a screen to paint status onto.
+  (no portal) for up to 30 seconds. The setup portal never reappears on
+  its own once a network is saved — a reconnect timeout just leaves the
+  device offline (a warning dialog with a Close button says so) rather
+  than wiping the saved credentials, since WiFiManager's "saved" check
+  reading stale NVS state isn't reason enough to drop the user back into
+  AP setup out from under them. The device stays fully usable offline —
+  record, delete, and preview all work with no network — and this same
+  logic runs unchanged on every boot, including a deep-sleep wakeup
+  (waking is a full MCU reset, see `sleep.cpp/h` above, so there's no
+  separate wake-time path). The only way back to the setup portal is the
+  explicit, irreversible "Delete WiFi Setup" button
+  (`wifi_forget_and_reboot()`); a plain reconnect retry is the Settings
+  page's "Reconnect WiFi" button, which only calls
+  `wifi_request_reconnect()` (it fires from an LVGL click handler already
+  nested inside `lv_timer_handler()`, which refuses to run itself again
+  while it's running — so the actual retry can't happen there); `loop()`
+  picks up the request via `wifi_process_pending_reconnect()`, called
+  right after `lv_timer_handler()` returns, never nested inside it. Must
+  be called after `build_main_screen()` so it has a screen to paint
+  status onto. `wifi_ensure_connected()` is a third entry point: a
+  no-portal, single blocking reconnect attempt, used by
+  `transcribe.cpp`'s `transcribe_process_pending()` to retry the saved
+  network before a transcription rather than failing outright just
+  because the device booted offline.
 - **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
   split into a provider-agnostic half and a provider-specific half so a
   future second provider is a new file plus a new build flag, not a
@@ -157,6 +164,12 @@ has had a chance to reset its clock.
   returns) for the same reentrancy reason; it also `#error`s at compile
   time if no `AI_PROVIDER_*` build flag is defined, so a missing one fails
   loudly here instead of as a confusing link error. `transcribe_process_pending()`
+  first checks `WiFi.status()` and, if offline, calls
+  `wifi_manager.h`'s `wifi_ensure_connected()` for one blocking retry
+  against the saved network before giving up with "No WiFi connection." —
+  the device can otherwise be offline going into this (see
+  `wifi_manager.cpp/h` above) since recording/deleting/previewing don't
+  need a network but transcription does. `transcribe_process_pending()`
   calls `sleep.h`'s `sleep_reset_activity()` right after the blocking
   `ai_transcribe_file()` call returns, before showing the result screen -
   without it, a transcription slow enough to outlast `sleep.cpp`'s idle

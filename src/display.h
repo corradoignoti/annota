@@ -37,3 +37,31 @@ enum class DisplayButtonEvent { kNone, kShort, kLong };
 // per loop() iteration - ui_epaper.cpp's ui_process_input() does, no other
 // caller needed.
 DisplayButtonEvent display_button_poll(DisplayButton b);
+
+// Raw current pin state (active-low), no debounce/edge logic - unlike
+// display_button_poll(), safe to call any number of times per loop()
+// iteration without consuming/altering that function's own per-button
+// press-tracking state. Used only to detect whether both buttons are
+// currently held down together, ahead of calling display_button_poll() -
+// see display_forget_wifi_combo_poll()'s comment for why that ordering
+// matters.
+bool display_button_raw_pressed(DisplayButton b);
+
+// Edge-triggered, fires (returns true) exactly once per qualifying hold,
+// the moment both buttons have been held down together continuously for
+// FORGET_WIFI_COMBO_HOLD_MS (display_epaper.cpp) - false otherwise,
+// including for the whole duration of the hold before that threshold and
+// after it fires, until both are released and pressed together again.
+// Tracks its own independent hold timer via display_button_raw_pressed()
+// rather than display_button_poll()'s per-button one, so a long
+// two-button hold doesn't also fire a spurious single-button kLong at
+// that state machine's own (shorter) long-press threshold along the way -
+// ui_epaper.cpp's ui_process_input() checks this before polling either
+// button individually, and skips that individual poll entirely for any
+// iteration where both are currently held, so a hold that's abandoned
+// before 5s leaves no half-consumed single-button press behind either.
+// Wired to the "hold both buttons 5s to forget the saved WiFi network and
+// reboot" gesture - ui_epaper.cpp shows an on-screen confirm/cancel menu
+// on the fire edge rather than acting immediately, same as every other
+// destructive action in this UI (see Screen::kDeleteConfirm).
+bool display_forget_wifi_combo_poll();
