@@ -150,8 +150,15 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
 // kList's own top row: an icon, the Audio/Text mode label and file count,
 // with a bottom border separating it from the cards below - not a card
 // itself (never selectable), so it's built directly rather than through
-// add_row().
-static void render_list_header(size_t count) {
+// add_row(). `scrollable` - true once the list has more rows than
+// VISIBLE_ROWS can show at once - draws a small down-arrow at the row's
+// right edge (mirrors build_main_screen()'s right-aligned status icons)
+// as the only hint that Next still reveals more: this list has no
+// scrollbar, and Next wraps around rather than stopping at the last item
+// (see ui_process_input()'s kList case), so the arrow stays fixed rather
+// than tracking top_index/whether the view is currently at the bottom -
+// there's always "more" to scroll to either way.
+static void render_list_header(size_t count, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
     lv_obj_set_size(hdr, SCREEN_W, ROW_H);
@@ -167,6 +174,14 @@ static void render_list_header(size_t count) {
     lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
+
+    if (scrollable) {
+        lv_obj_t *more = lv_label_create(hdr);
+        lv_label_set_text(more, LV_SYMBOL_DOWN);
+        lv_obj_set_style_text_font(more, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(more, lv_color_black(), 0);
+        lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
+    }
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
@@ -288,8 +303,8 @@ static void render_body() {
             break;
 
         case Screen::kList: {
-            render_list_header(mp3FileCount);
             size_t count = list_item_count();
+            render_list_header(mp3FileCount, count > (size_t)VISIBLE_ROWS);
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
