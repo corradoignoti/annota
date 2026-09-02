@@ -5,6 +5,7 @@
 #include <lvgl.h>
 
 #include "display.h"
+#include "sleep.h"
 #include "speaker.h"
 #include "storage.h"
 #include "transcribe.h"
@@ -47,6 +48,7 @@ enum class Screen {
     kTranscribeProgress,
     kTranscribeResult,
     kDetails,
+    kSleeping,
 };
 
 static const int16_t HEADER_H = 20;
@@ -385,6 +387,10 @@ static void render_body() {
             add_info_card(transcribe_ok ? LV_SYMBOL_OK : LV_SYMBOL_WARNING, transcribe_message);
             add_hint("Select: close");
             break;
+
+        case Screen::kSleeping:
+            add_info_card(LV_SYMBOL_POWER, "Sleeping...\nHold Select to wake");
+            break;
     }
 }
 
@@ -517,6 +523,16 @@ void ui_show_transcribe_result(bool ok, const char *message) {
     lv_timer_handler();
 }
 
+bool ui_is_sleep_blocked() {
+    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress;
+}
+
+void ui_show_sleep_screen() {
+    state = Screen::kSleeping;
+    render_body();
+    lv_timer_handler();
+}
+
 void ui_process_input() {
     // Cheap no-ops when nothing's playing/recording (see speaker.h) -
     // called unconditionally so playback/recording keeps pumping every
@@ -541,6 +557,7 @@ void ui_process_input() {
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
+    sleep_reset_activity(); // any button edge counts as activity - see sleep.h
 
     switch (state) {
         case Screen::kNoCard:
@@ -712,5 +729,8 @@ void ui_process_input() {
                 render_body();
             }
             break;
+
+        case Screen::kSleeping:
+            break; // device deep-sleeps right after showing this - never reached
     }
 }

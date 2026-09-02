@@ -5,6 +5,7 @@
 #include <WiFi.h>
 
 #include "display.h"
+#include "sleep.h"
 #include "storage.h"
 #include "transcribe.h"
 #include "wifi_manager.h"
@@ -1208,21 +1209,32 @@ static void handle_upload_done() {
     }
 }
 
+// Wraps a route handler so any served request also resets sleep.h's idle
+// clock - without this, the idle-timeout deep sleep could fire mid-
+// download/upload, or while someone's just sitting on the file manager
+// page, purely because no onboard button was pressed in a while.
+static WebServer::THandlerFunction with_activity(WebServer::THandlerFunction handler) {
+    return [handler]() {
+        sleep_reset_activity();
+        handler();
+    };
+}
+
 void web_server_start() {
-    server.on("/", HTTP_GET, handle_root);
-    server.on("/settings", HTTP_GET, handle_settings_page);
-    server.on("/api/settings", HTTP_GET, handle_settings_info);
-    server.on("/api/settings/reconnect", HTTP_POST, handle_settings_reconnect);
-    server.on("/api/settings/forget", HTTP_POST, handle_settings_forget);
-    server.on("/api/settings/ai-key", HTTP_POST, handle_settings_set_ai_key);
-    server.on("/api/transcript-key", HTTP_GET, handle_get_transcript_key);
-    server.on("/api/transcript", HTTP_POST, handle_save_transcript);
-    server.on("/api/files", HTTP_GET, handle_list);
-    server.on("/api/download", HTTP_GET, handle_download);
-    server.on("/api/play", HTTP_GET, handle_play);
-    server.on("/api/delete", HTTP_POST, handle_delete);
-    server.on("/api/upload", HTTP_POST, handle_upload_done, handle_upload_data);
-    server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
+    server.on("/", HTTP_GET, with_activity(handle_root));
+    server.on("/settings", HTTP_GET, with_activity(handle_settings_page));
+    server.on("/api/settings", HTTP_GET, with_activity(handle_settings_info));
+    server.on("/api/settings/reconnect", HTTP_POST, with_activity(handle_settings_reconnect));
+    server.on("/api/settings/forget", HTTP_POST, with_activity(handle_settings_forget));
+    server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
+    server.on("/api/transcript-key", HTTP_GET, with_activity(handle_get_transcript_key));
+    server.on("/api/transcript", HTTP_POST, with_activity(handle_save_transcript));
+    server.on("/api/files", HTTP_GET, with_activity(handle_list));
+    server.on("/api/download", HTTP_GET, with_activity(handle_download));
+    server.on("/api/play", HTTP_GET, with_activity(handle_play));
+    server.on("/api/delete", HTTP_POST, with_activity(handle_delete));
+    server.on("/api/upload", HTTP_POST, with_activity(handle_upload_done), with_activity(handle_upload_data));
+    server.onNotFound(with_activity([]() { server.send(404, "text/plain", "Not found"); }));
     server.begin();
 
     Serial.print("Web file manager: http://");

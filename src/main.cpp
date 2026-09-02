@@ -3,6 +3,7 @@
 
 #include "battery.h"
 #include "display.h"
+#include "sleep.h"
 #include "storage.h"
 #include "transcribe.h"
 #include "ui.h"
@@ -23,6 +24,7 @@ static void keepBatteryPowerOn() {
 
 void setup() {
     keepBatteryPowerOn();
+    sleep_reset_activity(); // starts the idle-sleep clock from boot - see sleep.h
 
     Serial.begin(115200);
     Serial.println("annota: boot");
@@ -59,6 +61,11 @@ void loop() {
     // comment.
     transcribe_process_pending();
     web_server_handle();
+    // Last, after everything above that can reset the idle clock this same
+    // pass (button edges via ui_process_input(), served requests via
+    // web_server_handle()) has had a chance to. Deep-sleeps and never
+    // returns once idle for too long - see sleep.h.
+    sleep_process_idle();
 
     // Battery percentage: polled on a timer, not every iteration - a full
     // e-paper repaint (~1-2s) per loop() pass just to catch a 1% ADC

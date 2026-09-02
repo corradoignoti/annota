@@ -40,7 +40,30 @@ see its bullet below), then, only after `lv_timer_handler()` has returned,
 the deferred-work pumps that a nested LVGL click handler can't safely
 trigger directly — `wifi_process_pending_reconnect()` and
 `transcribe_process_pending()` (see their bullets below) — then
-`web_server_handle()`.
+`web_server_handle()`, then `sleep_process_idle()` (see `sleep.cpp/h`
+below) last, once everything else that could count as activity this pass
+has had a chance to reset its clock.
+
+- **sleep.cpp/h** — idle-timeout deep sleep, ported from the pala_note
+  sibling project's `enterUltraSleep()`/`resetActivity()` (same board
+  family: same `PWR_HOLD_PIN` battery latch, same battery ADC pin, same
+  button GPIOs, so the same approach applies unchanged).
+  `sleep_process_idle()`, called last in `loop()`, deep-sleeps
+  (`esp_deep_sleep_start()`, ext1 wakeup armed on both onboard buttons,
+  `ESP_EXT1_WAKEUP_ANY_LOW`) once 120s have passed with no activity, unless
+  `ui.h`'s `ui_is_sleep_blocked()` says a foreground operation
+  (recording/playing/transcribing) is in progress. `sleep_reset_activity()`
+  is called from `main.cpp`'s `setup()` (starts the clock at boot) and from
+  two activity sources: `ui_epaper.cpp`'s `ui_process_input()` on any
+  onboard button edge, and `web_server.cpp`'s route registrations (each
+  wrapped in a `with_activity()` helper) on any served HTTP request — so
+  the device won't deep-sleep out from under someone actively browsing,
+  uploading to, or downloading from the web file manager just because no
+  button was pressed. Waking from deep sleep is a full MCU reset — `setup()`
+  runs again from scratch like a fresh boot, so there's no wake-cause
+  branching here (unlike pala_note, which distinguishes which button woke
+  it); the normal boot path already re-scans the SD card, reconnects WiFi,
+  and rebuilds the main screen.
 
 - **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
   e-paper panel driver (command/LUT sequence ported from Waveshare's own

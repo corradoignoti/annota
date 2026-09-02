@@ -75,5 +75,18 @@ void ui_show_transcribe_result(bool ok, const char *message);
 // transcribe.h's transcribe_request() (safe here since this runs at
 // loop()'s top level, not nested inside lv_timer_handler()); selecting
 // Delete calls storage.h's delete_file() directly, same reasoning. Call
-// once per loop() iteration, after lv_timer_handler().
+// once per loop() iteration, after lv_timer_handler(). Also resets
+// sleep.h's idle clock on any button edge.
 void ui_process_input();
+
+// True while a foreground operation that must not be interrupted by
+// sleep.h's idle deep-sleep is in progress (recording, playing back, or
+// transcribing). Checked by sleep_process_idle() every loop() iteration.
+bool ui_is_sleep_blocked();
+
+// Shows a plain "Sleeping..." message (no buttons - the device is about to
+// deep-sleep) and forces one repaint. Called by sleep.cpp right before it
+// tears down WiFi and calls esp_deep_sleep_start(); nothing clears this
+// screen since the device never returns to loop() afterwards - waking is a
+// full MCU reset that rebuilds the screen from scratch.
+void ui_show_sleep_screen();
