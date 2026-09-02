@@ -228,6 +228,15 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   progress::-webkit-progress-value { background: var(--ink); }
   progress::-moz-progress-bar { background: var(--ink); }
   #empty { color: var(--ink-soft); text-align: center; padding: 1.2rem; margin: 0 1rem 1.2rem; }
+  #sd-widget {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 1rem;
+    margin: 0 1rem 1.2rem;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+  }
+  #sd-widget b { color: var(--ink); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -237,6 +246,11 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     <nav><a class="active" href="/">Files</a><a href="/settings">Settings</a></nav>
   </div>
   <div class="sub">SD card files</div>
+</div>
+
+<div id="sd-widget" class="card" hidden>
+  <span>Used <b id="sdUsed">-</b></span>
+  <span>Free <b id="sdFree">-</b></span>
 </div>
 
 <div id="player" class="card" hidden>
@@ -459,10 +473,30 @@ function render() {
   }
 }
 
+function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
+
+// Reuses /api/settings rather than a dedicated endpoint - it already
+// carries totalBytes/usedBytes for the Settings page's own SD card
+// section (see SETTINGS_HTML's refresh()).
+async function refreshSdInfo() {
+  try {
+    const res = await fetch("/api/settings");
+    const info = await res.json();
+    const widget = document.getElementById("sd-widget");
+    if (!info.sdOk) { widget.hidden = true; return; }
+    document.getElementById("sdUsed").textContent = fmtGb(info.usedBytes);
+    document.getElementById("sdFree").textContent = fmtGb(info.totalBytes - info.usedBytes);
+    widget.hidden = false;
+  } catch (e) {
+    document.getElementById("sd-widget").hidden = true;
+  }
+}
+
 async function refresh() {
   const res = await fetch("/api/files");
   currentFiles = await res.json();
   render();
+  refreshSdInfo();
 }
 
 document.querySelectorAll("th.sortable").forEach((th) => {
