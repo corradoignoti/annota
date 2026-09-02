@@ -525,6 +525,7 @@ File recordFile;
 bool recording = false;
 char recordFilename[64];
 uint32_t recordedDataBytes = 0; // PCM bytes written so far - patch_wav_header() needs the final count
+uint32_t lastHeaderPatchMs = 0; // mic_process()'s periodic re-patch - see its comment
 char micErrorMessage[96] = ""; // see mic_last_error()
 
 // Logs `msg` to Serial (as every failure path here already did) and also
@@ -627,6 +628,7 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
 
     write_wav_header(recordFile, MIC_SAMPLE_RATE, /*channels=*/1, /*bitsPerSample=*/16);
     recordedDataBytes = 0;
+    lastHeaderPatchMs = millis();
 
     es8311_set_mic_gain(MIC_GAIN_CODE);
     es8311_set_mic_enabled(true);
@@ -697,8 +699,40 @@ void mic_process() {
     // into a mono buffer and write it straight to the WAV file.
     int16_t monoBuf[128];
     for (size_t i = 0; i < framesRead; i++) monoBuf[i] = stereoBuf[i * 2];
-    recordFile.write((const uint8_t *)monoBuf, framesRead * sizeof(int16_t));
-    recordedDataBytes += (uint32_t)(framesRead * sizeof(int16_t));
+    size_t wantBytes = framesRead * sizeof(int16_t);
+    size_t wroteBytes = recordFile.write((const uint8_t *)monoBuf, wantBytes);
+    if (wroteBytes != wantBytes) {
+        // SD write failed partway (card full, wear-out, card yanked mid-
+        // write) - recordedDataBytes must only ever count bytes actually
+        // on disk, or the header patched below/at stop would overstate
+        // the data chunk and leave garbage past the real audio at
+        // playback. Nothing more can be salvaged past this point either.
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Recording stopped: SD write failed (%u/%u bytes)", (unsigned)wroteBytes, (unsigned)wantBytes);
+        set_mic_error(msg);
+        recordedDataBytes += (uint32_t)wroteBytes;
+        mic_stop_recording();
+        return;
+    }
+    recordedDataBytes += (uint32_t)wroteBytes;
+
+    // Re-patch the header every couple seconds instead of only once at a
+    // clean mic_stop_recording(). write_wav_header() left the RIFF/data
+    // size fields at 0 as placeholders; if recording ever ends any other
+    // way - reset, brownout under SD write load, battery pulled - that
+    // patch never runs and the file is stuck declaring zero length
+    // forever, which every player (this device's own AudioGeneratorWAV,
+    // macOS Preview/QuickTime/Music) refuses to open even though the
+    // actual PCM bytes are sitting right there on the card. Keeping the
+    // on-disk header caught up means the worst an ungraceful stop costs
+    // is up to ~2s of trailing audio, not an unplayable file.
+    uint32_t nowMs = millis();
+    if (nowMs - lastHeaderPatchMs >= 2000) {
+        lastHeaderPatchMs = nowMs;
+        patch_wav_header(recordFile, recordedDataBytes);
+        recordFile.flush();
+        recordFile.seek(44 + recordedDataBytes); // patch_wav_header() left the cursor mid-header - resume appending where the audio actually ends
+    }
 }
 
 bool mic_is_recording() {
