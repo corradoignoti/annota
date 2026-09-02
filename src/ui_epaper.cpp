@@ -23,6 +23,15 @@
 // (lv_obj_clean() + repopulate) rather than kept as a tree of
 // show/hide-toggled widgets - simpler to keep correct, and cheap next to
 // the e-paper refresh itself dominating either way.
+//
+// Visual language: a black status bar pinned across the top (outside
+// body, never cleared by render_body()), rounded bordered "cards" for
+// every list/menu row (inverted black-on-white when selected - the only
+// focus indicator this UI has, in place of touch highlighting), and a
+// bordered info-card for every message-only screen. Every row/card gets
+// a small leading icon from lvgl's built-in symbol font so screens read
+// at a glance instead of as walls of plain text - all within mono 1bpp,
+// no new image assets.
 // -----------------------------------------------------------------------
 
 enum class Screen {
@@ -39,11 +48,11 @@ enum class Screen {
     kTranscribeResult,
 };
 
-static const int16_t HEADER_H = 16;
-static const int16_t ROW_H = 18;
+static const int16_t HEADER_H = 20;
+static const int16_t ROW_H = 20;
 static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
-// kList reserves its own top row (below) for the Audio/Text mode label, on
-// top of HEADER_H/HINT_H.
+// kList reserves its own top row (below) for the Audio/Text mode header,
+// on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
 static lv_obj_t *header_label = nullptr;
@@ -78,8 +87,8 @@ static char transcribe_message[128];
 
 static void render_body();
 
-// kList shows a synthetic "+ Record new" row pinned above the real files
-// - but only while showing_audio_files (a recording is itself an audio
+// kList shows a synthetic "Record new" row pinned above the real files -
+// but only while showing_audio_files (a recording is itself an audio
 // file; there's nothing to record onto the .txt transcript list), same
 // rule the Transcribe entry below follows. Kept as index 0 ahead of
 // mp3Files rather than a separate widget/button so it reuses the same
@@ -104,56 +113,162 @@ static void clamp_selection() {
     if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
 }
 
-// One row of centered text, optionally drawn inverted (black bg, white
-// text) to show it's the current selection - the only "focus" indicator
-// this UI has, in place of touch highlighting.
-static void add_row(int16_t y, const char *text, bool selected) {
-    lv_obj_t *row = lv_label_create(body);
-    lv_obj_set_size(row, SCREEN_W, ROW_H);
-    lv_obj_set_pos(row, 0, y);
-    lv_label_set_text(row, text);
-    lv_label_set_long_mode(row, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_align(row, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(row, 2, 0);
-    lv_obj_set_style_bg_opa(row, selected ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_color(row, lv_color_black(), 0);
-    lv_obj_set_style_text_color(row, selected ? lv_color_white() : lv_color_black(), 0);
+// One rounded, bordered "card" row: a leading icon glyph plus label text,
+// left-aligned, inverted (black bg, white text) when selected - the only
+// "focus" indicator this UI has. parent/x/y/w let this serve both the
+// full-width list (parent == body) and menu rows indented inside a
+// bordered panel (see render_option_menu()).
+static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
+    int16_t card_h = ROW_H - 2;
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_size(card, w, card_h);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_style_radius(card, 4, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_border_color(card, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(card, selected ? lv_color_black() : lv_color_white(), 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *label = lv_label_create(card);
+    lv_label_set_text_fmt(label, "%s  %s", icon, text);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(label, w - 12);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
 }
 
-static void add_centered_message(const char *text) {
-    lv_obj_t *msg = lv_label_create(body);
+// kList's own top row: an icon, the Audio/Text mode label and file count,
+// with a bottom border separating it from the cards below - not a card
+// itself (never selectable), so it's built directly rather than through
+// add_row().
+static void render_list_header(size_t count) {
+    lv_obj_t *hdr = lv_obj_create(body);
+    lv_obj_remove_style_all(hdr);
+    lv_obj_set_size(hdr, SCREEN_W, ROW_H);
+    lv_obj_set_pos(hdr, 0, 0);
+    lv_obj_set_style_border_width(hdr, 1, 0);
+    lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
+    lv_obj_set_style_border_color(hdr, lv_color_black(), 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *label = lv_label_create(hdr);
+    lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
+                           showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label, lv_color_black(), 0);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
+}
+
+// A bordered, rounded card centered in body, with an optional big icon
+// above a wrapped message - the info/dialog counterpart to add_row()'s
+// list cards, used by every message-only screen below.
+static void add_info_card(const char *icon, const char *text) {
+    const int16_t pad = 10;
+    const int16_t card_w = SCREEN_W - 24;
+
+    lv_obj_t *card = lv_obj_create(body);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, card_w);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, lv_color_black(), 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_pad_all(card, pad, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    if (icon && icon[0]) {
+        lv_obj_t *icon_label = lv_label_create(card);
+        lv_label_set_text(icon_label, icon);
+        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
+    }
+
+    lv_obj_t *msg = lv_label_create(card);
     lv_label_set_text(msg, text);
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(msg, SCREEN_W - 20);
+    lv_obj_set_width(msg, card_w - pad * 2);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
-    lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
 }
 
 // Wraps onto up to two lines instead of running off the 200px panel edge -
 // callers keep hint text short enough to fit HINT_H at that wrap width.
+// The top border marks it off as a distinct status strip rather than
+// trailing text.
 static void add_hint(const char *text) {
-    lv_obj_t *hint = lv_label_create(body);
+    lv_obj_t *bar = lv_obj_create(body);
+    lv_obj_remove_style_all(bar);
+    lv_obj_set_size(bar, SCREEN_W, HINT_H);
+    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_border_width(bar, 1, 0);
+    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
+    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hint = lv_label_create(bar);
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, SCREEN_W - 4);
+    lv_obj_set_width(hint, SCREEN_W - 8);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
 }
 
-// Shared by kActionMenu and kDeleteConfirm - a title line plus a
-// cycle-and-confirm option list.
-static void render_option_menu(const char *title, const char *const *options, int count) {
-    add_centered_message(title);
-    int16_t y = 70;
+// Shared by kActionMenu and kDeleteConfirm - a bordered panel holding a
+// title line plus a cycle-and-confirm option list, one icon+label card
+// per option (see add_row()).
+static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count) {
+    const int16_t pad = 6;
+    const int16_t title_h = 20;
+    const int16_t panel_w = SCREEN_W - 16;
+    const int16_t panel_h = pad * 2 + title_h + count * ROW_H;
+    const int16_t panel_y = 12;
+
+    lv_obj_t *panel = lv_obj_create(body);
+    lv_obj_remove_style_all(panel);
+    lv_obj_set_size(panel, panel_w, panel_h);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, panel_y);
+    lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_border_color(panel, lv_color_black(), 0);
+    lv_obj_set_style_radius(panel, 8, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title_label = lv_label_create(panel);
+    lv_label_set_text(title_label, title);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(title_label, panel_w - 12);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
+    lv_obj_set_pos(title_label, 6, pad);
+
+    lv_obj_t *rule = lv_obj_create(panel);
+    lv_obj_remove_style_all(rule);
+    lv_obj_set_size(rule, panel_w - 12, 1);
+    lv_obj_set_pos(rule, 6, pad + title_h - 6);
+    lv_obj_set_style_bg_color(rule, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
+
+    int16_t y = pad + title_h;
     for (int i = 0; i < count; i++) {
-        add_row(y, options[i], i == menu_index);
+        add_row(panel, 6, y, panel_w - 12, icons[i], options[i], i == menu_index);
         y += ROW_H;
     }
+
     add_hint("Next: cycle   Select: choose, hold: back");
 }
 
@@ -162,14 +277,15 @@ static void render_body() {
 
     switch (state) {
         case Screen::kNoCard:
-            add_centered_message("Insert an SD card to see your audio files");
+            add_info_card(LV_SYMBOL_SD_CARD, "Insert an SD card to see your audio files");
             break;
 
         case Screen::kList: {
-            add_row(0, showing_audio_files ? "Audio Files" : "Text Files", false);
+            render_list_header(mp3FileCount);
             size_t count = list_item_count();
             if (count == 0) {
-                add_centered_message(showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
+                add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
+                               showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
                 add_hint("Sel(hold): rescan   Next(hold): switch");
                 break;
             }
@@ -177,8 +293,9 @@ static void render_body() {
             bool recordOption = has_record_option();
             int16_t y = ROW_H;
             for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
-                const char *label = (recordOption && i == 0) ? "+ Record new" : mp3Files[recordOption ? i - 1 : i].filename;
-                add_row(y, label, i == selected_index);
+                const char *label = (recordOption && i == 0) ? "Record new" : mp3Files[recordOption ? i - 1 : i].filename;
+                const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
+                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
             add_hint("Next: move, hold: switch   Sel: open, hold: rescan");
@@ -189,11 +306,13 @@ static void render_body() {
             // Play/Transcription only make sense for audio files, not the
             // .txt transcripts this same list shows when toggled.
             if (showing_audio_files) {
+                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
                 static const char *options[] = {"Play", "Transcribe", "Delete", "Cancel"};
-                render_option_menu(active_filename, options, 4);
+                render_option_menu(active_filename, icons, options, 4);
             } else {
+                static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
                 static const char *options[] = {"Delete", "Cancel"};
-                render_option_menu(active_filename, options, 2);
+                render_option_menu(active_filename, icons, options, 2);
             }
             break;
         }
@@ -201,15 +320,16 @@ static void render_body() {
         case Screen::kDeleteConfirm: {
             char title[96];
             snprintf(title, sizeof(title), "Delete %s?", active_filename);
+            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
             static const char *options[] = {"Confirm delete", "Cancel"};
-            render_option_menu(title, options, 2);
+            render_option_menu(title, icons, options, 2);
             break;
         }
 
         case Screen::kPlaying: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Playing %s...", active_filename);
-            add_centered_message(msg);
+            add_info_card(LV_SYMBOL_PLAY, msg);
             add_hint("Select: stop");
             break;
         }
@@ -217,37 +337,37 @@ static void render_body() {
         case Screen::kRecording: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Recording %s...", active_filename);
-            add_centered_message(msg);
+            add_info_card(LV_SYMBOL_AUDIO, msg);
             add_hint("Select: stop");
             break;
         }
 
         case Screen::kMicError:
-            add_centered_message(mic_last_error());
+            add_info_card(LV_SYMBOL_WARNING, mic_last_error());
             add_hint("Select: close");
             break;
 
         case Screen::kWifiSetup: {
             char msg[128];
             snprintf(msg, sizeof(msg), "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", wifi_setup_ssid);
-            add_centered_message(msg);
+            add_info_card(LV_SYMBOL_WIFI, msg);
             break;
         }
 
         case Screen::kWifiTimeoutDialog:
-            add_centered_message("Couldn't connect to WiFi. The device is running offline.");
+            add_info_card(LV_SYMBOL_WARNING, "Couldn't connect to WiFi. The device is running offline.");
             add_hint("Select: close");
             break;
 
         case Screen::kTranscribeProgress: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Transcribing %s...", transcribe_filename);
-            add_centered_message(msg);
+            add_info_card(LV_SYMBOL_REFRESH, msg);
             break;
         }
 
         case Screen::kTranscribeResult:
-            add_centered_message(transcribe_message);
+            add_info_card(transcribe_ok ? LV_SYMBOL_OK : LV_SYMBOL_WARNING, transcribe_message);
             add_hint("Select: close");
             break;
     }
@@ -260,11 +380,34 @@ void build_main_screen(bool sdPresent) {
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    header_label = lv_label_create(scr);
+    // A black status bar pinned across the top, outside body - never
+    // touched by render_body()'s lv_obj_clean(), so WiFi status survives
+    // every screen change.
+    lv_obj_t *header_bar = lv_obj_create(scr);
+    lv_obj_remove_style_all(header_bar);
+    lv_obj_set_size(header_bar, SCREEN_W, HEADER_H);
+    lv_obj_set_pos(header_bar, 0, 0);
+    lv_obj_set_style_bg_color(header_bar, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(header_bar, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    header_label = lv_label_create(header_bar);
     lv_obj_set_style_text_font(header_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(header_label, lv_color_black(), 0);
-    lv_obj_align(header_label, LV_ALIGN_TOP_MID, 0, 2);
+    lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
+    lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(header_label, "");
+    lv_obj_align(header_label, LV_ALIGN_LEFT_MID, 6, 0);
+
+    if (sdPresent) {
+        lv_obj_t *sd_icon = lv_label_create(header_bar);
+        lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
+        lv_obj_set_style_text_font(sd_icon, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
+        lv_obj_align(sd_icon, LV_ALIGN_RIGHT_MID, -6, 0);
+        lv_obj_set_width(header_label, SCREEN_W - 34); // leaves room for the SD icon
+    } else {
+        lv_obj_set_width(header_label, SCREEN_W - 12);
+    }
 
     body = lv_obj_create(scr);
     lv_obj_remove_style_all(body);
