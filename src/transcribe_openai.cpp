@@ -168,20 +168,25 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     size_t contentLength = preamble.length() + src.size() + trailer.length();
 
     // Streaming a whole audio file over one TLS write is prone to a
-    // transient HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3): arduino-esp32's
+    // transient HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3). Traced into
+    // arduino-esp32's own HTTPClient::sendRequest(Stream*, size)
+    // (HTTPClient.cpp): it writes the stream in HTTP_TCP_TX_BUFFER_SIZE
+    // (1460-byte) chunks, and any one chunk that comes back short from
+    // _client->write() gets exactly one 1ms-delay retry - a second short
+    // write on that same chunk fails the *entire* upload right there,
+    // with no reconnect. A 4.8MB file is ~3300 of those chunks in a
+    // single attempt, versus a few hundred for a short clip - the same
+    // per-chunk risk, spread over far more chunks, made the once-good-
+    // enough single retry inadequate once recordings got this long. Also
+    // why client.lastError() after a -3 is never worth surfacing here:
     // NetworkClientSecure::write() (send_ssl_data() in ssl_client.cpp)
-    // never updates sslclient's last_error on a write failure or
-    // send-timeout - only NetworkClientSecure::connect() does - so
-    // client.lastError() after a -3 reports the (successful) TLS
-    // handshake result, not the write failure, and is not worth
-    // surfacing here. Retries from the top of the file, with backoff,
-    // clear most one-off drops (a stalled SD read starving the socket
-    // long enough for the peer to give up, a flaky AP, ...); a single
-    // retry proved not enough in practice, so this allows a few more
-    // with increasing pauses between them before giving up as
-    // non-transient.
-    static const int kMaxAttempts = 4;
-    static const int kBackoffMs[kMaxAttempts] = {0, 300, 900, 2000};
+    // only updates sslclient's last_error from connect(), not from a
+    // write failure, so it always reports the (successful) TLS handshake
+    // result instead. Retrying the whole file from the top, with
+    // backoff, is what actually recovers from this - a flaky AP or one
+    // bad chunk among thousands is usually gone by the next attempt.
+    static const int kMaxAttempts = 6;
+    static const int kBackoffMs[kMaxAttempts] = {0, 300, 900, 2000, 4000, 8000};
     int code = 0;
     String response;
     char tlsErr[100] = "";
@@ -224,8 +229,8 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         http.addHeader("Content-Type", String("multipart/form-data; boundary=") + BOUNDARY);
 
         MultipartStream body(preamble, src, trailer);
-        Serial.printf("ai_transcribe_file: connecting (attempt %d/%d), free heap %u bytes\n", attempt + 1,
-                       kMaxAttempts, (unsigned)ESP.getFreeHeap());
+        Serial.printf("ai_transcribe_file: connecting (attempt %d/%d), free heap %u bytes, RSSI %d dBm\n", attempt + 1,
+                       kMaxAttempts, (unsigned)ESP.getFreeHeap(), (int)WiFi.RSSI());
         code = http.sendRequest("POST", &body, contentLength);
         response = http.getString();
         // Grab this before client goes out of scope below - meaningful
