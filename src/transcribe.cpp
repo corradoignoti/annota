@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "display.h"
+#include "sleep.h"
 #include "ui.h"
 
 // -----------------------------------------------------------------------
@@ -43,5 +44,11 @@ void transcribe_process_pending() {
     bool ok = ai_transcribe_file(transcribeTargetFilename, err, sizeof(err));
     display_resume_touch();
 
+    // A big/slow upload can easily run past sleep.h's idle timeout on its
+    // own - without this, sleep_process_idle() (running right after this
+    // same loop() pass, once ui_is_sleep_blocked() no longer sees
+    // kTranscribeProgress) would deep-sleep the instant the result screen
+    // below appears, before the user ever gets to read it.
+    sleep_reset_activity();
     ui_show_transcribe_result(ok, ok ? "Transcription saved." : err);
 }

@@ -156,7 +156,13 @@ has had a chance to reset its clock.
   repaint" (from `main.cpp`'s `loop()`, after `lv_timer_handler()`
   returns) for the same reentrancy reason; it also `#error`s at compile
   time if no `AI_PROVIDER_*` build flag is defined, so a missing one fails
-  loudly here instead of as a confusing link error. Exactly one
+  loudly here instead of as a confusing link error. `transcribe_process_pending()`
+  calls `sleep.h`'s `sleep_reset_activity()` right after the blocking
+  `ai_transcribe_file()` call returns, before showing the result screen -
+  without it, a transcription slow enough to outlast `sleep.cpp`'s idle
+  timeout on its own would deep-sleep the device the instant
+  `ui_is_sleep_blocked()` stops seeing `kTranscribeProgress`, before the
+  user ever got to read "Transcription saved." Exactly one
   `transcribe_<provider>.cpp` implements the rest (`ai_provider_name()`
   and `ai_transcribe_file()`) — each file's entire body is wrapped in
   `#ifdef AI_PROVIDER_<NAME>`, so every provider file can sit in `src/`
