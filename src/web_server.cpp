@@ -955,7 +955,21 @@ static void handle_settings_set_ai_key() {
 // this whole server is unauthenticated plain HTTP already (any other
 // device on the LAN can already download/delete/upload files here), just
 // the first endpoint that hands back a *secret* rather than a file.
+// Safety-net cap on web_transcribe_in_progress() - if the browser never
+// calls handle_save_transcript() back (tab closed, network drop mid-
+// upload), this is what lets the device fall asleep again eventually
+// instead of staying pinned awake forever. Generous on purpose - a real
+// transcription of a longer recording can legitimately take minutes.
+static const uint32_t WEB_TRANSCRIBE_MAX_MS = 300000UL;
+static uint32_t webTranscribeDeadlineMs = 0; // 0 = no transcription in flight
+
+bool web_transcribe_in_progress() {
+    return webTranscribeDeadlineMs != 0 && (int32_t)(millis() - webTranscribeDeadlineMs) < 0;
+}
+
 static void handle_get_transcript_key() {
+    webTranscribeDeadlineMs = millis() + WEB_TRANSCRIBE_MAX_MS;
+
     char key[AI_API_KEY_MAX];
     ai_provider_get_api_key(key, sizeof(key));
     JsonDocument doc;
@@ -973,6 +987,8 @@ static void handle_get_transcript_key() {
 // the on-device counterpart this replaces for files transcribed from the
 // browser instead of from the on-screen UI.
 static void handle_save_transcript() {
+    webTranscribeDeadlineMs = 0; // round trip is finishing (success or not) - see web_transcribe_in_progress()
+
     if (!server.hasArg("name")) {
         server.send(400, "text/plain", "Missing name");
         return;

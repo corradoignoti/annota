@@ -5,6 +5,7 @@
 #include <esp_sleep.h>
 
 #include "ui.h"
+#include "web_server.h"
 
 // Select/PWR button display_epaper.cpp drives (its own PWR_BUTTON_PIN,
 // private to that file) - duplicated here rather than exposed through
@@ -42,5 +43,6 @@ static void enter_deep_sleep() {
 
 void sleep_process_idle() {
     if (ui_is_sleep_blocked()) return; // recording/playing/transcribing - see ui.h
+    if (web_transcribe_in_progress()) return; // browser-side transcription - see web_server.h
     if (millis() - lastActivityMs > IDLE_TIMEOUT_MS) enter_deep_sleep();
 }

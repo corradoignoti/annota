@@ -16,3 +16,15 @@
 // lv_timer_handler().
 void web_server_start();
 void web_server_handle();
+
+// True while a browser-initiated transcription is in flight: the window
+// from GET /api/transcript-key (the browser fetching the API key to start)
+// to POST /api/transcript (writing the result back) - see
+// handle_get_transcript_key()'s comment. The actual upload/transcription
+// happens entirely between the browser and the AI provider, not through
+// this device, so no request lands here for the whole duration; ordinary
+// with_activity()-driven resets can't cover that gap. Checked by sleep.cpp
+// so idle deep-sleep doesn't cut WiFi out from under the browser mid-
+// transcription. Self-clears after a safety-net timeout in case the
+// browser never calls back (tab closed, network drop).
+bool web_transcribe_in_progress();

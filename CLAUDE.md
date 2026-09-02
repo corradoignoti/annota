@@ -49,21 +49,29 @@ has had a chance to reset its clock.
   family: same `PWR_HOLD_PIN` battery latch, same battery ADC pin, same
   button GPIOs, so the same approach applies unchanged).
   `sleep_process_idle()`, called last in `loop()`, deep-sleeps
-  (`esp_deep_sleep_start()`, ext1 wakeup armed on both onboard buttons,
-  `ESP_EXT1_WAKEUP_ANY_LOW`) once 120s have passed with no activity, unless
-  `ui.h`'s `ui_is_sleep_blocked()` says a foreground operation
-  (recording/playing/transcribing) is in progress. `sleep_reset_activity()`
-  is called from `main.cpp`'s `setup()` (starts the clock at boot) and from
-  two activity sources: `ui_epaper.cpp`'s `ui_process_input()` on any
-  onboard button edge, and `web_server.cpp`'s route registrations (each
-  wrapped in a `with_activity()` helper) on any served HTTP request — so
-  the device won't deep-sleep out from under someone actively browsing,
-  uploading to, or downloading from the web file manager just because no
-  button was pressed. Waking from deep sleep is a full MCU reset — `setup()`
-  runs again from scratch like a fresh boot, so there's no wake-cause
-  branching here (unlike pala_note, which distinguishes which button woke
-  it); the normal boot path already re-scans the SD card, reconnects WiFi,
-  and rebuilds the main screen.
+  (`esp_deep_sleep_start()`, ext1 wakeup armed on the Select/PWR button
+  only, `ESP_EXT1_WAKEUP_ANY_LOW` — BOOT/Next deliberately left out of the
+  mask so the sleep screen's "Hold Select to wake" stays true) once 120s
+  have passed with no activity, unless `ui.h`'s `ui_is_sleep_blocked()`
+  says a foreground operation (recording/playing/transcribing) is in
+  progress, or `web_server.h`'s `web_transcribe_in_progress()` says a
+  browser-initiated transcription is in flight — that flow runs entirely
+  between the browser and the AI provider (see web_server.cpp's bullet
+  below), with no request landing on this device for the whole duration,
+  so it needs its own explicit guard rather than relying on request
+  traffic; it self-clears on a safety-net timeout if the browser never
+  calls back. `sleep_reset_activity()` is called from `main.cpp`'s
+  `setup()` (starts the clock at boot) and from two activity sources:
+  `ui_epaper.cpp`'s `ui_process_input()` on any onboard button edge, and
+  `web_server.cpp`'s route registrations (each wrapped in a
+  `with_activity()` helper) on any served HTTP request — so the device
+  won't deep-sleep out from under someone actively browsing, uploading to,
+  or downloading from the web file manager just because no button was
+  pressed. Waking from deep sleep is a full MCU reset — `setup()` runs
+  again from scratch like a fresh boot, so there's no wake-cause branching
+  here (unlike pala_note, which distinguishes which button woke it); the
+  normal boot path already re-scans the SD card, reconnects WiFi, and
+  rebuilds the main screen.
 
 - **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
   e-paper panel driver (command/LUT sequence ported from Waveshare's own
@@ -199,7 +207,11 @@ has had a chance to reset its clock.
   `POST /api/transcript?name=...` writes the resulting text to `name`'s
   sibling `.txt` file, the same output `ai_transcribe_file()` produces.
   Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
-  only happens on reboot.
+  only happens on reboot. `web_transcribe_in_progress()` tracks the window
+  between those two calls (set on the key request, cleared on the final
+  POST, self-clearing on a timeout otherwise) purely so `sleep.cpp` knows
+  not to deep-sleep mid-flight — no request lands here while the browser
+  is talking to the AI provider directly.
 
 ### LVGL configuration
 
