@@ -167,29 +167,77 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
 
     size_t contentLength = preamble.length() + src.size() + trailer.length();
 
-    WiFiClientSecure client;
-    // No certificate pinning / root-CA bundle exists in this project yet -
-    // accept whatever cert the server presents. Traffic is still
-    // TLS-encrypted in transit; this just means no protection against a
-    // MITM presenting a fake cert.
-    client.setInsecure();
+    // Streaming a whole audio file over one TLS write is prone to a
+    // transient HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3): arduino-esp32's
+    // NetworkClientSecure::write() (send_ssl_data() in ssl_client.cpp)
+    // never updates sslclient's last_error on a write failure or
+    // send-timeout - only NetworkClientSecure::connect() does - so
+    // client.lastError() after a -3 reports the (successful) TLS
+    // handshake result, not the write failure, and is not worth
+    // surfacing here. Retries from the top of the file, with backoff,
+    // clear most one-off drops (a stalled SD read starving the socket
+    // long enough for the peer to give up, a flaky AP, ...); a single
+    // retry proved not enough in practice, so this allows a few more
+    // with increasing pauses between them before giving up as
+    // non-transient.
+    static const int kMaxAttempts = 4;
+    static const int kBackoffMs[kMaxAttempts] = {0, 300, 900, 2000};
+    int code = 0;
+    String response;
+    char tlsErr[100] = "";
+    for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
+        if (attempt > 0) {
+            if (WiFi.status() != WL_CONNECTED) {
+                code = HTTPC_ERROR_CONNECTION_LOST;
+                break;
+            }
+            src.seek(0);
+            delay(kBackoffMs[attempt]);
+        }
 
-    HTTPClient http;
-    http.setTimeout(60000);
-    if (!http.begin(client, TRANSCRIBE_URL)) {
-        src.close();
-        sd_end();
-        set_err(errOut, errOutLen, "Could not reach api.openai.com");
-        return false;
+        WiFiClientSecure client;
+        // No certificate pinning / root-CA bundle exists in this project
+        // yet - accept whatever cert the server presents. Traffic is
+        // still TLS-encrypted in transit; this just means no protection
+        // against a MITM presenting a fake cert.
+        client.setInsecure();
+
+        HTTPClient http;
+        http.setTimeout(60000);
+        // HTTPClient::connect() passes its OWN separate _connectTimeout
+        // (5000ms default, HTTPCLIENT_DEFAULT_TCP_TIMEOUT) to the
+        // client's connect(host, port, timeout) - which is what
+        // NetworkClientSecure/ssl_client.cpp latches into
+        // sslclient->socket_timeout, the no-progress watchdog
+        // send_ssl_data() uses for every write for the rest of this
+        // connection's life. setTimeout() above never touches it. Left
+        // at its 5s default, any single >5s stall on the socket during
+        // the upload (peer backpressure, weak RSSI) kills the write with
+        // HTTPC_ERROR_SEND_PAYLOAD_FAILED - reliably, not just under
+        // flaky conditions. Match it to the same 60s budget.
+        http.setConnectTimeout(60000);
+        if (!http.begin(client, TRANSCRIBE_URL)) {
+            code = HTTPC_ERROR_CONNECTION_REFUSED;
+            continue;
+        }
+        http.addHeader("Authorization", String("Bearer ") + apiKey);
+        http.addHeader("Content-Type", String("multipart/form-data; boundary=") + BOUNDARY);
+
+        MultipartStream body(preamble, src, trailer);
+        Serial.printf("ai_transcribe_file: connecting (attempt %d/%d), free heap %u bytes\n", attempt + 1,
+                       kMaxAttempts, (unsigned)ESP.getFreeHeap());
+        code = http.sendRequest("POST", &body, contentLength);
+        response = http.getString();
+        // Grab this before client goes out of scope below - meaningful
+        // for a genuine handshake failure (code < 0, not -3; see the
+        // comment on the send-payload-failed branch below for why -3
+        // doesn't get anything useful out of it).
+        client.lastError(tlsErr, sizeof(tlsErr));
+        http.end();
+
+        if (code != HTTPC_ERROR_SEND_PAYLOAD_FAILED) break;
+        Serial.printf("ai_transcribe_file: send payload failed (attempt %d/%d), retrying\n", attempt + 1, kMaxAttempts);
     }
-    http.addHeader("Authorization", String("Bearer ") + apiKey);
-    http.addHeader("Content-Type", String("multipart/form-data; boundary=") + BOUNDARY);
-
-    MultipartStream body(preamble, src, trailer);
-    Serial.printf("ai_transcribe_file: connecting, free heap %u bytes\n", (unsigned)ESP.getFreeHeap());
-    int code = http.sendRequest("POST", &body, contentLength);
-    String response = http.getString();
-    http.end();
     src.close();
 
     if (code != 200) {
@@ -197,20 +245,25 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
             message = doc["error"]["message"].as<const char *>();
+        } else if (code == HTTPC_ERROR_SEND_PAYLOAD_FAILED) {
+            // Connection dropped mid-upload (see the retry loop's comment
+            // above for why client.lastError() isn't worth printing here -
+            // it never reflects a write failure, only the earlier,
+            // successful handshake).
+            message = "Upload interrupted, connection dropped (HTTP -3 send payload failed)";
         } else if (code < 0) {
-            // Negative codes are HTTPClient's own connection-layer errors
-            // (never reached the server, so no JSON body to parse to blame
-            // instead) - the request never got past client.connect()
-            // inside sendRequest(). errorToString() names which stage
-            // failed (DNS, socket connect, read timeout, ...); when it's
-            // the TLS handshake itself, mbedtls_strerror() (via
-            // client.lastError()) gives the actual mbedTLS reason - often
-            // a heap allocation failure if the free heap logged just above
-            // is only tens of KB (this board has PSRAM, but mbedTLS's own
-            // buffers still have to compete with whatever else hasn't been
-            // pushed off internal RAM).
-            char tlsErr[100];
-            client.lastError(tlsErr, sizeof(tlsErr));
+            // Other negative codes are HTTPClient's own connection-layer
+            // errors (never reached the server, so no JSON body to parse
+            // to blame instead) - the request never got past
+            // client.connect() inside sendRequest(). errorToString()
+            // names which stage failed (DNS, socket connect, read
+            // timeout, ...); when it's the TLS handshake itself,
+            // mbedtls_strerror() (via client.lastError()) gives the
+            // actual mbedTLS reason - often a heap allocation failure if
+            // the free heap logged just above is only tens of KB (this
+            // board has PSRAM, but mbedTLS's own buffers still have to
+            // compete with whatever else hasn't been pushed off internal
+            // RAM).
             message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + "; TLS: " + tlsErr + ")";
         } else {
             message = "HTTP " + String(code);
