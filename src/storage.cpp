@@ -69,6 +69,7 @@ static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const cha
             strncpy(out[count].filename, base, sizeof(out[count].filename) - 1);
             out[count].filename[sizeof(out[count].filename) - 1] = '\0';
             format_timestamp(entry.getLastWrite(), out[count].created, sizeof(out[count].created));
+            out[count].size = entry.size();
             count++;
         }
         entry.close();

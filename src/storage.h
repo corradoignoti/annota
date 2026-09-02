@@ -22,6 +22,7 @@ constexpr size_t MAX_MP3_FILES = 64;
 struct Mp3Entry {
     char filename[64];
     char created[20]; // "YYYY-MM-DD HH:MM" or "Unknown date"
+    uint32_t size;     // bytes, for the on-device Details screen
 };
 
 extern Mp3Entry mp3Files[MAX_MP3_FILES];

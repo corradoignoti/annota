@@ -46,6 +46,7 @@ enum class Screen {
     kWifiTimeoutDialog,
     kTranscribeProgress,
     kTranscribeResult,
+    kDetails,
 };
 
 static const int16_t HEADER_H = 20;
@@ -67,9 +68,11 @@ static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
 
-// kActionMenu / kDeleteConfirm - the file the menu/confirm was opened for,
-// and which option is currently highlighted.
+// kActionMenu / kDeleteConfirm / kDetails - the file the menu/confirm was
+// opened for, and which option is currently highlighted. active_file_index
+// indexes mp3Files directly (Details reads created/size straight off it).
 static char active_filename[64];
+static size_t active_file_index = 0;
 static int menu_index = 0;
 
 // kWifiSetup
@@ -306,14 +309,24 @@ static void render_body() {
             // Play/Transcription only make sense for audio files, not the
             // .txt transcripts this same list shows when toggled.
             if (showing_audio_files) {
-                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Play", "Transcribe", "Delete", "Cancel"};
-                render_option_menu(active_filename, icons, options, 4);
+                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "Cancel"};
+                render_option_menu(active_filename, icons, options, 5);
             } else {
-                static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Delete", "Cancel"};
-                render_option_menu(active_filename, icons, options, 2);
+                static const char *icons[] = {LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"Details", "Delete", "Cancel"};
+                render_option_menu(active_filename, icons, options, 3);
             }
+            break;
+        }
+
+        case Screen::kDetails: {
+            const Mp3Entry &entry = mp3Files[active_file_index];
+            char msg[160];
+            snprintf(msg, sizeof(msg), "%s\n\nCreated: %s\nSize: %lu KB", entry.filename, entry.created,
+                     (unsigned long)((entry.size + 1023) / 1024));
+            add_info_card(LV_SYMBOL_LIST, msg);
+            add_hint("Select: close");
             break;
         }
 
@@ -536,6 +549,7 @@ void ui_process_input() {
                         render_body();
                     } else {
                         size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
+                        active_file_index = fileIndex;
                         strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
                         active_filename[sizeof(active_filename) - 1] = '\0';
                         menu_index = 0;
@@ -553,10 +567,10 @@ void ui_process_input() {
 
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
-            // {Play, Transcribe, Delete, Cancel} for audio, {Delete,
-            // Cancel} for .txt (no Play/Transcribe there - see that
-            // comment).
-            int optionCount = showing_audio_files ? 4 : 2;
+            // {Play, Transcribe, Details, Delete, Cancel} for audio,
+            // {Details, Delete, Cancel} for .txt (no Play/Transcribe there
+            // - see that comment).
+            int optionCount = showing_audio_files ? 5 : 3;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -578,6 +592,9 @@ void ui_process_input() {
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
                 } else if (menu_index == (showing_audio_files ? 2 : 0)) {
+                    state = Screen::kDetails;
+                    render_body();
+                } else if (menu_index == (showing_audio_files ? 3 : 1)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -651,6 +668,13 @@ void ui_process_input() {
         case Screen::kTranscribeResult:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kDetails:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kActionMenu;
                 render_body();
             }
             break;
