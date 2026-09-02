@@ -237,6 +237,21 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     color: var(--ink-soft);
   }
   #sd-widget b { color: var(--ink); font-weight: 600; }
+
+  td.check, th.check { width: 1.6rem; text-align: center; padding-right: 0; }
+  td.check input, th.check input { width: 1rem; height: 1rem; margin: 0; vertical-align: middle; }
+  #batchBar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    margin: 0 1rem 1.2rem;
+    font-size: 0.78rem;
+  }
+  #batchBar #batchCount { color: var(--ink-soft); white-space: nowrap; }
+  #batchBar .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
+  #batchBar .actions button { width: auto; padding: 0.4rem 0.7rem; }
 </style>
 </head>
 <body>
@@ -259,9 +274,20 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   <button id="playerClose" class="btn">✕ Stop</button>
 </div>
 
+<div id="batchBar" class="card" hidden>
+  <span id="batchCount"></span>
+  <div class="actions">
+    <button id="batchDownload">⬇ Download</button>
+    <button id="batchTranscribe">✎ Transcribe</button>
+    <button id="batchDelete" class="danger">✕ Delete</button>
+    <button id="batchClear" class="btn">Clear</button>
+  </div>
+</div>
+
 <div class="card" id="files-card">
   <table id="files">
     <thead><tr>
+      <th class="check"><input type="checkbox" id="selectAll" title="Select all"></th>
       <th class="sortable" data-sort="name">Name<span class="arrow"></span></th>
       <th class="sortable date" data-sort="mtime">Date<span class="arrow"></span></th>
       <th class="size">Size</th>
@@ -370,6 +396,11 @@ let currentFiles = [];
 let sortKey = "name";
 let sortDir = 1; // 1 = ascending, -1 = descending
 
+// Batch selection - filenames, not row/index references, so it survives
+// a re-sort (render() rebuilds every row from scratch either way) and is
+// simple to prune against currentFiles after a refresh().
+let selected = new Set();
+
 // Keep in sync with web_server.cpp's audio_content_type() - only this
 // extension gets a Play button and a working /api/play.
 function isAudio(name) {
@@ -394,7 +425,27 @@ document.getElementById("playerClose").onclick = () => {
   document.getElementById("player").hidden = true;
 };
 
+// Shows/hides #batchBar and keeps #selectAll's checked/indeterminate
+// state in sync with `selected` - called at the end of render() (so sort
+// clicks keep it in sync) and after every checkbox toggle.
+function updateBatchBar() {
+  document.getElementById("batchCount").textContent = selected.size + " selected";
+  document.getElementById("batchBar").hidden = selected.size === 0;
+  const selectAll = document.getElementById("selectAll");
+  const total = currentFiles.length;
+  selectAll.checked = total > 0 && selected.size === total;
+  selectAll.indeterminate = selected.size > 0 && selected.size < total;
+}
+
 function render() {
+  // Drop selections for files that no longer exist (deleted elsewhere,
+  // or this is the refresh() after a batch action) - selected is keyed by
+  // filename, so a stale entry would otherwise just sit there unseen.
+  const stillPresent = new Set(currentFiles.map((f) => f.name));
+  for (const name of Array.from(selected)) {
+    if (!stillPresent.has(name)) selected.delete(name);
+  }
+
   const sorted = currentFiles.slice().sort((a, b) => {
     let cmp;
     if (sortKey === "name") {
@@ -415,6 +466,18 @@ function render() {
   document.getElementById("empty").hidden = sorted.length > 0;
   for (const f of sorted) {
     const tr = document.createElement("tr");
+
+    const check = document.createElement("td");
+    check.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = selected.has(f.name);
+    cb.onchange = () => {
+      if (cb.checked) selected.add(f.name); else selected.delete(f.name);
+      updateBatchBar();
+    };
+    check.appendChild(cb);
+    tr.appendChild(check);
 
     const name = document.createElement("td");
     name.className = "name";
@@ -471,6 +534,8 @@ function render() {
     tr.appendChild(actions);
     body.appendChild(tr);
   }
+
+  updateBatchBar();
 }
 
 function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
@@ -511,22 +576,40 @@ document.querySelectorAll("th.sortable").forEach((th) => {
   };
 });
 
-// Runs the transcription entirely from the browser: the device only hands
-// over the saved API key (GET /api/transcript-key) and the audio bytes
-// (the existing /api/download), then stores whatever text comes back
-// (POST /api/transcript) - the device itself never talks to the AI
-// provider for this button. The actual provider call is callProvider(),
+// GET /api/transcript-key, split out of transcribeFile() so batchTranscribe()
+// below can fetch it once for the whole selection instead of once per file.
+async function fetchTranscribeKey() {
+  const keyRes = await fetch("/api/transcript-key");
+  return keyRes.json(); // { key, providerName }
+}
+
+// Runs the transcription entirely from the browser: the audio bytes come
+// from the existing /api/download, then whatever text comes back is
+// stored via POST /api/transcript - the device itself never talks to the
+// AI provider for this button. The actual provider call is callProvider(),
 // defined just above in TRANSCRIBE_PROVIDER_JS - picked at build time by
 // the same AI_PROVIDER_* flag that selects transcribe_<provider>.cpp on
 // the device side, so this function itself has nothing provider-specific
-// in it.
+// in it. `key` is fetched once by the caller (transcribeFile() or
+// batchTranscribe() below) rather than in here, so a batch run doesn't
+// re-fetch it per file.
+async function transcribeOne(name, key) {
+  const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
+  const text = await callProvider(key, audioBlob, name);
+  const saveRes = await fetch("/api/transcript?name=" + encodeURIComponent(name), {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: text,
+  });
+  if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
+}
+
 async function transcribeFile(name, btn) {
   const status = document.getElementById("status");
   const icon = btn.textContent; // restored in finally - button stays icon-only, see td.actions' CSS comment
   btn.disabled = true;
   try {
-    const keyRes = await fetch("/api/transcript-key");
-    const { key, providerName } = await keyRes.json();
+    const { key, providerName } = await fetchTranscribeKey();
     if (!key) {
       alert("No " + providerName + " API key set. Add one on the Settings page first.");
       return;
@@ -534,16 +617,7 @@ async function transcribeFile(name, btn) {
 
     btn.textContent = "…";
     status.textContent = "Transcribing " + name + "...";
-    const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
-
-    const text = await callProvider(key, audioBlob, name);
-
-    const saveRes = await fetch("/api/transcript?name=" + encodeURIComponent(name), {
-      method: "POST",
-      headers: { "Content-Type": "text/plain" },
-      body: text,
-    });
-    if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
+    await transcribeOne(name, key);
 
     status.textContent = "Transcribed " + name;
     refresh();
@@ -563,6 +637,100 @@ async function removeFile(name) {
   }
   refresh();
 }
+
+// Batch actions (#batchBar, wired up near the bottom of this script) - each
+// just loops the same per-file request the single-row buttons above already
+// use, sequentially, so nothing new is needed server-side.
+
+// Triggers one browser download per selected file rather than a server-side
+// zip (no zip library in this firmware, and SD-side zipping a possibly
+// multi-file, multi-megabyte batch isn't worth adding one for). Staggered
+// half a second apart - firing several a.click() downloads back-to-back in
+// the same tick is what gets a browser's "this site is trying to download
+// multiple files" block, or drops all but the first.
+async function batchDownload() {
+  for (const name of Array.from(selected)) {
+    const a = document.createElement("a");
+    a.href = "/api/download?name=" + encodeURIComponent(name);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+// Non-audio selections are silently skipped (isAudio() gates the per-row
+// Transcribe button too) rather than erroring the whole batch over a mix.
+async function batchTranscribe() {
+  const names = Array.from(selected).filter(isAudio);
+  if (names.length === 0) {
+    alert("No audio files selected.");
+    return;
+  }
+  const { key, providerName } = await fetchTranscribeKey();
+  if (!key) {
+    alert("No " + providerName + " API key set. Add one on the Settings page first.");
+    return;
+  }
+
+  const status = document.getElementById("status");
+  const btn = document.getElementById("batchTranscribe");
+  btn.disabled = true;
+  let failed = 0;
+  for (const name of names) {
+    status.textContent = "Transcribing " + name + "...";
+    try {
+      await transcribeOne(name, key);
+    } catch (e) {
+      failed++;
+      status.textContent = "Transcribe failed for " + name + ": " + e.message;
+    }
+  }
+  status.textContent = failed === 0 ? "Transcribed " + names.length + " file(s)."
+    : "Transcribed " + (names.length - failed) + "/" + names.length + " file(s), " + failed + " failed.";
+  btn.disabled = false;
+  refresh();
+}
+
+async function batchDelete() {
+  const names = Array.from(selected);
+  if (names.length === 0) return;
+  if (!confirm("Delete " + names.length + " file(s)? This can't be undone.")) return;
+
+  const status = document.getElementById("status");
+  const btn = document.getElementById("batchDelete");
+  btn.disabled = true;
+  let failed = 0;
+  for (const name of names) {
+    status.textContent = "Deleting " + name + "...";
+    try {
+      const res = await fetch("/api/delete?name=" + encodeURIComponent(name), { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      selected.delete(name);
+    } catch (e) {
+      failed++;
+      status.textContent = "Delete failed for " + name + ": " + e.message;
+    }
+  }
+  status.textContent = failed === 0 ? "Deleted " + names.length + " file(s)."
+    : "Deleted " + (names.length - failed) + "/" + names.length + " file(s), " + failed + " failed.";
+  btn.disabled = false;
+  refresh();
+}
+
+document.getElementById("selectAll").onchange = (e) => {
+  if (e.target.checked) {
+    currentFiles.forEach((f) => selected.add(f.name));
+  } else {
+    selected.clear();
+  }
+  render();
+};
+document.getElementById("batchDownload").onclick = batchDownload;
+document.getElementById("batchTranscribe").onclick = batchTranscribe;
+document.getElementById("batchDelete").onclick = batchDelete;
+document.getElementById("batchClear").onclick = () => { selected.clear(); render(); };
 
 function uploadFile(file) {
   const status = document.getElementById("status");
