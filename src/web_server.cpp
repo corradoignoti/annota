@@ -55,7 +55,15 @@ static void sd_release() {
     display_resume_touch();
 }
 
-static const char INDEX_HTML[] PROGMEM = R"rawliteral(
+// Split around TRANSCRIBE_PROVIDER_JS below (handle_root() splices the
+// three together) instead of one constant, so the browser-side Transcribe
+// button's actual provider call - the one piece that has to match
+// whichever transcribe_<provider>.cpp is compiled in - can be swapped by
+// the same AI_PROVIDER_* build flag instead of a runtime branch. Split
+// point is right before the main <script> block, so callProvider() (defined
+// in TRANSCRIBE_PROVIDER_JS) is in place - hoisted by the time it's first
+// called from an onclick handler - before transcribeFile() below uses it.
+static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <!doctype html>
 <html>
 <head>
@@ -224,7 +232,81 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <progress id="progress" max="100" value="0"></progress>
   <div id="status"></div>
 </div>
+)rawliteral";
 
+// The browser-side Transcribe button's provider call (callProvider(key,
+// blob, filename), returning the transcript text or throwing) - the one
+// piece of INDEX_HTML that has to match whichever transcribe_<provider>.cpp
+// is compiled in, so it's picked by the same AI_PROVIDER_* flag instead of
+// a runtime branch. Each variant mirrors its C++ counterpart's request
+// shape (model, field names, endpoint) - see that file for why it's shaped
+// the way it is. transcribe.cpp already #errors at compile time if no
+// AI_PROVIDER_* is defined, so this only needs to handle the ones that
+// exist.
+#if defined(AI_PROVIDER_OPENAI)
+static const char TRANSCRIBE_PROVIDER_JS[] PROGMEM = R"rawliteral(
+<script>
+// Mirrors transcribe_openai.cpp's request (whisper-1, multipart file
+// upload) - talks to OpenAI directly from the browser instead of routing
+// through the device.
+async function callProvider(key, blob, filename) {
+  const form = new FormData();
+  form.append("model", "whisper-1");
+  form.append("file", blob, filename);
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + key },
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error((json.error && json.error.message) || ("HTTP " + res.status));
+  return json.text;
+}
+</script>
+)rawliteral";
+#elif defined(AI_PROVIDER_GEMINI)
+static const char TRANSCRIBE_PROVIDER_JS[] PROGMEM = R"rawliteral(
+<script>
+// Mirrors transcribe_gemini.cpp's request (generateContent, audio inlined
+// as base64, same prompt) - talks to Gemini directly from the browser
+// instead of routing through the device.
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+async function callProvider(key, blob, filename) {
+  const mimeType = /\.m4a$/i.test(filename) ? "audio/mp4" : "audio/mpeg";
+  const data = await blobToBase64(blob);
+  const body = {
+    contents: [{
+      parts: [
+        { text: "Transcribe this audio recording verbatim. Respond with only the transcript text, no commentary." },
+        { inline_data: { mime_type: mimeType, data } },
+      ],
+    }],
+  };
+  const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=" +
+    encodeURIComponent(key);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  const parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
+  const text = parts && parts[0] && parts[0].text;
+  if (!res.ok || typeof text !== "string") throw new Error((json.error && json.error.message) || "Unexpected response from Gemini");
+  return text;
+}
+</script>
+)rawliteral";
+#endif
+
+static const char INDEX_HTML_TAIL[] PROGMEM = R"rawliteral(
 <script>
 function fmtSize(n) {
   if (n < 1024) return n + " B";
@@ -311,6 +393,12 @@ function render() {
       play.onclick = () => playFile(f.name);
       actions.appendChild(play);
       actions.appendChild(document.createTextNode(" "));
+
+      const transcribe = document.createElement("button");
+      transcribe.textContent = "Transcribe";
+      transcribe.onclick = () => transcribeFile(f.name, transcribe);
+      actions.appendChild(transcribe);
+      actions.appendChild(document.createTextNode(" "));
     }
 
     const dl = document.createElement("a");
@@ -349,6 +437,50 @@ document.querySelectorAll("th.sortable").forEach((th) => {
     render();
   };
 });
+
+// Runs the transcription entirely from the browser: the device only hands
+// over the saved API key (GET /api/transcript-key) and the audio bytes
+// (the existing /api/download), then stores whatever text comes back
+// (POST /api/transcript) - the device itself never talks to the AI
+// provider for this button. The actual provider call is callProvider(),
+// defined just above in TRANSCRIBE_PROVIDER_JS - picked at build time by
+// the same AI_PROVIDER_* flag that selects transcribe_<provider>.cpp on
+// the device side, so this function itself has nothing provider-specific
+// in it.
+async function transcribeFile(name, btn) {
+  const status = document.getElementById("status");
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    const keyRes = await fetch("/api/transcript-key");
+    const { key, providerName } = await keyRes.json();
+    if (!key) {
+      alert("No " + providerName + " API key set. Add one on the Settings page first.");
+      return;
+    }
+
+    btn.textContent = "Transcribing...";
+    status.textContent = "Transcribing " + name + "...";
+    const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
+
+    const text = await callProvider(key, audioBlob, name);
+
+    const saveRes = await fetch("/api/transcript?name=" + encodeURIComponent(name), {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: text,
+    });
+    if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
+
+    status.textContent = "Transcribed " + name;
+    refresh();
+  } catch (e) {
+    status.textContent = "Transcribe failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
 
 async function removeFile(name) {
   if (!confirm("Delete " + name + "? This can't be undone.")) return;
@@ -671,7 +803,14 @@ refresh();
 )rawliteral";
 
 static void handle_root() {
-    server.send_P(200, "text/html", INDEX_HTML);
+    // Splices in TRANSCRIBE_PROVIDER_JS (picked by AI_PROVIDER_* above) -
+    // small enough (a few KB total) that building it as one heap String per
+    // request is simpler than a second send_P() and worth it to keep the
+    // provider-specific piece out of the two main constants.
+    String page = FPSTR(INDEX_HTML_HEAD);
+    page += FPSTR(TRANSCRIBE_PROVIDER_JS);
+    page += FPSTR(INDEX_HTML_TAIL);
+    server.send(200, "text/html", page);
 }
 
 static void handle_settings_page() {
@@ -691,9 +830,10 @@ static void handle_settings_info() {
     doc["wifiConnected"] = connected;
     doc["ip"] = connected ? WiFi.localIP().toString() : "";
     doc["clockSynced"] = wifi_clock_synced();
-    // Never echoes the key itself back over the network - this server is
-    // plain HTTP, so the page only learns whether one's saved and shows a
-    // placeholder; the actual value is never displayed anywhere.
+    // Never echoes the key itself here - the Settings page only learns
+    // whether one's saved and shows a placeholder. The one place the raw
+    // key does travel over the network is GET /api/transcript-key, for
+    // the browser-side Transcribe button (see its handler's comment).
     // aiProviderName lets the page label the field correctly without
     // knowing which AI_PROVIDER_* is compiled in (transcribe.h).
     doc["aiProviderName"] = ai_provider_name();
@@ -758,6 +898,73 @@ static void handle_settings_set_ai_key() {
     }
     ai_provider_set_api_key(key.c_str());
     server.send(200, "text/plain", "OK");
+}
+
+// GET /api/transcript-key - the one deliberate exception to
+// handle_settings_info()'s "never echoes the key" rule: the browser-side
+// Transcribe button (INDEX_HTML) calls the AI provider directly from the
+// user's own browser rather than routing the upload through this device
+// (see transcribe_openai.cpp's retry-loop comment for why offloading a
+// multi-megabyte upload off the ESP32's flaky TLS stack is worth it), so
+// it needs the raw key client-side. That's no new exposure in practice -
+// this whole server is unauthenticated plain HTTP already (any other
+// device on the LAN can already download/delete/upload files here), just
+// the first endpoint that hands back a *secret* rather than a file.
+static void handle_get_transcript_key() {
+    char key[AI_API_KEY_MAX];
+    ai_provider_get_api_key(key, sizeof(key));
+    JsonDocument doc;
+    doc["key"] = key;
+    doc["providerName"] = ai_provider_name();
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+// POST /api/transcript?name=<audio file> - writes the raw POST body (the
+// transcript text, sent as text/plain by the browser-side Transcribe
+// button) to <name>'s sibling .txt file, overwriting any existing one.
+// Mirrors transcribe_openai.cpp's txt_sibling_path()/write, since that's
+// the on-device counterpart this replaces for files transcribed from the
+// browser instead of from the on-screen UI.
+static void handle_save_transcript() {
+    if (!server.hasArg("name")) {
+        server.send(400, "text/plain", "Missing name");
+        return;
+    }
+    char name[64];
+    if (!sanitize_name(server.arg("name"), name, sizeof(name))) {
+        server.send(400, "text/plain", "Invalid name");
+        return;
+    }
+    if (!server.hasArg("plain")) {
+        server.send(400, "text/plain", "Missing body");
+        return;
+    }
+    String text = server.arg("plain");
+
+    if (!sd_claim()) {
+        server.send(503, "text/plain", "SD card not available");
+        return;
+    }
+
+    const char *dot = strrchr(name, '.');
+    size_t baseLen = dot ? (size_t)(dot - name) : strlen(name);
+    char path[80];
+    if (baseLen > sizeof(path) - 6) baseLen = sizeof(path) - 6; // '/' + baseLen + ".txt" + '\0'
+    path[0] = '/';
+    memcpy(path + 1, name, baseLen);
+    strcpy(path + 1 + baseLen, ".txt");
+
+    File f = sd_fs().open(path, FILE_WRITE);
+    bool ok = (bool)f;
+    if (ok) {
+        f.print(text);
+        f.close();
+    }
+    sd_release();
+
+    server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Write failed");
 }
 
 static void handle_list() {
@@ -964,6 +1171,8 @@ void web_server_start() {
     server.on("/api/settings/reconnect", HTTP_POST, handle_settings_reconnect);
     server.on("/api/settings/forget", HTTP_POST, handle_settings_forget);
     server.on("/api/settings/ai-key", HTTP_POST, handle_settings_set_ai_key);
+    server.on("/api/transcript-key", HTTP_GET, handle_get_transcript_key);
+    server.on("/api/transcript", HTTP_POST, handle_save_transcript);
     server.on("/api/files", HTTP_GET, handle_list);
     server.on("/api/download", HTTP_GET, handle_download);
     server.on("/api/play", HTTP_GET, handle_play);

@@ -146,12 +146,13 @@ trigger directly — `wifi_process_pending_reconnect()` and
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80. Two pages, same dark palette as
   `ui_epaper.cpp`: a file manager (list/download/upload/delete files on
-  the SD root) at `/`, backed by `/api/files`, `/api/download`,
-  `/api/upload`, `/api/delete`; and a `/settings` page (WiFi/clock status,
-  SD capacity, Reconnect WiFi, Delete WiFi Setup, and the AI provider's
-  API key field, labeled dynamically from `aiProviderName` in the JSON
-  below), backed by `/api/settings` (GET, a status snapshot) and
-  `/api/settings/reconnect`, `/api/settings/forget`,
+  the SD root, plus a per-file Transcribe button for audio files) at `/`,
+  backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
+  `/api/transcript-key`, `/api/transcript`; and a `/settings` page
+  (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, and
+  the AI provider's API key field, labeled dynamically from
+  `aiProviderName` in the JSON below), backed by `/api/settings` (GET, a
+  status snapshot) and `/api/settings/reconnect`, `/api/settings/forget`,
   `/api/settings/ai-key` (POST). Only started once `wifi_connect()`
   succeeds. Each handler that touches the card calls
   `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
@@ -161,8 +162,21 @@ trigger directly — `wifi_process_pending_reconnect()` and
   NVS and never touches the SD card. This server is plain HTTP, so
   `/api/settings` reports only whether a key is saved, never the key
   itself — the web page can clear or overwrite it but never displays the
-  current value. Uploads/deletes don't refresh the on-screen MP3 list
-  (`mp3Files`); that only happens on reboot.
+  current value. The web file manager's Transcribe button is a second,
+  independent transcription path alongside `transcribe.cpp`'s on-device
+  one (`ui_epaper.cpp`'s button, which uploads from the ESP32 itself):
+  its JS calls `GET /api/transcript-key` to get the raw saved key (the
+  one deliberate exception to the "never the key itself" rule above,
+  since the actual OpenAI request is made client-side, from the user's
+  own browser, straight to `api.openai.com`, hardcoded to match whichever
+  `transcribe_<provider>.cpp` is compiled in rather than going through
+  `transcribe.h`'s generic surface — offloading the upload from the
+  ESP32's own flaky TLS stack, see `transcribe_openai.cpp`'s retry-loop
+  comment), downloads the audio via the existing `/api/download`, then
+  `POST /api/transcript?name=...` writes the resulting text to `name`'s
+  sibling `.txt` file, the same output `ai_transcribe_file()` produces.
+  Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
+  only happens on reboot.
 
 ### LVGL configuration
 
