@@ -8,7 +8,21 @@
 #include "web_server.h"
 #include "wifi_manager.h"
 
+// Battery power latch (Waveshare schematic): the physical power switch only
+// pulses the regulator on - the MCU must itself hold this pin high or the
+// board powers back off the moment the switch is released. Set first in
+// setup(), before anything else, so nothing downstream (panel init, WiFi,
+// SD) can lose power mid-init.
+#define PWR_HOLD_PIN 17
+
+static void keepBatteryPowerOn() {
+    pinMode(PWR_HOLD_PIN, OUTPUT);
+    digitalWrite(PWR_HOLD_PIN, HIGH);
+}
+
 void setup() {
+    keepBatteryPowerOn();
+
     Serial.begin(115200);
     Serial.println("annota: boot");
 
