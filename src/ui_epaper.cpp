@@ -45,7 +45,6 @@ enum class Screen {
     kRecording,
     kMicError,
     kWifiSetup,
-    kWifiTimeoutDialog,
     kTranscribeProgress,
     kTranscribeResult,
     kDetails,
@@ -83,11 +82,6 @@ static int menu_index = 0;
 
 // kWifiSetup
 static char wifi_setup_ssid[64];
-
-// kWifiTimeoutDialog - forwarded to on Select, see wifi_manager.cpp's
-// close_button_event_cb() (it ignores the lv_event_t* it's normally
-// passed, so calling it with nullptr here is safe).
-static lv_event_cb_t wifi_timeout_close_cb = nullptr;
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -395,11 +389,6 @@ static void render_body() {
             break;
         }
 
-        case Screen::kWifiTimeoutDialog:
-            add_info_card(LV_SYMBOL_WARNING, "Couldn't connect to WiFi. The device is running offline.");
-            add_hint("Select: close");
-            break;
-
         case Screen::kTranscribeProgress: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Transcribing %s...", transcribe_filename);
@@ -514,15 +503,8 @@ void ui_show_wifi_setup_dialog(const char *setup_ssid) {
 }
 
 void ui_hide_wifi_setup_dialog() {
-    if (state != Screen::kWifiSetup && state != Screen::kWifiTimeoutDialog) return;
+    if (state != Screen::kWifiSetup) return;
     state = sd_present ? Screen::kList : Screen::kNoCard;
-    render_body();
-    lv_timer_handler();
-}
-
-void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb) {
-    wifi_timeout_close_cb = close_cb;
-    state = Screen::kWifiTimeoutDialog;
     render_body();
     lv_timer_handler();
 }
@@ -750,12 +732,6 @@ void ui_process_input() {
 
         case Screen::kWifiSetup:
             break; // informational only - see ui.h's contract
-
-        case Screen::kWifiTimeoutDialog:
-            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
-                if (wifi_timeout_close_cb) wifi_timeout_close_cb(nullptr);
-            }
-            break;
 
         case Screen::kTranscribeProgress:
             break; // informational only, until transcribe_process_pending() replaces it

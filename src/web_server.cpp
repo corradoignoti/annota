@@ -919,6 +919,13 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card">
+  <h2>Power</h2>
+  <div class="row-item"><span class="label">Sleep after idle</span><span class="value" id="idleTimeoutValue">-</span></div>
+  <input id="idleTimeoutSlider" type="range" min="1" max="180" step="1"
+    style="width:100%;margin-top:0.6rem;">
+</div>
+
+<div class="card">
   <h2 id="keyTitle">AI API Key</h2>
   <div class="row-item"><span class="label">Status</span><span class="value" id="keyValue">-</span></div>
   <input id="keyInput" type="password" placeholder="sk-... (leave blank to keep current)"
@@ -960,6 +967,10 @@ async function refresh() {
   const clockValue = document.getElementById("clockValue");
   clockValue.textContent = info.clockSynced ? "synced" : "not synced";
   clockValue.className = "value " + (info.clockSynced ? "ok" : "warn");
+
+  const idleSlider = document.getElementById("idleTimeoutSlider");
+  if (!idleSlider.matches(":active")) idleSlider.value = info.idleTimeoutMinutes; // don't yank it mid-drag
+  document.getElementById("idleTimeoutValue").textContent = info.idleTimeoutMinutes + " min";
 
   document.getElementById("keyTitle").textContent = info.aiProviderName + " API Key";
   const keyValue = document.getElementById("keyValue");
@@ -1005,6 +1016,20 @@ document.getElementById("reconnectBtn").onclick = async () => {
     }
   }, 1000);
   setTimeout(() => { status.textContent = ""; }, 35000);
+};
+
+// "input" fires continuously while dragging (live label, no request);
+// "change" fires once on release, which is when it's actually saved -
+// a slider's own natural "Save" moment, no separate button needed.
+document.getElementById("idleTimeoutSlider").oninput = (e) => {
+  document.getElementById("idleTimeoutValue").textContent = e.target.value + " min";
+};
+document.getElementById("idleTimeoutSlider").onchange = async (e) => {
+  const status = document.getElementById("status");
+  const form = new URLSearchParams();
+  form.set("minutes", e.target.value);
+  const res = await fetch("/api/settings/idle-timeout", { method: "POST", body: form });
+  status.textContent = res.ok ? "Sleep timeout updated." : "Update failed: " + (await res.text());
 };
 
 // The field never gets prefilled with the real saved key (see
@@ -1085,6 +1110,7 @@ static void handle_settings_info() {
     // knowing which AI_PROVIDER_* is compiled in (transcribe.h).
     doc["aiProviderName"] = ai_provider_name();
     doc["aiKeyConfigured"] = ai_provider_has_api_key();
+    doc["idleTimeoutMinutes"] = sleep_get_idle_timeout_minutes();
 
     display_suspend_touch();
     SdInfo info;
@@ -1126,6 +1152,27 @@ static void handle_settings_reconnect() {
 static void handle_settings_forget() {
     server.send(200, "text/plain", "Rebooting into setup mode");
     wifi_forget_and_reboot();
+}
+
+// POST /api/settings/idle-timeout - saves the idle-sleep slider from
+// SETTINGS_HTML. sleep_set_idle_timeout_minutes() itself clamps to
+// [1, 180], so an out-of-range value here just gets silently clamped
+// rather than rejected - the slider's own min/max already keeps normal
+// use inside that range, this is only a backstop against a hand-crafted
+// request. Takes effect immediately (no reboot) via
+// sleep_process_idle()'s next call.
+static void handle_settings_set_idle_timeout() {
+    if (!server.hasArg("minutes")) {
+        server.send(400, "text/plain", "Missing minutes");
+        return;
+    }
+    long minutes = server.arg("minutes").toInt();
+    if (minutes <= 0) {
+        server.send(400, "text/plain", "Invalid minutes");
+        return;
+    }
+    sleep_set_idle_timeout_minutes((uint16_t)minutes);
+    server.send(200, "text/plain", "OK");
 }
 
 // POST /api/settings/ai-key - saves the API key field from SETTINGS_HTML,
@@ -1445,6 +1492,7 @@ void web_server_start() {
     server.on("/api/settings/reconnect", HTTP_POST, with_activity(handle_settings_reconnect));
     server.on("/api/settings/forget", HTTP_POST, with_activity(handle_settings_forget));
     server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
+    server.on("/api/settings/idle-timeout", HTTP_POST, with_activity(handle_settings_set_idle_timeout));
     server.on("/api/transcript-key", HTTP_GET, with_activity(handle_get_transcript_key));
     server.on("/api/transcript", HTTP_POST, with_activity(handle_save_transcript));
     server.on("/api/files", HTTP_GET, with_activity(handle_list));

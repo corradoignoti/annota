@@ -32,20 +32,9 @@ void ui_set_battery_percent(uint8_t percent);
 // no-op.
 void ui_show_wifi_setup_dialog(const char *setup_ssid);
 
-// Removes the dialog shown by ui_show_wifi_setup_dialog() or
-// ui_show_wifi_timeout_dialog() and repaints. No-op if neither is
-// currently shown.
+// Removes the dialog shown by ui_show_wifi_setup_dialog() and repaints.
+// No-op if it isn't currently shown.
 void ui_hide_wifi_setup_dialog();
-
-// Shows a modal dialog warning that WiFi connection attempts gave up
-// after timing out, with a Close button wired to close_cb (fires on
-// LV_EVENT_CLICKED) - dismissing it is all this dialog does; reconnecting
-// is a separate, explicit action via the web UI's "Reconnect WiFi" button
-// (see wifi_request_reconnect()) - there's no on-screen Settings on this
-// board. Forces one LVGL repaint. Same single-dialog slot as
-// ui_show_wifi_setup_dialog() - showing one while the other is up is not
-// supported; hide with ui_hide_wifi_setup_dialog().
-void ui_show_wifi_timeout_dialog(lv_event_cb_t close_cb);
 
 // Re-checks live WiFi status and replaces a stale top-of-screen status
 // line with an explicit offline notice if the connection has actually

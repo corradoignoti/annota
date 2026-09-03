@@ -43,7 +43,7 @@ static void sync_clock_via_ntp() {
     }
 }
 
-// Registered once (wifi_connect(), boot only) as a WiFi.onEvent()
+// Registered once (wifi_start_boot_connect(), boot only) as a WiFi.onEvent()
 // handler so the SNTP client gets (re)started on *any* got-IP event, not
 // just the connects/reconnects try_connect() explicitly drives - the
 // underlying esp_wifi/lwIP station will keep quietly auto-reconnecting
@@ -77,9 +77,13 @@ bool wifi_clock_synced() {
 // UI callback that asked for it.
 static volatile bool reconnectRequested = false;
 
-// Forward-declared so it can be wired as the timeout dialog's Close
-// button callback below.
-static void close_button_event_cb(lv_event_t *e);
+// State for the background boot-time connect - see wifi_start_boot_connect()/
+// wifi_process_boot_connect() below. Unlike reconnectRequested's flag+block
+// pair, this one is polled to completion across many loop() iterations
+// instead of run to completion the first time loop() picks it up.
+static bool bootConnectPending = false;
+static unsigned long bootConnectDeadline = 0;
+static int bootConnectLastShownSecs = -1;
 
 // First-time setup: no network saved yet, so there's no "reconnect" to
 // attempt and no point giving up - the device has no other way online.
@@ -130,10 +134,13 @@ static bool reconnect_saved_network() {
 // No portal-fallback param anymore: the setup portal only ever appears
 // when nothing is saved yet. A saved network that fails to answer never
 // gets wiped and never drops the user into AP setup out from under
-// them - it just leaves the device offline (Close-able timeout dialog),
-// same whether this runs at boot or from the web UI's "Reconnect WiFi"
-// button. Getting back to setup is only ever the explicit, irreversible
-// "Delete WiFi Setup" action (wifi_forget_and_reboot()).
+// them - it just leaves the device offline, said only via the header
+// status line (ui_set_wifi_status() below) rather than a modal - nothing
+// else on screen changes, so whatever the user was doing (browsing the
+// file list, say) isn't interrupted, same whether this runs at boot or
+// from the web UI's "Reconnect WiFi" button. Getting back to setup is
+// only ever the explicit, irreversible "Delete WiFi Setup" action
+// (wifi_forget_and_reboot()).
 static bool try_connect() {
     // getWiFiIsSaved() below reads NVS through esp_wifi_get_config(), which
     // needs the wifi driver already initialized - on a fresh boot (driver
@@ -176,27 +183,65 @@ static bool try_connect() {
         Serial.println(hasSavedNetwork
                             ? "WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)"
                             : "WiFi: setup portal exited without a connection - continuing offline");
-        ui_show_wifi_timeout_dialog(close_button_event_cb);
     }
     ui_refresh_wifi_retry_button();
     return connected;
 }
 
-// The timeout dialog only dismisses itself on Close - reconnecting is a
-// separate, explicit action via the web UI's "Reconnect WiFi" button
-// (web_server.cpp, calls wifi_request_reconnect() directly), not
-// something giving up on the dialog re-triggers. ui_hide_wifi_setup_dialog() is
-// safe to call straight from here even though it's this button's own
-// click event still being dispatched - it defers the actual delete (see
-// its _async comment).
-static void close_button_event_cb(lv_event_t *e) {
-    (void)e;
-    ui_hide_wifi_setup_dialog();
+bool wifi_start_boot_connect() {
+    WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+
+    // See try_connect()'s comment: WiFi.mode() must run before
+    // getWiFiIsSaved() so it reads real NVS state instead of uninitialized
+    // driver stack garbage.
+    WiFi.mode(WIFI_STA);
+    WiFiManager wm;
+    if (!wm.getWiFiIsSaved()) {
+        // Nothing to try in the background - the setup portal is the only
+        // way online and needs the user's phone/laptop anyway, so this
+        // path stays exactly as blocking as it always was.
+        try_connect();
+        return false;
+    }
+
+    ui_set_wifi_status("Connecting to WiFi...");
+    WiFi.begin();  // no args = reconnect with the credentials already in NVS, doesn't block
+    bootConnectPending = true;
+    bootConnectDeadline = millis() + WIFI_RECONNECT_TIMEOUT_SECONDS * 1000UL;
+    bootConnectLastShownSecs = -1;
+    return true;
 }
 
-bool wifi_connect() {
-    WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
-    return try_connect();
+WifiBootConnectResult wifi_process_boot_connect() {
+    if (!bootConnectPending) return WifiBootConnectResult::kIdle;
+
+    if (WiFi.status() == WL_CONNECTED) {
+        bootConnectPending = false;
+        char msg[64];
+        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        ui_set_wifi_status(msg);
+        Serial.println(msg);
+        sync_clock_via_ntp();
+        ui_refresh_wifi_retry_button();
+        return WifiBootConnectResult::kConnected;
+    }
+
+    if (millis() < bootConnectDeadline) {
+        int remainingSecs = (bootConnectDeadline - millis() + 999) / 1000;  // round up
+        if (remainingSecs != bootConnectLastShownSecs) {
+            char msg[48];
+            snprintf(msg, sizeof(msg), "WiFi chk... %ds", remainingSecs);
+            ui_set_wifi_status(msg);
+            bootConnectLastShownSecs = remainingSecs;
+        }
+        return WifiBootConnectResult::kPending;
+    }
+
+    bootConnectPending = false;
+    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+    Serial.println("WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)");
+    ui_refresh_wifi_retry_button();
+    return WifiBootConnectResult::kFailed;
 }
 
 void wifi_request_reconnect() {
@@ -228,7 +273,14 @@ bool wifi_ensure_connected() {
     WiFi.mode(WIFI_STA);
 
     WiFiManager wm;
-    if (!wm.getWiFiIsSaved()) return false;
+    if (!wm.getWiFiIsSaved()) {
+        // Nothing to even try - leave the header saying so rather than
+        // whatever it happened to say before (stale "Connecting..." from
+        // an earlier attempt, say), same wording as every other failure
+        // path below.
+        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        return false;
+    }
 
     ui_set_wifi_status("Connecting to WiFi...");
     bool connected = reconnect_saved_network();

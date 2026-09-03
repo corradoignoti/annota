@@ -11,9 +11,10 @@
 // only affect the SD card; the on-screen MP3 list isn't refreshed until
 // reboot.
 //
-// Call web_server_start() once WiFi is up (after wifi_connect() returns
-// true), and web_server_handle() every loop() iteration alongside
-// lv_timer_handler().
+// Call web_server_start() once WiFi is up (after wifi_start_boot_connect()
+// resolves synchronously, or wifi_process_boot_connect() reports
+// kConnected - see wifi_manager.h), and web_server_handle() every loop()
+// iteration alongside lv_timer_handler().
 void web_server_start();
 void web_server_handle();
 

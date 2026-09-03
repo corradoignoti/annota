@@ -38,11 +38,12 @@ No test suite exists yet (`test/` is the stock PlatformIO placeholder).
 `lv_timer_handler()` first, then `ui_process_input()` (button-driven nav —
 see its bullet below), then, only after `lv_timer_handler()` has returned,
 the deferred-work pumps that a nested LVGL click handler can't safely
-trigger directly — `wifi_process_pending_reconnect()` and
-`transcribe_process_pending()` (see their bullets below) — then
-`web_server_handle()`, then `sleep_process_idle()` (see `sleep.cpp/h`
-below) last, once everything else that could count as activity this pass
-has had a chance to reset its clock.
+trigger directly — `wifi_process_pending_reconnect()`, `wifi_process_boot_connect()`
+(the background boot-time connect `setup()` kicks off — see
+`wifi_manager.cpp/h` below) and `transcribe_process_pending()` (see their
+bullets below) — then `web_server_handle()`, then `sleep_process_idle()`
+(see `sleep.cpp/h` below) last, once everything else that could count as
+activity this pass has had a chance to reset its clock.
 
 - **sleep.cpp/h** — idle-timeout deep sleep, ported from the pala_note
   sibling project's `enterUltraSleep()`/`resetActivity()` (same board
@@ -51,8 +52,11 @@ has had a chance to reset its clock.
   `sleep_process_idle()`, called last in `loop()`, deep-sleeps
   (`esp_deep_sleep_start()`, ext1 wakeup armed on the Select/PWR button
   only, `ESP_EXT1_WAKEUP_ANY_LOW` — BOOT/Next deliberately left out of the
-  mask so the sleep screen's "Hold Select to wake" stays true) once 120s
-  have passed with no activity, unless `ui.h`'s `ui_is_sleep_blocked()`
+  mask so the sleep screen's "Hold Select to wake" stays true) once
+  `sleep_get_idle_timeout_minutes()` (default 30, persisted in NVS,
+  clamped to 1–180 — see `IDLE_TIMEOUT_MIN_DEFAULT`/`_MIN`/`_MAX` in
+  sleep.cpp) have passed with no activity, unless `ui.h`'s
+  `ui_is_sleep_blocked()`
   says a foreground operation (recording/playing/transcribing) is in
   progress, or `web_server.h`'s `web_transcribe_in_progress()` says a
   browser-initiated transcription is in flight — that flow runs entirely
@@ -71,7 +75,14 @@ has had a chance to reset its clock.
   again from scratch like a fresh boot, so there's no wake-cause branching
   here (unlike pala_note, which distinguishes which button woke it); the
   normal boot path already re-scans the SD card, reconnects WiFi, and
-  rebuilds the main screen.
+  rebuilds the main screen. `sleep_get_idle_timeout_minutes()`/
+  `sleep_set_idle_timeout_minutes()` read/persist the timeout itself
+  (NVS Preferences, namespace `"annota"` — same as
+  `transcribe_openai.cpp`'s API key), lazily loaded once and cached
+  after that; `web_server.cpp`'s Settings page exposes it as a slider
+  (GET `/api/settings`'s `idleTimeoutMinutes`, POST
+  `/api/settings/idle-timeout`), takes effect on the very next
+  `sleep_process_idle()` call, no reboot needed.
 
 - **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
   e-paper panel driver (command/LUT sequence ported from Waveshare's own
@@ -119,14 +130,23 @@ has had a chance to reset its clock.
   first. Both claim the SD card for their whole duration (`storage.h`'s
   `sd_begin()`/`sd_end()`) and must be pumped every `loop()` iteration via
   `ui_epaper.cpp`'s `ui_process_input()`.
-- **wifi_manager.cpp/h** — `wifi_connect()` via tzapu/WiFiManager. Two
-  paths depending on whether a network is already saved in NVS: none
-  saved opens a captive portal AP ("Annota-Setup", no password) with no
-  timeout and shows the on-screen dialog, blocking until the user
-  configures one from a phone/laptop; one saved reconnects to it directly
-  (no portal) for up to 30 seconds. The setup portal never reappears on
-  its own once a network is saved — a reconnect timeout just leaves the
-  device offline (a warning dialog with a Close button says so) rather
+- **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. Two paths at
+  boot depending on whether a network is already saved in NVS: none saved
+  opens a captive portal AP ("Annota-Setup", no password) with no timeout
+  and shows the on-screen dialog, blocking `setup()` until the user
+  configures one from a phone/laptop (`wifi_start_boot_connect()` returns
+  false once that's resolved either way — nothing left to poll); one
+  saved instead kicks off `WiFi.begin()` and returns immediately, true,
+  so `setup()` can build the UI and start the SD scan without the screen
+  sitting frozen for however long the router takes to answer.
+  `wifi_process_boot_connect()`, called from `loop()` right after
+  `wifi_process_pending_reconnect()`, polls that reconnect to completion —
+  up to `WIFI_RECONNECT_TIMEOUT_SECONDS` (wifi_manager.cpp, currently 10s)
+  — and, on success, is what `main.cpp` calls `web_server_start()` off of.
+  The setup portal never reappears on its own once a network is saved — a
+  reconnect timeout just leaves the device offline, said only via the
+  header status line (`ui_set_wifi_status()`) rather than a modal, so
+  whatever's on screen (the file list, say) isn't interrupted — rather
   than wiping the saved credentials, since WiFiManager's "saved" check
   reading stale NVS state isn't reason enough to drop the user back into
   AP setup out from under them. The device stays fully usable offline —
@@ -140,8 +160,9 @@ has had a chance to reset its clock.
   `wifi_request_reconnect()` (it fires from an LVGL click handler already
   nested inside `lv_timer_handler()`, which refuses to run itself again
   while it's running — so the actual retry can't happen there); `loop()`
-  picks up the request via `wifi_process_pending_reconnect()`, called
-  right after `lv_timer_handler()` returns, never nested inside it. Must
+  picks up the request via `wifi_process_pending_reconnect()`, which does
+  block (unlike the boot-time connect, this is a wait the user explicitly
+  asked for by pressing the button) until it connects or times out. Must
   be called after `build_main_screen()` so it has a screen to paint
   status onto. `wifi_ensure_connected()` is a third entry point: a
   no-portal, single blocking reconnect attempt, used by
@@ -199,12 +220,17 @@ has had a chance to reset its clock.
   the SD root, plus a per-file Transcribe button for audio files) at `/`,
   backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
   `/api/transcript-key`, `/api/transcript`; and a `/settings` page
-  (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, and
-  the AI provider's API key field, labeled dynamically from
-  `aiProviderName` in the JSON below), backed by `/api/settings` (GET, a
-  status snapshot) and `/api/settings/reconnect`, `/api/settings/forget`,
-  `/api/settings/ai-key` (POST). Only started once `wifi_connect()`
-  succeeds. Each handler that touches the card calls
+  (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, an
+  idle-sleep-timeout slider, and the AI provider's API key field, labeled
+  dynamically from `aiProviderName` in the JSON below), backed by
+  `/api/settings` (GET, a status snapshot) and `/api/settings/reconnect`,
+  `/api/settings/forget`, `/api/settings/ai-key`,
+  `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above).
+  Only started once WiFi is up — either
+  synchronously from `setup()` (first-boot portal case) or from `loop()`
+  once `wifi_process_boot_connect()` reports the background boot-time
+  connect landed (see `wifi_manager.cpp/h` above). Each handler that
+  touches the card calls
   `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
   after) — no-ops on this board, kept so a future board with a shared SPI
   peripheral wouldn't need new call sites; the AI key handler is the one

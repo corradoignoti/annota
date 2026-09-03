@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <WiFi.h>
 #include <lvgl.h>
 
 #include "battery.h"
@@ -37,13 +38,16 @@ void setup() {
     build_main_screen(sd_present);
     ui_set_battery_percent(battery_read_percent());
 
-    // wifi_connect() paints its own status onto the screen it finds here
-    // (ui_set_wifi_status() forces a repaint) before it can block on the
-    // captive portal, so build_main_screen() must run first.
-    if (wifi_connect()) {
+    // wifi_start_boot_connect() paints its own status onto the screen it
+    // finds here (ui_set_wifi_status() forces a repaint), so
+    // build_main_screen() must run first. A saved network kicks off a
+    // background reconnect and returns immediately - loop()'s
+    // wifi_process_boot_connect() sees it through and starts the web file
+    // manager once it lands. No saved network at all falls back to the
+    // blocking setup portal (nothing else useful to do without it), same
+    // as before.
+    if (!wifi_start_boot_connect() && WiFi.status() == WL_CONNECTED) {
         web_server_start();
-    } else {
-        Serial.println("Web file manager: not started (no WiFi)");
     }
 }
 
@@ -57,6 +61,13 @@ void loop() {
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
+    // Sees the background boot-time connect (if any) through to
+    // completion - see wifi_start_boot_connect()'s comment. Same
+    // reentrancy constraint as wifi_process_pending_reconnect() just
+    // above, though this one never blocks.
+    if (wifi_process_boot_connect() == WifiBootConnectResult::kConnected) {
+        web_server_start();
+    }
     // Same constraint, same reason - see transcribe_process_pending()'s
     // comment.
     transcribe_process_pending();

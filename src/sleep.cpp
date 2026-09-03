@@ -1,6 +1,7 @@
 #include "sleep.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
 
@@ -15,11 +16,50 @@
 // stays true instead of being a second, undocumented way to wake it).
 static const int PWR_BUTTON_PIN = 18;
 
-// Matches pala_note's ULTRA_SLEEP_MS - same board family, same battery
-// budget reasoning (see sleep.h).
-static const uint32_t IDLE_TIMEOUT_MS = 120000UL;
+// Default before the user ever touches the Settings page slider, and the
+// clamp range for whatever they set it to - generous ceiling (3 hours) so
+// a heavy user recording/browsing on and off all day doesn't fight the
+// timeout, floor of 1 minute so the slider can't be dragged down to
+// something that deep-sleeps the device out from under normal use.
+static const uint16_t IDLE_TIMEOUT_MIN_DEFAULT = 30;
+static const uint16_t IDLE_TIMEOUT_MIN_MIN = 1;
+static const uint16_t IDLE_TIMEOUT_MIN_MAX = 180;
+
+// Same NVS namespace as transcribe_openai.cpp's API key storage.
+static const char *NVS_KEY = "idleMin";
 
 static uint32_t lastActivityMs = 0;
+
+// 0 = not loaded from NVS yet - never a valid stored value once loaded,
+// since sleep_set_idle_timeout_minutes() clamps to
+// [IDLE_TIMEOUT_MIN_MIN, IDLE_TIMEOUT_MIN_MAX], both >= 1. Doubles as the
+// lazy-load sentinel for sleep_get_idle_timeout_minutes().
+static uint16_t idleTimeoutMinutes = 0;
+
+static void ensure_idle_timeout_loaded() {
+    if (idleTimeoutMinutes != 0) return;
+    Preferences prefs;
+    prefs.begin("annota", true);
+    uint16_t minutes = prefs.getUShort(NVS_KEY, IDLE_TIMEOUT_MIN_DEFAULT);
+    prefs.end();
+    if (minutes < IDLE_TIMEOUT_MIN_MIN || minutes > IDLE_TIMEOUT_MIN_MAX) minutes = IDLE_TIMEOUT_MIN_DEFAULT;
+    idleTimeoutMinutes = minutes;
+}
+
+uint16_t sleep_get_idle_timeout_minutes() {
+    ensure_idle_timeout_loaded();
+    return idleTimeoutMinutes;
+}
+
+void sleep_set_idle_timeout_minutes(uint16_t minutes) {
+    if (minutes < IDLE_TIMEOUT_MIN_MIN) minutes = IDLE_TIMEOUT_MIN_MIN;
+    if (minutes > IDLE_TIMEOUT_MIN_MAX) minutes = IDLE_TIMEOUT_MIN_MAX;
+    idleTimeoutMinutes = minutes;
+    Preferences prefs;
+    prefs.begin("annota", false);
+    prefs.putUShort(NVS_KEY, minutes);
+    prefs.end();
+}
 
 void sleep_reset_activity() {
     lastActivityMs = millis();
@@ -44,5 +84,6 @@ static void enter_deep_sleep() {
 void sleep_process_idle() {
     if (ui_is_sleep_blocked()) return; // recording/playing/transcribing - see ui.h
     if (web_transcribe_in_progress()) return; // browser-side transcription - see web_server.h
-    if (millis() - lastActivityMs > IDLE_TIMEOUT_MS) enter_deep_sleep();
+    uint32_t timeoutMs = (uint32_t)sleep_get_idle_timeout_minutes() * 60000UL;
+    if (millis() - lastActivityMs > timeoutMs) enter_deep_sleep();
 }
