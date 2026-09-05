@@ -1,0 +1,351 @@
+<title>Annota</title>
+<style>
+  /* Same paper/ink language as the device's own web file manager
+     (web_server.cpp INDEX_HTML): black appbar, bordered flat cards,
+     inversion as the only hover cue, mono first. */
+  :root {
+    color-scheme: light;
+    --paper: #eeece6;
+    --surface: #fffffc;
+    --ink: #14140f;
+    --ink-soft: #5a594f;
+    --border: #14140f;
+    --danger: #a3271d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #14140f;
+      --surface: #1c1c16;
+      --ink: #f2f1ea;
+      --ink-soft: #a6a496;
+      --border: #f2f1ea;
+      --danger: #e0685c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #14140f;
+    --surface: #1c1c16;
+    --ink: #f2f1ea;
+    --ink-soft: #a6a496;
+    --border: #f2f1ea;
+    --danger: #e0685c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Roboto", -apple-system, system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    margin: 0;
+  }
+  a { color: inherit; }
+  .appbar {
+    background: var(--ink);
+    color: var(--surface);
+    padding: 0.9rem 1rem;
+  }
+  .appbar .row {
+    max-width: 640px;
+    margin: 0 auto;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .appbar h1 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .appbar .sub { color: rgba(255,255,255,0.6); font-size: 0.75rem; margin-top: 0.15rem; letter-spacing: 0.02em; }
+  .appbar nav a {
+    color: rgba(255,255,255,0.6);
+    text-decoration: none;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-left: 1rem;
+    padding-bottom: 2px;
+    border-bottom: 1px solid transparent;
+  }
+  .appbar nav a:hover { color: var(--surface); border-bottom-color: var(--surface); }
+
+  main { max-width: 640px; margin: 0 auto; padding: 0 0 2rem; }
+
+  .hero { margin: 1.4rem 1rem 1.2rem; }
+  .hero .eyebrow {
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--ink-soft); margin-bottom: 0.5rem;
+  }
+  .hero h2 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 0.6rem; }
+  .hero p { color: var(--ink-soft); font-size: 0.92rem; line-height: 1.55; margin: 0 0 1rem; }
+  .hero-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+
+  .card {
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    margin: 0 1rem 1.2rem;
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 0.65rem 0.9rem;
+    border-bottom: 1.5px solid var(--border);
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+  }
+  .card-body { padding: 0.9rem; }
+
+  .device-mock {
+    display: flex;
+    justify-content: center;
+    padding: 1.1rem 0.9rem 1.3rem;
+  }
+  .device-mock .screen {
+    width: 200px;
+    background: #e9e7de;
+    border: 3px solid var(--ink);
+    border-radius: 3px;
+    padding: 0;
+    font-family: monospace;
+    color: #14140f;
+    box-shadow: 0 6px 0 rgba(20,20,15,0.15);
+  }
+  .device-mock .screen .bar {
+    background: var(--ink);
+    color: #e9e7de;
+    font-size: 9px;
+    padding: 4px 6px;
+    display: flex;
+    justify-content: space-between;
+    letter-spacing: 0.03em;
+  }
+  .device-mock .screen ul { list-style: none; margin: 0; padding: 6px; }
+  .device-mock .screen li {
+    font-size: 10px;
+    padding: 5px 6px;
+    border-bottom: 1px solid rgba(20,20,15,0.15);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .device-mock .screen li.sel { background: var(--ink); color: #e9e7de; }
+  .device-mock .caption { text-align: center; font-size: 0.75rem; color: var(--ink-soft); margin-top: 0.6rem; }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+  }
+  .feature-grid .feature {
+    background: var(--surface);
+    padding: 0.9rem;
+  }
+  .feature .icon { font-size: 1.1rem; margin-bottom: 0.35rem; display: block; }
+  .feature h3 { margin: 0 0 0.3rem; font-size: 0.85rem; }
+  .feature p { margin: 0; font-size: 0.78rem; color: var(--ink-soft); line-height: 1.45; }
+  @media (max-width: 420px) {
+    .feature-grid { grid-template-columns: 1fr; }
+  }
+
+  .steps { padding: 0.9rem; }
+  .step { display: flex; gap: 0.7rem; padding: 0.55rem 0; }
+  .step:not(:last-child) { border-bottom: 1px dashed rgba(20,20,15,0.2); }
+  .step .n {
+    flex: none;
+    width: 1.6rem; height: 1.6rem;
+    border: 1.5px solid var(--border);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.75rem; font-weight: 600;
+  }
+  .step .t { font-size: 0.85rem; padding-top: 0.15rem; }
+  .step .t b { display: block; margin-bottom: 0.1rem; }
+  .step .t span { color: var(--ink-soft); font-size: 0.8rem; }
+
+  .specs { padding: 0.9rem; font-size: 0.85rem; }
+  .specs dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 0.9rem; margin: 0; }
+  .specs dt { color: var(--ink-soft); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.03em; white-space: nowrap; }
+  .specs dd { margin: 0; }
+
+  button, .btn {
+    font: inherit;
+    font-weight: 500;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    border: 1.5px solid var(--border);
+    background: transparent;
+    color: var(--ink);
+    padding: 0.55rem 0.9rem;
+    border-radius: 4px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .btn:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+  .btn.accent { background: var(--ink); color: var(--surface); }
+  .btn.accent:hover { background: var(--surface); color: var(--ink); }
+
+  .credits { padding: 0.9rem; font-size: 0.82rem; color: var(--ink-soft); line-height: 1.6; }
+  .credits b { color: var(--ink); }
+  .credits ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+
+  footer {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0 1rem 2rem;
+    font-size: 0.75rem;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+  footer a { border-bottom: 1px solid var(--ink-soft); text-decoration: none; }
+</style>
+
+<div class="appbar">
+  <div class="row">
+    <div>
+      <h1>Annota</h1>
+      <div class="sub">ESP32-S3 e-paper voice notes</div>
+    </div>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#setup">Setup</a>
+      <a href="user-manual.html">Manual</a>
+      <a href="https://github.com/corradoignoti/annota" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</div>
+
+<main>
+  <div class="hero">
+    <div class="eyebrow">Open-source firmware · PlatformIO / Arduino</div>
+    <h2>A pocket e-paper recorder that transcribes itself.</h2>
+    <p>
+      Annota turns a Waveshare ESP32-S3 1.54" e-paper board into a standalone
+      voice-note device: record straight from the onboard mic, browse the SD
+      card on a two-button e-paper UI, and send any clip off to an AI
+      provider for transcription — on-device or from the built-in web file
+      manager. No app, no cloud dashboard, just a card full of MP3/WAV files
+      and their .txt siblings.
+    </p>
+    <div class="hero-actions">
+      <a class="btn accent" href="https://github.com/corradoignoti/annota" target="_blank" rel="noopener">★ View on GitHub</a>
+      <a class="btn" href="#setup">Build it</a>
+      <a class="btn" href="user-manual.html">Read the manual</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Device</div>
+    <div class="device-mock">
+      <div class="screen">
+        <div class="bar"><span>WiFi ●</span><span>82%</span></div>
+        <ul>
+          <li class="sel">▶ memo_014.wav</li>
+          <li>voice_note_9.mp3</li>
+          <li>meeting_recap.wav</li>
+          <li>idea_dump.mp3</li>
+          <li>+ Record new</li>
+        </ul>
+      </div>
+    </div>
+    <div class="caption">200×200 mono e-paper · Next / Select buttons only</div>
+  </div>
+
+  <div class="card" id="features">
+    <div class="card-header">What it does</div>
+    <div class="feature-grid">
+      <div class="feature">
+        <span class="icon">🎙️</span>
+        <h3>Record on-device</h3>
+        <p>ES8311 codec mic straight to 16-bit PCM WAV on the SD card, no working set to allocate.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">📝</span>
+        <h3>AI transcription</h3>
+        <p>Send a clip to OpenAI Whisper (or Gemini) and get a sibling .txt file back — from the device or the browser.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">🌐</span>
+        <h3>Web file manager</h3>
+        <p>Browse, play, upload, download, delete, and transcribe SD files from any browser on the network.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">📶</span>
+        <h3>WiFi captive setup</h3>
+        <p>First boot opens a setup AP; after that it reconnects quietly and stays usable offline for everything but transcription.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">🔋</span>
+        <h3>Deep-sleep idle</h3>
+        <p>Configurable idle timeout drops into deep sleep, woken by a long press on Select.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">🔘</span>
+        <h3>Two-button UI</h3>
+        <p>Next cycles, Select opens/confirms/backs out — an entire file browser and menu tree on two buttons.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="setup">
+    <div class="card-header">Get it running</div>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <div class="t"><b>Clone &amp; open in PlatformIO</b><span>Waveshare ESP32-S3-ePaper-1.54 board, one env: esp32-s3-epaper154</span></div>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <div class="t"><b>Pick a transcription provider</b><span>Set the AI_PROVIDER_* build flag in platformio.ini (OpenAI by default)</span></div>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <div class="t"><b>Flash</b><span><code>pio run -e esp32-s3-epaper154 -t upload</code></span></div>
+      </div>
+      <div class="step">
+        <div class="n">4</div>
+        <div class="t"><b>Join the setup AP</b><span>First boot opens "Annota-Setup" — connect and enter your WiFi credentials</span></div>
+      </div>
+      <div class="step">
+        <div class="n">5</div>
+        <div class="t"><b>Drop in an SD card</b><span>MP3/WAV files at the root show up in the file list and the web UI</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Hardware</div>
+    <div class="specs">
+      <dl>
+        <dt>Board</dt><dd>Waveshare ESP32-S3-ePaper-1.54</dd>
+        <dt>Display</dt><dd>1.54" 200×200 mono e-paper, SSD1681-class</dd>
+        <dt>Input</dt><dd>2 onboard buttons (no touch)</dd>
+        <dt>Audio</dt><dd>ES8311 codec + NS4150B amp, onboard mic</dd>
+        <dt>Storage</dt><dd>SD card over SDMMC (1-bit)</dd>
+        <dt>UI</dt><dd>LVGL v9.2.2</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">Credits</div>
+    <div class="credits">
+      Built by <b>Corrado Ignoti</b>.
+      <ul>
+        <li>Display driver ported from Waveshare's own <a href="https://github.com/waveshareteam/ESP32-S3-ePaper-1.54" target="_blank" rel="noopener">ESP32-S3-ePaper-1.54</a> example repo.</li>
+        <li>WiFi provisioning via <a href="https://github.com/tzapu/WiFiManager" target="_blank" rel="noopener">tzapu/WiFiManager</a>.</li>
+        <li>UI powered by <a href="https://lvgl.io" target="_blank" rel="noopener">LVGL</a>.</li>
+        <li>MP3 decode via <a href="https://github.com/schreibfaul1/ESP32-audioI2S" target="_blank" rel="noopener">ESP8266Audio</a>.</li>
+        <li>Sleep/battery approach ported from a sibling project on the same board family, pala_note.</li>
+      </ul>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Source, issues, and build instructions on
+  <a href="https://github.com/corradoignoti/annota" target="_blank" rel="noopener">github.com/corradoignoti/annota</a>
+</footer>
