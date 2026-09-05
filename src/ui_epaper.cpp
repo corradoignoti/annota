@@ -76,6 +76,18 @@ static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
 
+// kList double-press-Select-to-jump-to-top gesture: a Select short press on
+// any row but the first (Record) is held back rather than acting right
+// away, in case a second one follows fast - if it does, that's the
+// double-press gesture and selected_index just snaps to 0 (Record) with no
+// action fired; if the window lapses with no second press, the held-back
+// action (open kActionMenu for that row) fires late instead. A press on
+// row 0 itself never needs this - jumping to where you already are is a
+// no-op - so it still acts immediately, same as before this gesture existed.
+static bool select_press_pending = false;
+static uint32_t select_press_pending_since = 0;
+static const uint32_t DOUBLE_PRESS_WINDOW_MS = 350;
+
 // kActionMenu / kDeleteConfirm / kDetails - the file the menu/confirm was
 // opened for, and which option is currently highlighted. active_file_index
 // indexes mp3Files directly (Details reads created/size straight off it).
@@ -101,6 +113,21 @@ static void render_body();
 // Next/Select navigation and clamp_selection() as every real row.
 static bool has_record_option() {
     return showing_audio_files;
+}
+
+// Opens kActionMenu for whichever real file selected_index currently
+// points at. Shared by kList's immediate Select-short path (row already at
+// index 0's Record option doesn't use this) and the deferred path fired by
+// the double-press-to-jump-to-top gesture's timeout - see
+// select_press_pending's comment above.
+static void open_action_menu_for_selected() {
+    size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
+    active_file_index = fileIndex;
+    strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
+    active_filename[sizeof(active_filename) - 1] = '\0';
+    menu_index = 0;
+    state = Screen::kActionMenu;
+    render_body();
 }
 
 static size_t list_item_count() {
@@ -607,6 +634,17 @@ void ui_process_input() {
 
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
+
+    // A held-back Select-short from kList (see select_press_pending's
+    // comment) needs to fire even on a tick with no new button edge at
+    // all, once its double-press window has lapsed - so this check runs
+    // ahead of the "nothing happened" early return below.
+    if (select_press_pending && state == Screen::kList &&
+        millis() - select_press_pending_since >= DOUBLE_PRESS_WINDOW_MS) {
+        select_press_pending = false;
+        open_action_menu_for_selected();
+    }
+
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
     sleep_reset_activity(); // any button edge counts as activity - see sleep.h
 
@@ -616,6 +654,7 @@ void ui_process_input() {
 
         case Screen::kList:
             if (nextEv == DisplayButtonEvent::kLong) {
+                select_press_pending = false; // leaving kList's row set - drop any held-back press
                 showing_audio_files = !showing_audio_files;
                 load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                 selected_index = 0;
@@ -627,6 +666,7 @@ void ui_process_input() {
                 // Covers both the empty- and non-empty-list case (Refresh
                 // is one of the menu's own options), so no separate
                 // rescan-on-long-press branch is needed below anymore.
+                select_press_pending = false; // leaving kList - drop any held-back press
                 state = Screen::kMainMenu;
                 menu_index = 0;
                 render_body();
@@ -636,10 +676,23 @@ void ui_process_input() {
                 size_t count = list_item_count();
                 if (count == 0) break;
                 if (nextEv == DisplayButtonEvent::kShort) {
+                    // Scrolling means this isn't a double-press-Select
+                    // gesture in progress - fire the held-back press's
+                    // action now rather than let it fire late after the
+                    // selection has already moved on. That action leaves
+                    // kList entirely (opens kActionMenu), so this Next
+                    // press is consumed by it rather than also scrolling.
+                    if (select_press_pending) {
+                        select_press_pending = false;
+                        open_action_menu_for_selected();
+                        break;
+                    }
                     selected_index = (selected_index + 1) % count;
                     render_body();
                 } else if (selEv == DisplayButtonEvent::kShort) {
                     if (has_record_option() && selected_index == 0) {
+                        // Already on the Record row - jumping here would be
+                        // a no-op, so act immediately, same as always.
                         char filename[64];
                         if (mic_start_recording(filename, sizeof(filename))) {
                             strncpy(active_filename, filename, sizeof(active_filename) - 1);
@@ -652,14 +705,20 @@ void ui_process_input() {
                             state = Screen::kMicError;
                         }
                         render_body();
-                    } else {
-                        size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
-                        active_file_index = fileIndex;
-                        strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
-                        active_filename[sizeof(active_filename) - 1] = '\0';
-                        menu_index = 0;
-                        state = Screen::kActionMenu;
+                    } else if (select_press_pending) {
+                        // Second Select short-press within the window -
+                        // double-press gesture: jump to the Record row
+                        // instead of opening this row's action menu.
+                        select_press_pending = false;
+                        selected_index = 0;
                         render_body();
+                    } else {
+                        // First press on a non-Record row - hold it back
+                        // in case a second one follows fast (see the
+                        // pending-timeout check above, near the top of
+                        // ui_process_input()).
+                        select_press_pending = true;
+                        select_press_pending_since = millis();
                     }
                 }
             }
