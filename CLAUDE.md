@@ -116,7 +116,16 @@ activity this pass has had a chance to reset its clock.
   directly rather than through a confirm dialog — safe here since
   `ui_process_input()` runs at `loop()`'s top level, not nested inside
   `lv_timer_handler()`; selecting Delete calls `storage.h`'s
-  `delete_file()` directly, same reasoning.
+  `delete_file()` directly, same reasoning. A long Select press on the
+  list opens a small Refresh/Offline↔Online/Reboot/Close menu instead —
+  Offline↔Online is driven by two new `wifi_manager.h` calls,
+  `wifi_is_connected()` (labels the option) and `wifi_go_offline()`
+  (drops the AP association without touching the saved NVS network or
+  powering off the radio, unlike `wifi_forget_and_reboot()` — see that
+  function's comment on why); switching back online reuses the existing
+  `wifi_request_reconnect()`. Reboot goes through the same
+  confirm-then-act pattern as Delete/Forget-WiFi before calling
+  `ESP.restart()`.
 - **speaker.cpp/h** — owns the onboard audio hardware end to end: an
   ES8311 I2C codec (`es8311.cpp/h`) on a shared I2S bus, feeding an
   NS4150B amp for playback (`speaker_play()`/`speaker_process()`, decoding
@@ -168,7 +177,13 @@ activity this pass has had a chance to reset its clock.
   no-portal, single blocking reconnect attempt, used by
   `transcribe.cpp`'s `transcribe_process_pending()` to retry the saved
   network before a transcription rather than failing outright just
-  because the device booted offline.
+  because the device booted offline. `wifi_process_periodic_check()`,
+  called from `loop()` alongside the other `wifi_process_*()` functions,
+  is a fourth: every 15 minutes (`WIFI_HEALTH_CHECK_INTERVAL_MS`), if the
+  radio's on but not connected — the AP's gone, not just the boot-time
+  reconnect having failed once — it calls `wifi_go_offline()` (radio off,
+  saved network kept, no dialog) rather than leaving the radio burning
+  power retrying against nothing.
 - **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
   split into a provider-agnostic half and a provider-specific half so a
   future second provider is a new file plus a new build flag, not a

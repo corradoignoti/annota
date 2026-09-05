@@ -1,5 +1,6 @@
 #include "ui.h"
 
+#include <Arduino.h>  // ESP.restart() - kRebootConfirm
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
@@ -39,6 +40,7 @@
 enum class Screen {
     kNoCard,
     kList,
+    kMainMenu,
     kActionMenu,
     kDeleteConfirm,
     kPlaying,
@@ -50,6 +52,7 @@ enum class Screen {
     kDetails,
     kSleeping,
     kForgetWifiConfirm,
+    kRebootConfirm,
 };
 
 static const int16_t HEADER_H = 20;
@@ -304,7 +307,7 @@ static void render_body() {
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
-                add_hint("Sel(hold): rescan   Next(hold): switch");
+                add_hint("Sel(hold): menu   Next(hold): switch");
                 break;
             }
             clamp_selection();
@@ -316,7 +319,29 @@ static void render_body() {
                 add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move, hold: switch   Sel: open, hold: rescan");
+            add_hint("Next: move, hold: switch   Sel: open, hold: menu");
+            break;
+        }
+
+        // A long Select press from kList opens this - refresh the file
+        // list from SD, flip WiFi online/offline (label tracks live
+        // status via wifi_is_connected(), not a state variable here - see
+        // wifi_manager.h), ask to reboot, or back out with no action.
+        // icons/options are plain locals, not `static`, since the
+        // Offline/Online label changes with live WiFi status on every
+        // render.
+        case Screen::kMainMenu: {
+            bool online = wifi_is_connected();
+            const char *icons[] = {LV_SYMBOL_REFRESH, LV_SYMBOL_WIFI, LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
+            const char *options[] = {"Refresh", online ? "Offline" : "Online", "Reboot", "Close"};
+            render_option_menu("Menu", icons, options, 4);
+            break;
+        }
+
+        case Screen::kRebootConfirm: {
+            static const char *icons[] = {LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
+            static const char *options[] = {"Confirm reboot", "Cancel"};
+            render_option_menu("Reboot device?", icons, options, 2);
             break;
         }
 
@@ -598,15 +623,18 @@ void ui_process_input() {
                 render_body();
                 break;
             }
+            if (selEv == DisplayButtonEvent::kLong) {
+                // Covers both the empty- and non-empty-list case (Refresh
+                // is one of the menu's own options), so no separate
+                // rescan-on-long-press branch is needed below anymore.
+                state = Screen::kMainMenu;
+                menu_index = 0;
+                render_body();
+                break;
+            }
             {
                 size_t count = list_item_count();
-                if (count == 0) {
-                    if (selEv == DisplayButtonEvent::kLong) {
-                        load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
-                        render_body();
-                    }
-                    break;
-                }
+                if (count == 0) break;
                 if (nextEv == DisplayButtonEvent::kShort) {
                     selected_index = (selected_index + 1) % count;
                     render_body();
@@ -633,12 +661,68 @@ void ui_process_input() {
                         state = Screen::kActionMenu;
                         render_body();
                     }
-                } else if (selEv == DisplayButtonEvent::kLong) {
+                }
+            }
+            break;
+
+        // Refresh / Offline↔Online / Close - opened by a long Select press
+        // from kList (see above). Offline/Online reuses the exact same
+        // wifi_manager.h calls the web UI's Settings page drives
+        // (wifi_go_offline() / wifi_request_reconnect()) - the latter is
+        // non-blocking, consumed right after this by loop()'s
+        // wifi_process_pending_reconnect(), same reasoning as the
+        // Transcribe case below.
+        case Screen::kMainMenu: {
+            const int optionCount = 4;
+            if (nextEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % optionCount;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kList;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                if (menu_index == 0) {
                     load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                     selected_index = 0;
                     top_index = 0;
-                    render_body();
+                    state = Screen::kList;
+                } else if (menu_index == 1) {
+                    if (wifi_is_connected()) {
+                        wifi_go_offline();
+                    } else {
+                        wifi_request_reconnect();
+                    }
+                    state = Screen::kList;
+                } else if (menu_index == 2) {
+                    state = Screen::kRebootConfirm;
+                    menu_index = 0;
+                } else {
+                    // menu_index == 3 (Close): no action.
+                    state = Screen::kList;
                 }
+                render_body();
+            }
+            break;
+        }
+
+        // Reboot needs its own confirm - unlike Refresh/Offline-Online,
+        // it's disruptive enough (drops whatever's on screen, same as a
+        // power cycle) to warrant the same guard as Delete/Forget-WiFi
+        // below rather than firing straight off the menu row.
+        case Screen::kRebootConfirm:
+            if (nextEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 2;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                if (menu_index == 0) {
+                    // Never returns - no state/render needed after.
+                    ESP.restart();
+                }
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
             }
             break;
 

@@ -20,6 +20,10 @@ static bool clockSynced = false;
 // to first-time setup - see run_setup_portal().
 static const unsigned long WIFI_RECONNECT_TIMEOUT_SECONDS = 10;
 
+// How often wifi_process_periodic_check() looks in on the connection - see
+// its own comment.
+static const unsigned long WIFI_HEALTH_CHECK_INTERVAL_MS = 15UL * 60UL * 1000UL;
+
 // UTC, no daylight offset - storage.cpp only needs a sane wall clock for
 // file timestamps, not a local-time display, so no timezone UI exists yet.
 // Called after every successful connect, including a reconnect - a
@@ -152,8 +156,16 @@ static bool try_connect() {
     // nothing real, then stops - no portal, no way online). WiFi.mode()
     // here guarantees the driver is initialized (idempotent - a no-op if
     // reconnect_saved_network() below is about to call it again anyway) so
-    // the saved-network check reads real NVS state.
+    // the saved-network check reads real NVS state. wifi_go_offline()'s
+    // WiFi.disconnect(true) fully deinits the driver (esp_wifi_deinit())
+    // to actually save power rather than just idling an associated radio,
+    // so the "Online" menu item's reconnect hits this exact same
+    // fresh-driver case, just later than boot - the settle delay below is
+    // a known arduino-esp32 workaround for that re-init/reload race, not
+    // needed (but harmless - 100ms once at boot) for the ordinary
+    // never-touched-yet case above.
     WiFi.mode(WIFI_STA);
+    delay(100);
 
     WiFiManager wm;
     // getWiFiIsSaved() reads ESP-IDF's own station config out of NVS, not
@@ -269,8 +281,11 @@ bool wifi_ensure_connected() {
     if (WiFi.status() == WL_CONNECTED) return true;
 
     // See try_connect()'s comment: getWiFiIsSaved() needs the wifi driver
-    // initialized to read real NVS state instead of stack garbage.
+    // initialized to read real NVS state instead of stack garbage, and (if
+    // called after wifi_go_offline() fully powered the radio off) the
+    // settle delay to avoid its re-init/reload race.
     WiFi.mode(WIFI_STA);
+    delay(100);
 
     WiFiManager wm;
     if (!wm.getWiFiIsSaved()) {
@@ -307,4 +322,46 @@ void wifi_forget_and_reboot() {
     Serial.println("WiFi: saved network erased by user - rebooting into setup portal");
     delay(200);
     ESP.restart();
+}
+
+bool wifi_is_connected() {
+    return WiFi.status() == WL_CONNECTED;
+}
+
+void wifi_go_offline() {
+    // Cancel a still-pending background boot connect (see
+    // wifi_process_boot_connect()) - otherwise it'd keep polling
+    // WiFi.status() against the connection we're about to drop and
+    // eventually overwrite the status line this call sets below with its
+    // own "working offline" once its own timeout lapses anyway.
+    bootConnectPending = false;
+    WiFi.disconnect(true);  // true = power off the radio too (battery life); leaves NVS credentials alone
+    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+    ui_refresh_wifi_retry_button();
+    Serial.println("WiFi: disconnected by user - working offline");
+}
+
+// Only fires this often (see WIFI_HEALTH_CHECK_INTERVAL_MS) - a plain
+// status check every loop() iteration would be free, but there's nothing
+// to react to faster than the AP itself would ever flap.
+static unsigned long lastHealthCheckMs = 0;
+
+void wifi_process_periodic_check() {
+    unsigned long now = millis();
+    if (now - lastHealthCheckMs < WIFI_HEALTH_CHECK_INTERVAL_MS) return;
+    lastHealthCheckMs = now;
+
+    if (WiFi.getMode() == WIFI_MODE_NULL) return;  // radio already off - already offline, nothing to check
+    if (WiFi.status() == WL_CONNECTED) return;      // still fine
+
+    // Radio's on but not associated - the underlying esp_wifi/lwIP
+    // auto-reconnect (see wifi_start_boot_connect()'s WiFi.onEvent()
+    // comment) has been quietly failing behind the header status line for
+    // a while. Give up gracefully instead of leaving it burning power
+    // retrying against an AP that's gone - same call the on-device
+    // "Offline" menu item makes (wifi_go_offline(): radio off, saved
+    // network untouched, no dialog), so this is silent exactly the same
+    // way that is.
+    Serial.println("WiFi: periodic check found the AP unreachable - going offline to save power");
+    wifi_go_offline();
 }

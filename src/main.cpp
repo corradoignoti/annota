@@ -68,6 +68,9 @@ void loop() {
     if (wifi_process_boot_connect() == WifiBootConnectResult::kConnected) {
         web_server_start();
     }
+    // Cheap no-op almost every call - see its own comment for the every-
+    // 15-minutes check it actually does.
+    wifi_process_periodic_check();
     // Same constraint, same reason - see transcribe_process_pending()'s
     // comment.
     transcribe_process_pending();

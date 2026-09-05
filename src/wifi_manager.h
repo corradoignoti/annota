@@ -122,3 +122,35 @@ bool wifi_ensure_connected();
 // callers (web_server.cpp's "Delete WiFi Setup" button) must confirm with
 // the user first; this function itself does no confirmation.
 void wifi_forget_and_reboot();
+
+// Plain WiFi.status() == WL_CONNECTED check, wrapped here so callers
+// (ui_epaper.cpp's on-device menu) don't need their own <WiFi.h> include
+// just to ask.
+bool wifi_is_connected();
+
+// Explicit, reversible opposite of a reconnect: disconnects and powers off
+// the WiFi radio (WiFi.disconnect(true)/esp_wifi_deinit()) so the device
+// actually saves power while offline, not just idles an associated radio -
+// the network saved in NVS is left untouched, unlike
+// wifi_forget_and_reboot(), so wifi_request_reconnect() (the matching
+// on-device "Online" action, ui_epaper.cpp) can bring it back without
+// redoing setup. Powering all the way off means that reconnect has to
+// reinitialize the WiFi driver from scratch first - see try_connect()'s
+// settle-delay comment for the one thing that reinit needs that a normal
+// live-driver reconnect doesn't. Also cancels a still-pending background
+// boot connect (wifi_start_boot_connect()), if any, so it doesn't
+// overwrite this call's own status line moments later. Updates the header
+// status line the same way every other disconnect path does. Safe to call
+// from loop() top level (ui_process_input(), same as
+// wifi_request_reconnect()) - it never blocks.
+void wifi_go_offline();
+
+// Call once per loop() iteration (top level, same as every other
+// wifi_process_*() here) - cheap no-op almost every call, and every 15
+// minutes checks whether the saved AP is actually still reachable. If the
+// radio's on but not connected, calls wifi_go_offline() - same as the
+// on-device "Offline" menu item, silently (no dialog): gives up on an AP
+// that's gone rather than leaving the radio burning power retrying
+// forever. No-op if already offline (radio off) or still connected.
+// Never blocks.
+void wifi_process_periodic_check();
