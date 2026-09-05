@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install semantic-release
+        run: |
+          npm install -D semantic-release @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator @semantic-release/changelog \
+            @semantic-release/git @semantic-release/exec @semantic-release/github
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      # version.h only gets bumped inside semantic-release's own "prepare"
+      # step (the @semantic-release/exec prepareCmd in .releaserc.json), so
+      # the firmware build is chained into that same prepareCmd (sed the
+      # header, then `pio run`) rather than run as a separate workflow step -
+      # otherwise the flashed FW_VERSION string would lag one release behind
+      # the tag/changelog.
+      - name: Release (bumps version.h, builds firmware, publishes)
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
