@@ -9,12 +9,6 @@
 // startup - no battery_init() needed.
 static const int BAT_ADC_PIN = 4;
 
-// Rough Li-ion discharge bounds under light load - matches Waveshare's own
-// reference firmware for this board. Not a true fuel-gauge curve (real
-// cells sag nonlinearly near empty), just enough for a header estimate.
-static const float BAT_MIN_MV = 3300.0f;
-static const float BAT_MAX_MV = 4200.0f;
-
 uint16_t battery_read_millivolts() {
     // analogReadMilliVolts() applies the SoC's factory ADC calibration
     // (eFuse-stored) instead of a linear guess from a raw analogRead()
@@ -24,8 +18,19 @@ uint16_t battery_read_millivolts() {
 }
 
 uint8_t battery_read_percent() {
-    float mv = (float)battery_read_millivolts();
-    float pct = (mv - BAT_MIN_MV) / (BAT_MAX_MV - BAT_MIN_MV) * 100.0f;
+    // Piecewise-linear approximation of a Li-ion discharge curve (steeper
+    // in the 3.70-4.20V band, flatter below it where real cells sag) -
+    // closer to a true fuel-gauge than one straight line end to end.
+    float v = (float)battery_read_millivolts() / 1000.0f;
+    float pct;
+    if (v >= 4.20f) pct = 100.0f;
+    else if (v >= 4.10f) pct = 90.0f + (v - 4.10f) * (10.0f / 0.10f);
+    else if (v >= 4.00f) pct = 75.0f + (v - 4.00f) * (15.0f / 0.10f);
+    else if (v >= 3.85f) pct = 50.0f + (v - 3.85f) * (25.0f / 0.15f);
+    else if (v >= 3.70f) pct = 25.0f + (v - 3.70f) * (25.0f / 0.15f);
+    else if (v >= 3.50f) pct = 5.0f + (v - 3.50f) * (20.0f / 0.20f);
+    else if (v >= 3.30f) pct = (v - 3.30f) * (5.0f / 0.20f);
+    else pct = 0.0f;
     if (pct < 0.0f) pct = 0.0f;
     if (pct > 100.0f) pct = 100.0f;
     return (uint8_t)(pct + 0.5f);
