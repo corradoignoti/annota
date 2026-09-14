@@ -2,7 +2,6 @@
 
 #include <WiFi.h>
 #include <WiFiManager.h>
-#include <lvgl.h>
 #include <time.h>
 
 #include "ui.h"
@@ -53,8 +52,10 @@ static void sync_clock_via_ntp() {
 // underlying esp_wifi/lwIP station will keep quietly auto-reconnecting
 // to the saved network on its own after our own WIFI_RECONNECT_TIMEOUT_SECONDS
 // give-up, and try_connect() never finds out when that later succeeds.
-// Runs on the WiFi/system event task, not the LVGL task loop() owns, so
-// it must stay LVGL-free - configTime() itself has no LVGL dependency.
+// Runs on the WiFi/system event task, not the task loop() owns, so it
+// must never call any ui.h function (those assume they're only ever
+// called from loop()'s own single-threaded context) - configTime() itself
+// has no such dependency.
 static void on_wifi_got_ip(WiFiEvent_t event, WiFiEventInfo_t info) {
     (void)event;
     (void)info;
@@ -99,9 +100,9 @@ static bool run_setup_portal() {
     wm.setConfigPortalTimeout(0);
 
     // autoConnect() blocks loop() the whole time it runs, so the on-screen
-    // dialog only gets to paint once, from this callback.
-    // ui_show_wifi_setup_dialog() forces its own repaint since our normal
-    // loop()'s lv_timer_handler() isn't running.
+    // dialog only gets to paint once, from this callback -
+    // ui_show_wifi_setup_dialog() redraws immediately/synchronously, so it
+    // doesn't depend on loop() running to actually appear.
     wm.setAPCallback([](WiFiManager *) { ui_show_wifi_setup_dialog(PORTAL_SSID); });
 
     bool connected = wm.autoConnect(PORTAL_SSID);
@@ -114,8 +115,9 @@ static bool run_setup_portal() {
 // for up to WIFI_RECONNECT_TIMEOUT_SECONDS, then give up so this doesn't
 // hang here indefinitely - try_connect() falls back to the setup portal
 // once this returns false. Counts down on the status label each second so
-// the wait isn't a silent freeze - ui_set_wifi_status() forces its own
-// repaint since our normal loop()'s lv_timer_handler() isn't running here.
+// the wait isn't a silent freeze - ui_set_wifi_status() redraws
+// immediately/synchronously, so the countdown is visible even while this
+// function itself blocks loop() the whole time it runs.
 static bool reconnect_saved_network() {
     WiFi.mode(WIFI_STA);
     WiFi.begin();  // no args = reconnect with the credentials already in NVS
@@ -186,12 +188,12 @@ static bool try_connect() {
 
     if (connected) {
         char msg[64];
-        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        snprintf(msg, sizeof(msg), "WiFi %s", WiFi.localIP().toString().c_str());
         ui_set_wifi_status(msg);
         Serial.println(msg);
         sync_clock_via_ntp();
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        ui_set_wifi_status("! working offline");
         Serial.println(hasSavedNetwork
                             ? "WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)"
                             : "WiFi: setup portal exited without a connection - continuing offline");
@@ -230,7 +232,7 @@ WifiBootConnectResult wifi_process_boot_connect() {
     if (WiFi.status() == WL_CONNECTED) {
         bootConnectPending = false;
         char msg[64];
-        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        snprintf(msg, sizeof(msg), "WiFi %s", WiFi.localIP().toString().c_str());
         ui_set_wifi_status(msg);
         Serial.println(msg);
         sync_clock_via_ntp();
@@ -250,7 +252,7 @@ WifiBootConnectResult wifi_process_boot_connect() {
     }
 
     bootConnectPending = false;
-    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+    ui_set_wifi_status("! working offline");
     Serial.println("WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)");
     ui_refresh_wifi_retry_button();
     return WifiBootConnectResult::kFailed;
@@ -293,7 +295,7 @@ bool wifi_ensure_connected() {
         // whatever it happened to say before (stale "Connecting..." from
         // an earlier attempt, say), same wording as every other failure
         // path below.
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        ui_set_wifi_status("! working offline");
         return false;
     }
 
@@ -301,12 +303,12 @@ bool wifi_ensure_connected() {
     bool connected = reconnect_saved_network();
     if (connected) {
         char msg[64];
-        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        snprintf(msg, sizeof(msg), "WiFi %s", WiFi.localIP().toString().c_str());
         ui_set_wifi_status(msg);
         Serial.println(msg);
         sync_clock_via_ntp();
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        ui_set_wifi_status("! working offline");
         Serial.println("WiFi: reconnect for transcription failed - still offline");
     }
     ui_refresh_wifi_retry_button();
@@ -314,8 +316,8 @@ bool wifi_ensure_connected() {
 }
 
 // Unlike wifi_request_reconnect(), this doesn't need to defer through
-// loop() - it never returns, so there's no repaint afterwards that could
-// silently no-op from running nested inside lv_timer_handler().
+// loop() - it never returns (ESP.restart() below), so there's no repaint
+// afterwards to worry about at all.
 void wifi_forget_and_reboot() {
     WiFiManager wm;
     wm.resetSettings();
@@ -336,7 +338,7 @@ void wifi_go_offline() {
     // own "working offline" once its own timeout lapses anyway.
     bootConnectPending = false;
     WiFi.disconnect(true);  // true = power off the radio too (battery life); leaves NVS credentials alone
-    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+    ui_set_wifi_status("! working offline");
     ui_refresh_wifi_retry_button();
     Serial.println("WiFi: disconnected by user - working offline");
 }

@@ -483,7 +483,7 @@ function render() {
     name.className = "name";
     const icon = document.createElement("span");
     icon.className = "file-icon";
-    icon.textContent = isAudio(f.name) ? "♪" : "☰"; // matches ui_epaper.cpp's LV_SYMBOL_AUDIO / LV_SYMBOL_FILE distinction
+    icon.textContent = isAudio(f.name) ? "♪" : "☰"; // matches ui_epaper.cpp's "AUD"/"TXT" row-icon distinction
     name.appendChild(icon);
     name.appendChild(document.createTextNode(f.name));
     tr.appendChild(name);
@@ -1132,9 +1132,8 @@ static void handle_settings_info() {
 }
 
 // POST /api/settings/reconnect - same request wifi_manager.h's
-// wifi_request_reconnect() documents: only flags it, loop() actually
-// runs it (wifi_process_pending_reconnect())
-// once this handler has returned and lv_timer_handler() has run again, so
+// wifi_request_reconnect() documents: only flags it, loop() actually runs
+// it (wifi_process_pending_reconnect()) once this handler has returned, so
 // this responds immediately rather than blocking the request for up to 30
 // seconds. web_server_handle() itself won't run again until that attempt
 // finishes, so the page's next few polls will stall rather than fail -

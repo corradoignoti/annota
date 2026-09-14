@@ -3,7 +3,8 @@
 #include <Arduino.h>  // ESP.restart() - kRebootConfirm
 #include <cstdio>
 #include <cstring>
-#include <lvgl.h>
+
+#include <Fonts/FreeSans9pt7b.h>
 
 #include "display.h"
 #include "sleep.h"
@@ -22,19 +23,23 @@
 // touch-driven widget tree:
 //   Next (BOOT)   - cycle the current selection/menu option
 //   Select (PWR)  - short press: open/confirm; long press: back out
-// Every screen is rebuilt from scratch on each state change
-// (lv_obj_clean() + repopulate) rather than kept as a tree of
-// show/hide-toggled widgets - simpler to keep correct, and cheap next to
-// the e-paper refresh itself dominating either way.
+// Every screen is redrawn from scratch on each state change (fillScreen()
+// + repopulate) rather than kept as a tree of show/hide-toggled widgets -
+// simpler to keep correct, and cheap next to the e-paper refresh itself
+// dominating either way. There's no retained widget tree at all here -
+// GxEPD2/Adafruit_GFX only offers immediate-mode drawing into a shared
+// framebuffer (see display.h's display_epd()/display_present()), so
+// "rebuilding" a screen just means drawing over the same buffer again.
 //
-// Visual language: a black status bar pinned across the top (outside
-// body, never cleared by render_body()), rounded bordered "cards" for
-// every list/menu row (inverted black-on-white when selected - the only
-// focus indicator this UI has, in place of touch highlighting), and a
-// bordered info-card for every message-only screen. Every row/card gets
-// a small leading icon from lvgl's built-in symbol font so screens read
-// at a glance instead of as walls of plain text - all within mono 1bpp,
-// no new image assets.
+// Visual language: a black status bar pinned across the top (redrawn every
+// call, since there's no persistent-widget concept to spare it from a
+// clean), plain square-bordered rows for every list/menu row (inverted
+// black-on-white when selected - the only focus indicator this UI has, in
+// place of touch highlighting), and a bordered info-card for every
+// message-only screen. Every row/card gets a short plain-text token in
+// place of LVGL's old built-in symbol-font icons (no icon font exists in
+// Adafruit_GFX) so screens still read at a glance instead of as walls of
+// plain text.
 // -----------------------------------------------------------------------
 
 enum class Screen {
@@ -58,16 +63,30 @@ enum class Screen {
 static const int16_t HEADER_H = 20;
 static const int16_t ROW_H = 20;
 static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
+static const int16_t BODY_TOP = HEADER_H;
 // kList reserves its own top row (below) for the Audio/Text mode header,
 // on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
-static lv_obj_t *header_label = nullptr;
-static lv_obj_t *battery_label = nullptr;
-static uint8_t battery_last_percent = 255; // sentinel - forces the first ui_set_battery_percent() paint
-static lv_obj_t *body = nullptr;
+// Nominal line heights used for layout math (card sizing, hint-bar
+// centering) - a fixed value rather than each line's actual measured ink
+// height, so spacing stays consistent whether or not a given line has
+// ascenders/descenders. Tuned for FreeSans9pt7b (body) / the built-in 6x8
+// font (small) - LVGL's old Montserrat metrics don't carry over, expect to
+// retune these once seen on real hardware.
+static const int16_t BODY_LINE_H = 18;
+static const int16_t SMALL_LINE_H = 10;
+
+// Returns the shared GxEPD2 display object - a thin local wrapper so every
+// draw call below reads as Epd().something() instead of the longer
+// display_epd().something().
+static EpdDisplay &Epd() { return display_epd(); }
+
+static char header_text[64] = "";
+static uint8_t battery_percent_val = 255; // sentinel - forces the first ui_set_battery_percent() paint
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
+static bool screen_ready = false; // true once build_main_screen() has run - guards the no-op-before-that contract several ui.h functions document
 
 // kList. showing_audio_files: true while mp3Files/mp3FileCount hold
 // AUDIO_EXTS, false while showing .txt - toggled by a long Next press
@@ -104,6 +123,126 @@ static bool transcribe_ok = false;
 static char transcribe_message[128];
 
 static void render_body();
+
+// -----------------------------------------------------------------------
+// Drawing primitives - Adafruit_GFX has no ellipsis-truncation or
+// word-wrap of its own (LV_LABEL_LONG_DOT/LV_LABEL_LONG_WRAP's
+// replacements), and no notion of "ink top-left" positioning (a GFXfont's
+// setCursor() is baseline-relative, the built-in font's is cell-top-left-
+// relative) - these wrap getTextBounds() once so every caller below can
+// just say "put this text's ink at (x, y)" or "centered at x" regardless
+// of which font is active.
+// -----------------------------------------------------------------------
+
+static void use_small_font() {
+    Epd().setFont(nullptr);
+    Epd().setTextSize(1);
+}
+
+static void use_body_font() {
+    Epd().setFont(&FreeSans9pt7b);
+    Epd().setTextSize(1);
+}
+
+static void text_ink_size(const char *text, uint16_t *w, uint16_t *h) {
+    int16_t x1, y1;
+    Epd().getTextBounds(text, 0, 0, &x1, &y1, w, h);
+}
+
+// Draws `text` with its ink's top-left corner at (x, y).
+static void draw_text(int16_t x, int16_t y, const char *text) {
+    int16_t x1, y1;
+    uint16_t w, h;
+    Epd().getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+    Epd().setCursor(x - x1, y - y1);
+    Epd().print(text);
+}
+
+// Draws `text` horizontally centered on `centerX`, ink's top at `y`.
+static void draw_text_centered(int16_t centerX, int16_t y, const char *text) {
+    int16_t x1, y1;
+    uint16_t w, h;
+    Epd().getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+    Epd().setCursor(centerX - (int16_t)(w / 2) - x1, y - y1);
+    Epd().print(text);
+}
+
+// Truncates `text` into `buf` (size `bufSize`) so it fits `maxW` px in the
+// current font, appending "..." if it had to cut anything.
+static void truncate_to_width(const char *text, int16_t maxW, char *buf, size_t bufSize) {
+    if (bufSize == 0) return;
+    uint16_t w, h;
+    text_ink_size(text, &w, &h);
+    if (w <= (uint16_t)maxW) {
+        strncpy(buf, text, bufSize - 1);
+        buf[bufSize - 1] = '\0';
+        return;
+    }
+    size_t len = strlen(text);
+    for (size_t cut = len; cut > 0; cut--) {
+        char tmp[80];
+        size_t n = cut < sizeof(tmp) - 4 ? cut : sizeof(tmp) - 4;
+        memcpy(tmp, text, n);
+        strcpy(tmp + n, "...");
+        text_ink_size(tmp, &w, &h);
+        if (w <= (uint16_t)maxW) {
+            strncpy(buf, tmp, bufSize - 1);
+            buf[bufSize - 1] = '\0';
+            return;
+        }
+    }
+    strncpy(buf, "...", bufSize - 1);
+    buf[bufSize - 1] = '\0';
+}
+
+// Greedy word-wrap of `text` into up to `maxLines` lines (each up to 95
+// chars), breaking on spaces so each line's rendered width fits `maxW` px
+// in the current font. Recognizes embedded "\n" as an explicit line break
+// too (kDetails' filename/created/size message uses one).
+static int wrap_text(const char *text, int16_t maxW, char lines[][96], int maxLines) {
+    int lineCount = 0;
+    const char *p = text;
+    while (*p && lineCount < maxLines) {
+        while (*p == ' ') p++;
+        if (*p == '\n') {
+            p++;
+            continue;
+        }
+        if (!*p) break;
+
+        char *line = lines[lineCount];
+        line[0] = '\0';
+        while (*p && *p != '\n') {
+            const char *wordEnd = p;
+            while (*wordEnd && *wordEnd != ' ' && *wordEnd != '\n') wordEnd++;
+            size_t wordLen = wordEnd - p;
+
+            char candidate[96];
+            if (line[0] == '\0') {
+                size_t n = wordLen < sizeof(candidate) - 1 ? wordLen : sizeof(candidate) - 1;
+                memcpy(candidate, p, n);
+                candidate[n] = '\0';
+            } else {
+                snprintf(candidate, sizeof(candidate), "%s %.*s", line, (int)wordLen, p);
+            }
+
+            uint16_t w, h;
+            text_ink_size(candidate, &w, &h);
+            if (w > (uint16_t)maxW && line[0] != '\0') break; // this word doesn't fit - close the line out here
+            strncpy(line, candidate, 95);
+            line[95] = '\0';
+            p = wordEnd;
+            while (*p == ' ') p++;
+            if (w > (uint16_t)maxW) break; // even alone it overflows - take it as-is rather than loop forever
+        }
+        lineCount++;
+    }
+    return lineCount;
+}
+
+// -----------------------------------------------------------------------
+// Screen-building helpers
+// -----------------------------------------------------------------------
 
 // kList shows a synthetic "Record new" row pinned above the real files -
 // but only while showing_audio_files (a recording is itself an audio
@@ -146,108 +285,145 @@ static void clamp_selection() {
     if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
 }
 
-// One rounded, bordered "card" row: a leading icon glyph plus label text,
-// left-aligned, inverted (black bg, white text) when selected - the only
-// "focus" indicator this UI has. parent/x/y/w let this serve both the
-// full-width list (parent == body) and menu rows indented inside a
-// bordered panel (see render_option_menu()).
-static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
-    int16_t card_h = ROW_H - 2;
-    lv_obj_t *card = lv_obj_create(parent);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, w, card_h);
-    lv_obj_set_pos(card, x, y);
-    lv_obj_set_style_radius(card, 4, 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_border_color(card, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(card, selected ? lv_color_black() : lv_color_white(), 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+// Draws the black status bar pinned across the top: left-aligned status
+// text (truncated to whatever's left of the right-side icons), and
+// right-aligned battery (drawn as an outline+proportional-fill bar, not a
+// text token - see the icon-token map's comment in render_body()) plus an
+// "SD" token if a card's present. Redrawn on every render_body() call,
+// since there's no persistent-widget concept to spare it from a clean.
+static void draw_header() {
+    Epd().fillRect(0, 0, SCREEN_W, HEADER_H, GxEPD_BLACK);
+    Epd().setTextColor(GxEPD_WHITE);
+    use_small_font();
 
-    lv_obj_t *label = lv_label_create(card);
-    lv_label_set_text_fmt(label, "%s  %s", icon, text);
-    lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
-    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+    const int16_t batteryW = 22, batteryH = 10;
+    const int16_t pad = 6;
+    int16_t rightX = SCREEN_W - pad - batteryW;
+
+    char sdToken[3] = "";
+    uint16_t sdW = 0, sdH = 0;
+    if (sd_present) {
+        strcpy(sdToken, "SD");
+        text_ink_size(sdToken, &sdW, &sdH);
+        rightX -= (sdW + 6);
+    }
+
+    int16_t batteryX = rightX;
+    int16_t batteryY = (HEADER_H - batteryH) / 2;
+    Epd().drawRect(batteryX, batteryY, batteryW - 2, batteryH, GxEPD_WHITE);
+    Epd().fillRect(batteryX + batteryW - 2, batteryY + batteryH / 2 - 2, 2, 4, GxEPD_WHITE); // battery "nub"
+    uint8_t pct = battery_percent_val > 100 ? 100 : battery_percent_val;
+    int16_t fillW = ((batteryW - 4 - 2) * pct) / 100;
+    if (fillW > 0) Epd().fillRect(batteryX + 2, batteryY + 2, fillW, batteryH - 4, GxEPD_WHITE);
+
+    if (sd_present) {
+        draw_text(SCREEN_W - pad - sdW, (HEADER_H - sdH) / 2, sdToken);
+    }
+
+    int16_t statusMaxW = rightX - 6 - 6;
+    char truncated[80];
+    truncate_to_width(header_text, statusMaxW, truncated, sizeof(truncated));
+    uint16_t tw, th;
+    text_ink_size(truncated, &tw, &th);
+    draw_text(6, (HEADER_H - th) / 2, truncated);
 }
 
-// kList's own top row: an icon, the Audio/Text mode label and file count,
-// with a bottom border separating it from the cards below - not a card
-// itself (never selectable), so it's built directly rather than through
-// add_row(). `scrollable` - true once the list has more rows than
-// VISIBLE_ROWS can show at once - draws a small down-arrow at the row's
-// right edge (mirrors build_main_screen()'s right-aligned status icons)
-// as the only hint that Next still reveals more: this list has no
-// scrollbar, and Next wraps around rather than stopping at the last item
-// (see ui_process_input()'s kList case), so the arrow stays fixed rather
-// than tracking top_index/whether the view is currently at the bottom -
-// there's always "more" to scroll to either way.
-static void render_list_header(size_t count, bool scrollable) {
-    lv_obj_t *hdr = lv_obj_create(body);
-    lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, SCREEN_W, ROW_H);
-    lv_obj_set_pos(hdr, 0, 0);
-    lv_obj_set_style_border_width(hdr, 1, 0);
-    lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
-    lv_obj_set_style_border_color(hdr, lv_color_black(), 0);
-    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+// One square-bordered row: a leading icon token plus label text,
+// left-aligned, inverted (black bg, white text) when selected - the only
+// "focus" indicator this UI has. x/y/w let this serve both the full-width
+// list (x=4, w=SCREEN_W-8) and menu rows indented inside a bordered panel
+// (see render_option_menu()).
+static void add_row(int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
+    int16_t h = ROW_H - 2;
+    Epd().fillRect(x, y, w, h, selected ? GxEPD_BLACK : GxEPD_WHITE);
+    Epd().drawRect(x, y, w, h, GxEPD_BLACK);
+    Epd().setTextColor(selected ? GxEPD_WHITE : GxEPD_BLACK);
+    use_body_font();
 
-    lv_obj_t *label = lv_label_create(hdr);
-    lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
-                           showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(label, lv_color_black(), 0);
-    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
+    char label[80];
+    snprintf(label, sizeof(label), "%s  %s", icon, text);
+    char truncated[80];
+    truncate_to_width(label, w - 12, truncated, sizeof(truncated));
+    uint16_t tw, th;
+    text_ink_size(truncated, &tw, &th);
+    draw_text(x + 6, y + (h - th) / 2, truncated);
+}
+
+// kList's own top row: an icon token, the Audio/Text mode label and file
+// count, with a bottom border separating it from the rows below - not a
+// row itself (never selectable), so it's built directly rather than
+// through add_row(). `scrollable` - true once the list has more rows than
+// VISIBLE_ROWS can show at once - draws a small "v" at the row's right
+// edge as the only hint that Next still reveals more: this list has no
+// scrollbar, and Next wraps around rather than stopping at the last item
+// (see ui_process_input()'s kList case), so it stays fixed rather than
+// tracking top_index/whether the view is currently at the bottom - there's
+// always "more" to scroll to either way.
+static void render_list_header(size_t count, bool scrollable) {
+    Epd().drawFastHLine(0, BODY_TOP + ROW_H - 1, SCREEN_W, GxEPD_BLACK);
+    Epd().setTextColor(GxEPD_BLACK);
+    use_body_font();
+
+    char label[48];
+    snprintf(label, sizeof(label), "%s  %s (%u)", showing_audio_files ? "AUD" : "TXT",
+              showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
+    uint16_t tw, th;
+    text_ink_size(label, &tw, &th);
+    draw_text(6, BODY_TOP + (ROW_H - th) / 2, label);
 
     if (scrollable) {
-        lv_obj_t *more = lv_label_create(hdr);
-        lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(more, lv_color_black(), 0);
-        lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
+        const char *more = "v";
+        text_ink_size(more, &tw, &th);
+        draw_text(SCREEN_W - 6 - tw, BODY_TOP + (ROW_H - th) / 2, more);
     }
 }
 
-// A bordered, rounded card centered in body, with an optional big icon
-// above a wrapped message - the info/dialog counterpart to add_row()'s
-// list cards, used by every message-only screen below.
+// A square-bordered card centered in the body area, with an optional big
+// icon token above a wrapped message - the info/dialog counterpart to
+// add_row()'s list rows, used by every message-only screen below.
 static void add_info_card(const char *icon, const char *text) {
     const int16_t pad = 10;
+    const int16_t rowGap = 6;
     const int16_t card_w = SCREEN_W - 24;
+    const int16_t msgMaxW = card_w - pad * 2;
 
-    lv_obj_t *card = lv_obj_create(body);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_width(card, card_w);
-    lv_obj_set_height(card, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(card, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_border_color(card, lv_color_black(), 0);
-    lv_obj_set_style_radius(card, 8, 0);
-    lv_obj_set_style_pad_all(card, pad, 0);
-    lv_obj_set_style_pad_row(card, 6, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    char lines[6][96];
+    int lineCount = wrap_text(text, msgMaxW, lines, 6);
+    if (lineCount == 0) lineCount = 1; // always leave room for at least one (possibly blank) line
 
-    if (icon && icon[0]) {
-        lv_obj_t *icon_label = lv_label_create(card);
-        lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_28, 0);
-        lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
+    use_body_font();
+    bool hasIcon = icon && icon[0];
+    uint16_t iconW = 0, iconH = 0;
+    if (hasIcon) {
+        Epd().setTextSize(2);
+        text_ink_size(icon, &iconW, &iconH);
+        Epd().setTextSize(1);
     }
 
-    lv_obj_t *msg = lv_label_create(card);
-    lv_label_set_text(msg, text);
-    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(msg, card_w - pad * 2);
-    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+    int16_t contentH = (hasIcon ? iconH + rowGap : 0) + lineCount * BODY_LINE_H;
+    int16_t card_h = pad * 2 + contentH;
+    int16_t card_x = (SCREEN_W - card_w) / 2;
+    int16_t card_y = BODY_TOP + (SCREEN_H - BODY_TOP - card_h) / 2 - 8; // slightly above center, to balance against the hint bar below
+    if (card_y < BODY_TOP + 2) card_y = BODY_TOP + 2;
 
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
+    Epd().fillRect(card_x, card_y, card_w, card_h, GxEPD_WHITE);
+    Epd().drawRect(card_x, card_y, card_w, card_h, GxEPD_BLACK);
+    Epd().drawRect(card_x + 1, card_y + 1, card_w - 2, card_h - 2, GxEPD_BLACK); // 2px border
+
+    Epd().setTextColor(GxEPD_BLACK);
+    int16_t y = card_y + pad;
+    if (hasIcon) {
+        Epd().setTextSize(2);
+        draw_text_centered(card_x + card_w / 2, y, icon);
+        Epd().setTextSize(1);
+        y += iconH + rowGap;
+    }
+    for (int i = 0; i < lineCount; i++) {
+        uint16_t lw, lh;
+        text_ink_size(lines[i], &lw, &lh);
+        draw_text_centered(card_x + card_w / 2, y + (BODY_LINE_H - lh) / 2, lines[i]);
+        y += BODY_LINE_H;
+    }
 }
 
 // Wraps onto up to two lines instead of running off the 200px panel edge -
@@ -255,95 +431,87 @@ static void add_info_card(const char *icon, const char *text) {
 // The top border marks it off as a distinct status strip rather than
 // trailing text.
 static void add_hint(const char *text) {
-    lv_obj_t *bar = lv_obj_create(body);
-    lv_obj_remove_style_all(bar);
-    lv_obj_set_size(bar, SCREEN_W, HINT_H);
-    lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_border_width(bar, 1, 0);
-    lv_obj_set_style_border_side(bar, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_color(bar, lv_color_black(), 0);
-    lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    int16_t barY = SCREEN_H - HINT_H;
+    Epd().drawFastHLine(0, barY, SCREEN_W, GxEPD_BLACK);
+    Epd().setTextColor(GxEPD_BLACK);
+    use_small_font();
 
-    lv_obj_t *hint = lv_label_create(bar);
-    lv_label_set_text(hint, text);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(hint, lv_color_black(), 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
+    char lines[2][96];
+    int lineCount = wrap_text(text, SCREEN_W - 8, lines, 2);
+    int16_t blockH = lineCount * SMALL_LINE_H;
+    int16_t y = barY + (HINT_H - blockH) / 2;
+    for (int i = 0; i < lineCount; i++) {
+        uint16_t lw, lh;
+        text_ink_size(lines[i], &lw, &lh);
+        draw_text_centered(SCREEN_W / 2, y + (SMALL_LINE_H - lh) / 2, lines[i]);
+        y += SMALL_LINE_H;
+    }
 }
 
-// Shared by kActionMenu and kDeleteConfirm - a bordered panel holding a
-// title line plus a cycle-and-confirm option list, one icon+label card
-// per option (see add_row()).
+// Shared by kMainMenu/kActionMenu/kDeleteConfirm/kForgetWifiConfirm/
+// kRebootConfirm - a bordered panel holding a title line plus a
+// cycle-and-confirm option list, one icon+label row per option (see
+// add_row()).
 static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count) {
     const int16_t pad = 6;
     const int16_t title_h = 20;
     const int16_t panel_w = SCREEN_W - 16;
     const int16_t panel_h = pad * 2 + title_h + count * ROW_H;
-    const int16_t panel_y = 12;
+    const int16_t panel_x = (SCREEN_W - panel_w) / 2;
+    const int16_t panel_y = BODY_TOP + 12;
 
-    lv_obj_t *panel = lv_obj_create(body);
-    lv_obj_remove_style_all(panel);
-    lv_obj_set_size(panel, panel_w, panel_h);
-    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, panel_y);
-    lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(panel, 2, 0);
-    lv_obj_set_style_border_color(panel, lv_color_black(), 0);
-    lv_obj_set_style_radius(panel, 8, 0);
-    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    Epd().fillRect(panel_x, panel_y, panel_w, panel_h, GxEPD_WHITE);
+    Epd().drawRect(panel_x, panel_y, panel_w, panel_h, GxEPD_BLACK);
+    Epd().drawRect(panel_x + 1, panel_y + 1, panel_w - 2, panel_h - 2, GxEPD_BLACK);
 
-    lv_obj_t *title_label = lv_label_create(panel);
-    lv_label_set_text(title_label, title);
-    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
-    lv_obj_set_pos(title_label, 6, pad);
+    use_body_font();
+    Epd().setTextColor(GxEPD_BLACK);
+    char titleTrunc[64];
+    truncate_to_width(title, panel_w - 12, titleTrunc, sizeof(titleTrunc));
+    uint16_t tw, th;
+    text_ink_size(titleTrunc, &tw, &th);
+    draw_text_centered(panel_x + panel_w / 2, panel_y + (title_h - th) / 2, titleTrunc);
 
-    lv_obj_t *rule = lv_obj_create(panel);
-    lv_obj_remove_style_all(rule);
-    lv_obj_set_size(rule, panel_w - 12, 1);
-    lv_obj_set_pos(rule, 6, pad + title_h - 6);
-    lv_obj_set_style_bg_color(rule, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
+    Epd().drawFastHLine(panel_x + 6, panel_y + title_h - 6, panel_w - 12, GxEPD_BLACK);
 
-    int16_t y = pad + title_h;
+    int16_t y = panel_y + title_h;
     for (int i = 0; i < count; i++) {
-        add_row(panel, 6, y, panel_w - 12, icons[i], options[i], i == menu_index);
+        add_row(panel_x + 6, y, panel_w - 12, icons[i], options[i], i == menu_index);
         y += ROW_H;
     }
 
     add_hint("Next: cycle   Select: choose, hold: back");
 }
 
+// Icon tokens below replace LVGL's old built-in symbol-font glyphs
+// (LV_SYMBOL_*) - Adafruit_GFX has no icon font, so every icon is a short
+// plain-text token instead (battery is the one exception - see
+// draw_header()'s drawn outline+fill bar).
 static void render_body() {
-    lv_obj_clean(body);
+    Epd().fillScreen(GxEPD_WHITE);
+    draw_header();
 
     switch (state) {
         case Screen::kNoCard:
-            add_info_card(LV_SYMBOL_SD_CARD, "Insert an SD card to see your audio files");
+            add_info_card("SD", "Insert an SD card to see your audio files");
             break;
 
         case Screen::kList: {
             size_t count = list_item_count();
             render_list_header(mp3FileCount, count > (size_t)VISIBLE_ROWS);
             if (count == 0) {
-                add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
+                add_info_card(showing_audio_files ? "AUD" : "TXT",
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
                 add_hint("Sel(hold): menu   Next(hold): switch");
                 break;
             }
             clamp_selection();
             bool recordOption = has_record_option();
-            int16_t y = ROW_H;
+            int16_t y = BODY_TOP + ROW_H;
             for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
                 const char *label = (recordOption && i == 0) ? "Record new" : mp3Files[recordOption ? i - 1 : i].filename;
-                const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
-                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
+                const char *icon = (recordOption && i == 0) ? "+" : (showing_audio_files ? "AUD" : "TXT");
+                add_row(4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
             add_hint("Next: move, hold: switch   Sel: open, hold: menu");
@@ -359,14 +527,14 @@ static void render_body() {
         // render.
         case Screen::kMainMenu: {
             bool online = wifi_is_connected();
-            const char *icons[] = {LV_SYMBOL_REFRESH, LV_SYMBOL_WIFI, LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
+            const char *icons[] = {"R", "WiFi", "PWR", "X"};
             const char *options[] = {"Refresh", online ? "Offline" : "Online", "Reboot", "Close"};
             render_option_menu("Menu", icons, options, 4);
             break;
         }
 
         case Screen::kRebootConfirm: {
-            static const char *icons[] = {LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
+            static const char *icons[] = {"PWR", "X"};
             static const char *options[] = {"Confirm reboot", "Cancel"};
             render_option_menu("Reboot device?", icons, options, 2);
             break;
@@ -376,11 +544,11 @@ static void render_body() {
             // Play/Transcription only make sense for audio files, not the
             // .txt transcripts this same list shows when toggled.
             if (showing_audio_files) {
-                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *icons[] = {">", "T", "i", "Del", "X"};
                 static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "Cancel"};
                 render_option_menu(active_filename, icons, options, 5);
             } else {
-                static const char *icons[] = {LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *icons[] = {"i", "Del", "X"};
                 static const char *options[] = {"Details", "Delete", "Cancel"};
                 render_option_menu(active_filename, icons, options, 3);
             }
@@ -392,7 +560,7 @@ static void render_body() {
             char msg[160];
             snprintf(msg, sizeof(msg), "%s\n\nCreated: %s\nSize: %lu KB", entry.filename, entry.created,
                      (unsigned long)((entry.size + 1023) / 1024));
-            add_info_card(LV_SYMBOL_LIST, msg);
+            add_info_card("i", msg);
             add_hint("Select: close");
             break;
         }
@@ -400,14 +568,14 @@ static void render_body() {
         case Screen::kDeleteConfirm: {
             char title[96];
             snprintf(title, sizeof(title), "Delete %s?", active_filename);
-            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+            static const char *icons[] = {"Del", "X"};
             static const char *options[] = {"Confirm delete", "Cancel"};
             render_option_menu(title, icons, options, 2);
             break;
         }
 
         case Screen::kForgetWifiConfirm: {
-            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+            static const char *icons[] = {"Del", "X"};
             static const char *options[] = {"Forget & reboot", "Cancel"};
             render_option_menu("Forget saved WiFi?", icons, options, 2);
             break;
@@ -416,7 +584,7 @@ static void render_body() {
         case Screen::kPlaying: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Playing %s...", active_filename);
-            add_info_card(LV_SYMBOL_PLAY, msg);
+            add_info_card(">", msg);
             add_hint("Select: stop");
             break;
         }
@@ -424,125 +592,69 @@ static void render_body() {
         case Screen::kRecording: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Recording %s...", active_filename);
-            add_info_card(LV_SYMBOL_AUDIO, msg);
+            add_info_card("AUD", msg);
             add_hint("Select: stop");
             break;
         }
 
         case Screen::kMicError:
-            add_info_card(LV_SYMBOL_WARNING, mic_last_error());
+            add_info_card("!", mic_last_error());
             add_hint("Select: close");
             break;
 
         case Screen::kWifiSetup: {
             char msg[128];
             snprintf(msg, sizeof(msg), "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", wifi_setup_ssid);
-            add_info_card(LV_SYMBOL_WIFI, msg);
+            add_info_card("WiFi", msg);
             break;
         }
 
         case Screen::kTranscribeProgress: {
             char msg[96];
             snprintf(msg, sizeof(msg), "Transcribing %s...", transcribe_filename);
-            add_info_card(LV_SYMBOL_REFRESH, msg);
+            add_info_card("R", msg);
             break;
         }
 
         case Screen::kTranscribeResult:
-            add_info_card(transcribe_ok ? LV_SYMBOL_OK : LV_SYMBOL_WARNING, transcribe_message);
+            add_info_card(transcribe_ok ? "OK" : "!", transcribe_message);
             add_hint("Select: close");
             break;
 
         case Screen::kSleeping:
-            add_info_card(LV_SYMBOL_POWER, "Sleeping...\nHold Select to wake");
+            add_info_card("PWR", "Sleeping...\nHold Select to wake");
             break;
     }
 }
 
 void build_main_screen(bool sdPresent) {
     sd_present = sdPresent;
-
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-
-    // A black status bar pinned across the top, outside body - never
-    // touched by render_body()'s lv_obj_clean(), so WiFi status survives
-    // every screen change.
-    lv_obj_t *header_bar = lv_obj_create(scr);
-    lv_obj_remove_style_all(header_bar);
-    lv_obj_set_size(header_bar, SCREEN_W, HEADER_H);
-    lv_obj_set_pos(header_bar, 0, 0);
-    lv_obj_set_style_bg_color(header_bar, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(header_bar, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
-
-    header_label = lv_label_create(header_bar);
-    lv_obj_set_style_text_font(header_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
-    lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(header_label, "");
-    lv_obj_align(header_label, LV_ALIGN_LEFT_MID, 6, 0);
-
-    // Right-side status icons: battery percentage (always) plus the SD
-    // card icon (only if present) - grouped in one flex-row container so
-    // battery text width (1-3 digits) doesn't need manual offset math
-    // against the SD icon next to it.
-    lv_obj_t *status_icons = lv_obj_create(header_bar);
-    lv_obj_remove_style_all(status_icons);
-    lv_obj_set_size(status_icons, LV_SIZE_CONTENT, HEADER_H);
-    lv_obj_set_style_bg_opa(status_icons, LV_OPA_TRANSP, 0);
-    lv_obj_clear_flag(status_icons, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(status_icons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_icons, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(status_icons, 4, 0);
-    lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
-
-    battery_label = lv_label_create(status_icons);
-    lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
-    lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
-    battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
-
-    if (sdPresent) {
-        lv_obj_t *sd_icon = lv_label_create(status_icons);
-        lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
-        lv_obj_set_style_text_font(sd_icon, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
-    }
-
-    lv_obj_set_width(header_label, SCREEN_W - 60); // leaves room for status_icons
-
-    body = lv_obj_create(scr);
-    lv_obj_remove_style_all(body);
-    lv_obj_set_size(body, SCREEN_W, SCREEN_H - HEADER_H);
-    lv_obj_align(body, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+    header_text[0] = '\0';
+    battery_percent_val = 255; // sentinel - force the next ui_set_battery_percent() paint
 
     selected_index = 0;
     top_index = 0;
     state = sd_present ? Screen::kList : Screen::kNoCard;
+    screen_ready = true;
     render_body();
+    display_present(false); // first paint of the session: full refresh
 }
 
 void ui_set_wifi_status(const char *text) {
-    if (!header_label) return;
-    lv_label_set_text(header_label, text);
-    lv_timer_handler();
+    if (!screen_ready) return;
+    strncpy(header_text, text, sizeof(header_text) - 1);
+    header_text[sizeof(header_text) - 1] = '\0';
+    render_body();
+    display_present(true);
 }
 
 void ui_set_battery_percent(uint8_t percent) {
-    if (!battery_label) return;
+    if (!screen_ready) return;
     if (percent > 100) percent = 100;
-    if (percent == battery_last_percent) return; // unchanged - skip the full e-paper repaint
-    battery_last_percent = percent;
-    const char *icon = percent >= 90   ? LV_SYMBOL_BATTERY_FULL
-                        : percent >= 60 ? LV_SYMBOL_BATTERY_3
-                        : percent >= 40 ? LV_SYMBOL_BATTERY_2
-                        : percent >= 15 ? LV_SYMBOL_BATTERY_1
-                                        : LV_SYMBOL_BATTERY_EMPTY;
-    lv_label_set_text_fmt(battery_label, "%s %u%%", icon, (unsigned)percent);
-    lv_timer_handler();
+    if (percent == battery_percent_val) return; // unchanged - skip the full e-paper repaint
+    battery_percent_val = percent;
+    render_body();
+    display_present(true);
 }
 
 void ui_show_wifi_setup_dialog(const char *setup_ssid) {
@@ -551,14 +663,14 @@ void ui_show_wifi_setup_dialog(const char *setup_ssid) {
     wifi_setup_ssid[sizeof(wifi_setup_ssid) - 1] = '\0';
     state = Screen::kWifiSetup;
     render_body();
-    lv_timer_handler();
+    display_present(true);
 }
 
 void ui_hide_wifi_setup_dialog() {
     if (state != Screen::kWifiSetup) return;
     state = sd_present ? Screen::kList : Screen::kNoCard;
     render_body();
-    lv_timer_handler();
+    display_present(true);
 }
 
 // No Settings view here to refresh a retry button on - see ui.h's comment.
@@ -569,7 +681,7 @@ void ui_show_transcribe_progress(const char *filename) {
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
     state = Screen::kTranscribeProgress;
     render_body();
-    lv_timer_handler();
+    display_present(true);
 }
 
 void ui_show_transcribe_result(bool ok, const char *message) {
@@ -578,7 +690,7 @@ void ui_show_transcribe_result(bool ok, const char *message) {
     transcribe_message[sizeof(transcribe_message) - 1] = '\0';
     state = Screen::kTranscribeResult;
     render_body();
-    lv_timer_handler();
+    display_present(true);
 }
 
 bool ui_is_sleep_blocked() {
@@ -588,7 +700,7 @@ bool ui_is_sleep_blocked() {
 void ui_show_sleep_screen() {
     state = Screen::kSleeping;
     render_body();
-    lv_timer_handler();
+    display_present(true);
 }
 
 void ui_process_input() {
@@ -602,6 +714,7 @@ void ui_process_input() {
         // Playing screen the same way Select does.
         state = sd_present ? Screen::kList : Screen::kNoCard;
         render_body();
+        display_present(true);
     }
     if (state == Screen::kRecording && !mic_is_recording()) {
         // mic_process() force-stopped on its own (I2S read error) - same
@@ -610,6 +723,7 @@ void ui_process_input() {
         // back to the list silently.
         state = Screen::kMicError;
         render_body();
+        display_present(true);
     }
 
     // Checked ahead of display_button_poll() below, and independent of it -
@@ -626,6 +740,7 @@ void ui_process_input() {
         state = Screen::kForgetWifiConfirm;
         menu_index = 0;
         render_body();
+        display_present(true);
         return;
     }
     if (display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect)) {
@@ -643,11 +758,13 @@ void ui_process_input() {
         millis() - select_press_pending_since >= DOUBLE_PRESS_WINDOW_MS) {
         select_press_pending = false;
         open_action_menu_for_selected();
+        display_present(true);
     }
 
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
     sleep_reset_activity(); // any button edge counts as activity - see sleep.h
 
+    bool redraw = false;
     switch (state) {
         case Screen::kNoCard:
             break; // nothing to navigate - insert a card and reboot
@@ -659,7 +776,7 @@ void ui_process_input() {
                 load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                 selected_index = 0;
                 top_index = 0;
-                render_body();
+                redraw = true;
                 break;
             }
             if (selEv == DisplayButtonEvent::kLong) {
@@ -669,7 +786,7 @@ void ui_process_input() {
                 select_press_pending = false; // leaving kList - drop any held-back press
                 state = Screen::kMainMenu;
                 menu_index = 0;
-                render_body();
+                redraw = true;
                 break;
             }
             {
@@ -685,10 +802,11 @@ void ui_process_input() {
                     if (select_press_pending) {
                         select_press_pending = false;
                         open_action_menu_for_selected();
+                        redraw = true;
                         break;
                     }
                     selected_index = (selected_index + 1) % count;
-                    render_body();
+                    redraw = true;
                 } else if (selEv == DisplayButtonEvent::kShort) {
                     if (has_record_option() && selected_index == 0) {
                         // Already on the Record row - jumping here would be
@@ -704,14 +822,14 @@ void ui_process_input() {
                             // monitor attached to see it logged there.
                             state = Screen::kMicError;
                         }
-                        render_body();
+                        redraw = true;
                     } else if (select_press_pending) {
                         // Second Select short-press within the window -
                         // double-press gesture: jump to the Record row
                         // instead of opening this row's action menu.
                         select_press_pending = false;
                         selected_index = 0;
-                        render_body();
+                        redraw = true;
                     } else {
                         // First press on a non-Record row - hold it back
                         // in case a second one follows fast (see the
@@ -735,10 +853,10 @@ void ui_process_input() {
             const int optionCount = 4;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
@@ -759,7 +877,7 @@ void ui_process_input() {
                     // menu_index == 3 (Close): no action.
                     state = Screen::kList;
                 }
-                render_body();
+                redraw = true;
             }
             break;
         }
@@ -771,17 +889,17 @@ void ui_process_input() {
         case Screen::kRebootConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     // Never returns - no state/render needed after.
                     ESP.restart();
                 }
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
 
@@ -793,15 +911,15 @@ void ui_process_input() {
             int optionCount = showing_audio_files ? 5 : 3;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (showing_audio_files && menu_index == 0) {
                     speaker_play(active_filename);
                     state = Screen::kPlaying;
-                    render_body();
+                    redraw = true;
                 } else if (showing_audio_files && menu_index == 1) {
                     // Don't touch state/render here - transcribe.h's
                     // transcribe_process_pending() (called right after
@@ -813,14 +931,14 @@ void ui_process_input() {
                     transcribe_request(active_filename);
                 } else if (menu_index == (showing_audio_files ? 2 : 0)) {
                     state = Screen::kDetails;
-                    render_body();
+                    redraw = true;
                 } else if (menu_index == (showing_audio_files ? 3 : 1)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
-                    render_body();
+                    redraw = true;
                 } else {
                     state = Screen::kList;
-                    render_body();
+                    redraw = true;
                 }
             }
             break;
@@ -829,10 +947,10 @@ void ui_process_input() {
         case Screen::kDeleteConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     delete_file(active_filename);
@@ -841,7 +959,7 @@ void ui_process_input() {
                     top_index = 0;
                 }
                 state = Screen::kList;
-                render_body();
+                redraw = true;
             }
             break;
 
@@ -849,7 +967,7 @@ void ui_process_input() {
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 speaker_stop();
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
 
@@ -862,14 +980,14 @@ void ui_process_input() {
                 selected_index = 0;
                 top_index = 0;
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
 
         case Screen::kMicError:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
 
@@ -882,14 +1000,14 @@ void ui_process_input() {
         case Screen::kTranscribeResult:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
 
         case Screen::kDetails:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kActionMenu;
-                render_body();
+                redraw = true;
             }
             break;
 
@@ -899,10 +1017,10 @@ void ui_process_input() {
         case Screen::kForgetWifiConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     // Never returns (ESP.restart()) - no state/render
@@ -910,8 +1028,13 @@ void ui_process_input() {
                     wifi_forget_and_reboot();
                 }
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
+                redraw = true;
             }
             break;
+    }
+
+    if (redraw) {
+        render_body();
+        display_present(true);
     }
 }
