@@ -1,34 +1,38 @@
 #pragma once
 
 #include <cstdint>
+#include <lvgl.h>
 
 // Builds the main screen: with sd_present, a title plus a scrollable list
-// of rows, one per entry in mp3Files/mp3FileCount (see storage.h); without
-// it, a message inviting the user to insert an SD card. Call once, after
-// display_init_panel()/display_init_input() and load_mp3_catalog().
+// of rounded cards, one per entry in mp3Files/mp3FileCount (see
+// storage.h); without it, a message inviting the user to insert an SD
+// card. Call once, after display_init_panel()/display_init_input() and
+// load_mp3_catalog().
 void build_main_screen(bool sd_present);
 
-// Updates the WiFi status line at the top of the main screen and redraws
-// immediately, so the text is visible even if called while something else
-// (e.g. WiFiManager's captive portal) is blocking loop(). No-op if called
-// before build_main_screen(). Pass "" to clear it.
+// Updates the WiFi status line at the top of the main screen and forces
+// one LVGL repaint, so the text is visible even if called while something
+// else (e.g. WiFiManager's captive portal) is blocking loop(). No-op if
+// called before build_main_screen(). Pass "" to clear it.
 void ui_set_wifi_status(const char *text);
 
 // Updates the battery percentage (icon + "NN%") shown in the header, and
-// redraws only if the displayed value actually changed. No-op before
-// build_main_screen(). Call periodically from loop() (see main.cpp) - not
-// every iteration: committing a full e-paper refresh for each 1% wobble
-// would burn the panel's limited refresh life for no visible benefit.
-// Reading itself comes from battery.h's battery_read_percent().
+// forces one repaint only if the displayed value actually changed. No-op
+// before build_main_screen(). Call periodically from loop() (see
+// main.cpp) - not every iteration: committing a full e-paper refresh for
+// each 1% wobble would burn the panel's limited refresh life for no
+// visible benefit. Reading itself comes from battery.h's
+// battery_read_percent().
 void ui_set_battery_percent(uint8_t percent);
 
 // Shows a modal dialog, floated above whatever's on screen, inviting the
 // user to join the given setup-AP SSID and configure WiFi from there.
-// Redraws immediately. Call ui_hide_wifi_setup_dialog() once configuration
-// succeeds; calling this again while already shown is a no-op.
+// Forces one LVGL repaint. Call ui_hide_wifi_setup_dialog() once
+// configuration succeeds; calling this again while already shown is a
+// no-op.
 void ui_show_wifi_setup_dialog(const char *setup_ssid);
 
-// Removes the dialog shown by ui_show_wifi_setup_dialog() and redraws.
+// Removes the dialog shown by ui_show_wifi_setup_dialog() and repaints.
 // No-op if it isn't currently shown.
 void ui_hide_wifi_setup_dialog();
 
@@ -43,23 +47,24 @@ void ui_hide_wifi_setup_dialog();
 void ui_refresh_wifi_retry_button();
 
 // Shows a modal "Transcribing <filename>..." status, floated above
-// whatever's on screen (no buttons), and redraws immediately. Call only
-// from loop() (via transcribe.h's transcribe_process_pending()), same
-// calling constraints as ui_show_wifi_setup_dialog() (never from a nested
-// callback still mid-redraw itself). Call ui_show_transcribe_result() once
-// the attempt finishes.
+// whatever's on screen (no buttons), and forces one LVGL repaint. Call
+// only from loop() (via transcribe.h's transcribe_process_pending()),
+// never from inside an LVGL event/timer callback - same reentrant-
+// lv_timer_handler() reason as ui_show_wifi_setup_dialog(). Call
+// ui_show_transcribe_result() once the attempt finishes.
 void ui_show_transcribe_progress(const char *filename);
 
 // Replaces the progress dialog with a result dialog (message plus a
-// Close option) and redraws immediately. Same calling constraints as
+// Close button) and forces one repaint. Same calling constraints as
 // ui_show_transcribe_progress().
 void ui_show_transcribe_result(bool ok, const char *message);
 
 // Polls the two onboard buttons and drives the list/action-menu state
 // machine (see ui_epaper.cpp) - selecting a file's Transcribe action calls
 // transcribe.h's transcribe_request() (safe here since this runs at
-// loop()'s top level); selecting Delete calls storage.h's delete_file()
-// directly, same reasoning. Call once per loop() iteration. Also resets
+// loop()'s top level, not nested inside lv_timer_handler()); selecting
+// Delete calls storage.h's delete_file() directly, same reasoning. Call
+// once per loop() iteration, after lv_timer_handler(). Also resets
 // sleep.h's idle clock on any button edge.
 void ui_process_input();
 
@@ -69,7 +74,7 @@ void ui_process_input();
 bool ui_is_sleep_blocked();
 
 // Shows a plain "Sleeping..." message (no buttons - the device is about to
-// deep-sleep) and redraws immediately. Called by sleep.cpp right before it
+// deep-sleep) and forces one repaint. Called by sleep.cpp right before it
 // tears down WiFi and calls esp_deep_sleep_start(); nothing clears this
 // screen since the device never returns to loop() afterwards - waking is a
 // full MCU reset that rebuilds the screen from scratch.

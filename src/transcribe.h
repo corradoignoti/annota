@@ -49,9 +49,11 @@ void ai_provider_set_api_key(const char *key);
 void transcribe_request(const char *filename);
 
 // Runs the transcription requested by transcribe_request(), if any - a
-// no-op otherwise. Call once per loop() iteration - same placement and
-// reasoning as wifi_process_pending_reconnect(). Shows progress and the
-// result via ui.h's ui_show_transcribe_progress()/ui_show_transcribe_result(), and
+// no-op otherwise. Call once per loop() iteration, after
+// lv_timer_handler() has returned, never nested inside an LVGL event or
+// timer callback - same placement and reasoning as
+// wifi_process_pending_reconnect(). Shows progress and the result via
+// ui.h's ui_show_transcribe_progress()/ui_show_transcribe_result(), and
 // pauses/resumes touch (display.h) around the SD+network work, same
 // dance web_server.cpp's handlers do for their own SD access.
 void transcribe_process_pending();

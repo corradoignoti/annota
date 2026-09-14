@@ -14,7 +14,7 @@
 // Call web_server_start() once WiFi is up (after wifi_start_boot_connect()
 // resolves synchronously, or wifi_process_boot_connect() reports
 // kConnected - see wifi_manager.h), and web_server_handle() every loop()
-// iteration.
+// iteration alongside lv_timer_handler().
 void web_server_start();
 void web_server_handle();
 

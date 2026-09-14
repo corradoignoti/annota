@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <lvgl.h>
 
 #include "battery.h"
 #include "display.h"
@@ -51,13 +52,19 @@ void setup() {
 }
 
 void loop() {
-    // Button-driven nav - see ui.h's comment. Placed first since a button
-    // press here can queue work (transcribe_request()) the pumps below
-    // pick up in this same loop() iteration.
+    lv_timer_handler();
+    // Button-driven nav - see ui.h's comment. Placed before the pumps
+    // below since a button press here can queue work
+    // (transcribe_request()) those pumps pick up in this same loop()
+    // iteration.
     ui_process_input();
+    // Must come after lv_timer_handler() has returned, never nested
+    // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
     // Sees the background boot-time connect (if any) through to
-    // completion - see wifi_start_boot_connect()'s comment.
+    // completion - see wifi_start_boot_connect()'s comment. Same
+    // reentrancy constraint as wifi_process_pending_reconnect() just
+    // above, though this one never blocks.
     if (wifi_process_boot_connect() == WifiBootConnectResult::kConnected) {
         web_server_start();
     }

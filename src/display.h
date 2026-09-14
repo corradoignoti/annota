@@ -2,43 +2,20 @@
 
 #include <cstdint>
 
-#include <GxEPD2_BW.h>
-#include <epd/GxEPD2_154_D67.h>
-
 // Panel resolution: 200x200 square mono e-paper (Waveshare
 // ESP32-S3-ePaper-1.54) - see display_epaper.cpp for the panel driver.
 constexpr uint16_t SCREEN_W = 200;
 constexpr uint16_t SCREEN_H = 200;
 
-// The shared GxEPD2 display object - GxEPD2_BW's second template param
-// (the page height) is the full panel HEIGHT rather than some fraction of
-// it, so GxEPD2 holds one full 200x200 1bpp frame buffer internally and no
-// firstPage()/nextPage() paged-drawing loop is needed (that pattern only
-// exists to save RAM on tighter MCUs than this board's). ui_epaper.cpp
-// draws into it directly via Adafruit_GFX calls (it publicly inherits from
-// Adafruit_GFX), then calls display_present() below to push the frame to
-// the panel.
-using EpdDisplay = GxEPD2_BW<GxEPD2_154_D67, GxEPD2_154_D67::HEIGHT>;
-EpdDisplay &display_epd();
-
 // Brings up just the display panel. Call first, before anything else
 // touches the screen or SPI.
 void display_init_panel();
 
-// Brings up input (the two onboard buttons). Call once storage.h's SD scan
-// (if any) is done - the call order is kept the same as it always was so
-// main.cpp's setup() doesn't need to special-case it.
+// Brings up input (the two onboard buttons) and LVGL's display + input
+// device. Call once storage.h's SD scan (if any) is done - the call order
+// is kept the same as it always was so main.cpp's setup() doesn't need to
+// special-case it.
 void display_init_input();
-
-// Pushes whatever's currently drawn into display_epd()'s buffer to the
-// panel. partial=true uses the SSD1681's faster/lower-ghosting waveform -
-// still a full-panel RAM rewrite either way, not a sub-rect update (see
-// display_epaper.cpp's comment) - and is what every UI update after the
-// first boot paint uses; partial=false is only for that first paint.
-// Synchronous - safe to call from anywhere, including code that's already
-// blocking loop() (e.g. wifi_manager.cpp's captive-portal setup), since
-// there's no timer/event pump to reenter.
-void display_present(bool partial);
 
 // No shared SPI peripheral to hand off on this board (the e-paper panel and
 // the SD card are on separate dedicated peripherals) - no-op stubs so

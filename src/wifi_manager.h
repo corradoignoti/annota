@@ -62,7 +62,10 @@ enum class WifiBootConnectResult {
 // failure, ui_refresh_wifi_retry_button() either way - deliberately no
 // modal dialog on failure, so whatever the user's looking at (the file
 // list, say) isn't interrupted just because the router didn't answer.
-// Never blocks. Call once per loop() iteration.
+// Never blocks. Call once per loop() iteration, after lv_timer_handler()
+// has returned, never nested inside it - ui_set_wifi_status() forces its
+// own repaint, which would silently no-op if lv_timer_handler() were
+// already running higher up the call stack.
 WifiBootConnectResult wifi_process_boot_connect();
 
 // True once the system clock has been set from an NTP server, after any
@@ -92,10 +95,13 @@ bool wifi_clock_synced();
 void wifi_request_reconnect();
 
 // Runs the reconnect attempt requested by wifi_request_reconnect(), if
-// any - a no-op otherwise. Call once per loop() iteration: this blocks
-// until it connects or times out - unlike wifi_start_boot_connect()'s
-// background poll, a manual reconnect click is already an explicit wait
-// the user asked for.
+// any - a no-op otherwise. Call once per loop() iteration, after
+// lv_timer_handler() has returned (never from inside an LVGL event or
+// timer callback): this blocks until it connects or times out - unlike
+// wifi_start_boot_connect()'s background poll, a manual reconnect click is
+// already an explicit wait the user asked for - and needs
+// lv_timer_handler() to not already be running so its own status repaints
+// actually take effect.
 void wifi_process_pending_reconnect();
 
 // If already connected, returns true immediately. Otherwise, if a network
@@ -104,9 +110,9 @@ void wifi_process_pending_reconnect();
 // succeeded; never opens the setup portal. Called by
 // transcribe_process_pending() before a transcription attempt so a device
 // that's offline only because it booted with the router unreachable
-// doesn't force the user to hunt down "Reconnect WiFi" first. Blocks the
-// same way wifi_process_pending_reconnect() does - call from loop() top
-// level.
+// doesn't force the user to hunt down "Reconnect WiFi" first. Same
+// reentrancy constraint as wifi_process_pending_reconnect(): call from
+// loop() top level, never nested inside lv_timer_handler().
 bool wifi_ensure_connected();
 
 // Erases the WiFi network saved in NVS (WiFiManager's resetSettings()) and
