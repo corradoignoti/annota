@@ -12,7 +12,13 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
+// See scripts/patch_wolfssl.py's top comment: only one translation unit in
+// this project may define wolfSSL_Arduino_Serial_Print() to avoid a
+// multiple-definition link error, and ESP32-EasyWolfSSL's own
+// WolfSSLClient.cpp (a downloaded lib_deps package this project can't
+// patch) is it.
+#define ANNOTA_WOLFSSL_SKIP_SERIAL_PRINT_DEFINITION
+#include <WolfSSLClient.h> // wolfSSL-backed drop-in for WiFiClientSecure (see platformio.ini)
 
 #include "storage.h"
 
@@ -240,11 +246,9 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         } else if (code < 0) {
             // Negative codes are HTTPClient's own connection-layer errors -
             // see transcribe_openai.cpp's identical branch for what each
-            // piece means and why a heap-starved TLS handshake is a
-            // plausible culprit.
-            char tlsErr[100];
-            client.lastError(tlsErr, sizeof(tlsErr));
-            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + "; TLS: " + tlsErr + ")";
+            // piece means, including why WolfSSLClient has no
+            // lastError()-equivalent to add a TLS-specific reason here.
+            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + ")";
         } else {
             message = "HTTP " + String(code);
         }
