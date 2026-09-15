@@ -12,7 +12,13 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
+// See scripts/patch_wolfssl.py's top comment: only one translation unit in
+// this project may define wolfSSL_Arduino_Serial_Print() to avoid a
+// multiple-definition link error, and ESP32-EasyWolfSSL's own
+// WolfSSLClient.cpp (a downloaded lib_deps package this project can't
+// patch) is it.
+#define ANNOTA_WOLFSSL_SKIP_SERIAL_PRINT_DEFINITION
+#include <WolfSSLClient.h> // wolfSSL-backed drop-in for WiFiClientSecure (see platformio.ini)
 
 #include "storage.h"
 
@@ -177,19 +183,14 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     // with no reconnect. A 4.8MB file is ~3300 of those chunks in a
     // single attempt, versus a few hundred for a short clip - the same
     // per-chunk risk, spread over far more chunks, made the once-good-
-    // enough single retry inadequate once recordings got this long. Also
-    // why client.lastError() after a -3 is never worth surfacing here:
-    // NetworkClientSecure::write() (send_ssl_data() in ssl_client.cpp)
-    // only updates sslclient's last_error from connect(), not from a
-    // write failure, so it always reports the (successful) TLS handshake
-    // result instead. Retrying the whole file from the top, with
-    // backoff, is what actually recovers from this - a flaky AP or one
-    // bad chunk among thousands is usually gone by the next attempt.
+    // enough single retry inadequate once recordings got this long.
+    // Retrying the whole file from the top, with backoff, is what
+    // actually recovers from this - a flaky AP or one bad chunk among
+    // thousands is usually gone by the next attempt.
     static const int kMaxAttempts = 6;
     static const int kBackoffMs[kMaxAttempts] = {0, 300, 900, 2000, 4000, 8000};
     int code = 0;
     String response;
-    char tlsErr[100] = "";
     for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
         if (attempt > 0) {
             if (WiFi.status() != WL_CONNECTED) {
@@ -210,16 +211,16 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         HTTPClient http;
         http.setTimeout(60000);
         // HTTPClient::connect() passes its OWN separate _connectTimeout
-        // (5000ms default, HTTPCLIENT_DEFAULT_TCP_TIMEOUT) to the
-        // client's connect(host, port, timeout) - which is what
-        // NetworkClientSecure/ssl_client.cpp latches into
-        // sslclient->socket_timeout, the no-progress watchdog
-        // send_ssl_data() uses for every write for the rest of this
-        // connection's life. setTimeout() above never touches it. Left
-        // at its 5s default, any single >5s stall on the socket during
-        // the upload (peer backpressure, weak RSSI) kills the write with
-        // HTTPC_ERROR_SEND_PAYLOAD_FAILED - reliably, not just under
-        // flaky conditions. Match it to the same 60s budget.
+        // (5000ms default, HTTPCLIENT_DEFAULT_TCP_TIMEOUT) to the client's
+        // connect(host, port, timeout) - which WolfSSLClient::connect()
+        // (WolfSSLClient.cpp) latches into both its underlying WiFiClient's
+        // own setTimeout() and _timeout_ms, the no-progress budget its recv
+        // callback uses for the rest of this connection's life. setTimeout()
+        // above never touches it. Left at its 5s default, any single >5s
+        // stall on the socket during the upload (peer backpressure, weak
+        // RSSI) kills the write with HTTPC_ERROR_SEND_PAYLOAD_FAILED -
+        // reliably, not just under flaky conditions. Match it to the same
+        // 60s budget.
         http.setConnectTimeout(60000);
         if (!http.begin(client, TRANSCRIBE_URL)) {
             code = HTTPC_ERROR_CONNECTION_REFUSED;
@@ -233,11 +234,6 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
                        kMaxAttempts, (unsigned)ESP.getFreeHeap(), (int)WiFi.RSSI());
         code = http.sendRequest("POST", &body, contentLength);
         response = http.getString();
-        // Grab this before client goes out of scope below - meaningful
-        // for a genuine handshake failure (code < 0, not -3; see the
-        // comment on the send-payload-failed branch below for why -3
-        // doesn't get anything useful out of it).
-        client.lastError(tlsErr, sizeof(tlsErr));
         http.end();
 
         if (code != HTTPC_ERROR_SEND_PAYLOAD_FAILED) break;
@@ -251,25 +247,19 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
             message = doc["error"]["message"].as<const char *>();
         } else if (code == HTTPC_ERROR_SEND_PAYLOAD_FAILED) {
-            // Connection dropped mid-upload (see the retry loop's comment
-            // above for why client.lastError() isn't worth printing here -
-            // it never reflects a write failure, only the earlier,
-            // successful handshake).
             message = "Upload interrupted, connection dropped (HTTP -3 send payload failed)";
         } else if (code < 0) {
             // Other negative codes are HTTPClient's own connection-layer
             // errors (never reached the server, so no JSON body to parse
             // to blame instead) - the request never got past
-            // client.connect() inside sendRequest(). errorToString()
-            // names which stage failed (DNS, socket connect, read
-            // timeout, ...); when it's the TLS handshake itself,
-            // mbedtls_strerror() (via client.lastError()) gives the
-            // actual mbedTLS reason - often a heap allocation failure if
-            // the free heap logged just above is only tens of KB (this
-            // board has PSRAM, but mbedTLS's own buffers still have to
-            // compete with whatever else hasn't been pushed off internal
-            // RAM).
-            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + "; TLS: " + tlsErr + ")";
+            // client.connect() inside sendRequest(). errorToString() names
+            // which stage failed (DNS, socket connect, read timeout, ...).
+            // Unlike mbedTLS's WiFiClientSecure, WolfSSLClient exposes no
+            // lastError()-equivalent to add a TLS-specific reason on top
+            // when the failed stage was the handshake itself -
+            // WolfSSLClient::setDebug(true) would surface wolfSSL's own
+            // error string to Serial instead, but only that, not here.
+            message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + ")";
         } else {
             message = "HTTP " + String(code);
         }

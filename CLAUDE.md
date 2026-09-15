@@ -224,7 +224,34 @@ activity this pass has had a chance to reset its clock.
   subclass wrapping the multipart preamble/file/trailer — the ESP32
   doesn't have enough RAM to buffer a whole audio file first — and skips
   TLS cert validation (`WiFiClientSecure::setInsecure()`); no root-CA
-  bundle exists in this project. `ai_transcribe_file()` claims the SD card
+  bundle exists in this project. `WiFiClientSecure` itself is wolfSSL-backed
+  here, not arduino-esp32's built-in mbedTLS —
+  `xorlent/ESP32-EasyWolfSSL`'s `WolfSSLClient` (`#include <WolfSSLClient.h>`
+  instead of `<WiFiClientSecure.h>`; typedef'd back to the name
+  `WiFiClientSecure` so call sites don't change) on top of
+  `wolfssl/Arduino-wolfSSL` (not the plain `wolfssl/wolfssl` PlatformIO
+  package — see `platformio.ini`'s `lib_ignore` comment for why the plain
+  one has to be excluded once both are reachable via the dependency
+  finder). `WolfSSLClient` has no equivalent to
+  `WiFiClientSecure::lastError()`, so the negative-HTTP-code error branch
+  here (and `transcribe_gemini.cpp`'s identical one) can no longer append a
+  TLS-specific reason on top of `HTTPClient::errorToString()`.
+  `scripts/patch_wolfssl.py` (`platformio.ini`'s `extra_scripts`) patches
+  the installed `Arduino-wolfSSL`/`ESP32-EasyWolfSSL` packages every build,
+  fixing two bugs neither project owns: a link error in `Arduino-wolfSSL`'s
+  own `wolfssl.h` (see that script's top comment for the multiple-
+  definition/undefined-reference story and why `transcribe_openai.cpp`/
+  `transcribe_gemini.cpp` both `#define
+  ANNOTA_WOLFSSL_SKIP_SERIAL_PRINT_DEFINITION` before including
+  `WolfSSLClient.h`), and `WolfSSLClient::connect()` never sending an SNI
+  extension in its TLS ClientHello at all — harmless against most hosts,
+  but Cloudflare-fronted ones (api.openai.com included) drop the handshake
+  outright without it, which surfaces here as a bare connect()
+  failure/"connection refused" with no further detail (see the
+  `lastError()` paragraph above for why). Needs `platformio.ini`'s
+  `-D HAVE_SNI` build flag too, since `Arduino-wolfSSL`'s own
+  `user_settings.h` compiles wolfSSL's SNI support out entirely otherwise.
+  `ai_transcribe_file()` claims the SD card
   itself (`storage.h`'s `sd_begin()`/`sd_end()`) but leaves pausing/
   resuming touch to the caller — `transcribe_process_pending()` does that
   around the whole blocking call (a no-op on this board, but kept for
