@@ -4,27 +4,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Firmware (PlatformIO/Arduino, C++) for the Waveshare ESP32-S3-ePaper-1.54
-— a 1.54" 200x200 mono e-paper panel + 2 onboard buttons + an onboard
-ES8311 speaker/mic codec, ESP32-S3, no touch (see `platformio.ini`'s
-`esp32-s3-epaper154` env). It's an MP3/WAV file browser: scans an SD
-card's root for audio files and lists them on an LVGL UI, with a WiFi
-connection manager (captive-portal setup) and an HTTP file manager for the
-SD card alongside. Selecting an audio file offers to transcribe it via an
-AI provider's API (OpenAI by default, selected at compile time — see
-`transcribe.cpp/h` below), saving the result as a sibling `.txt` file; it
-can also be played back or deleted, and a new voice memo can be recorded
-straight from the on-device UI (see `speaker.cpp/h`).
+Firmware (PlatformIO/Arduino, C++) for two Waveshare ESP32-S3 e-paper
+boards, both built from this one repo via `platformio.ini`'s two envs:
+
+- `esp32-s3-epaper154`: the Waveshare ESP32-S3-ePaper-1.54 — a 1.54"
+  200x200 mono e-paper panel (SSD1681-class) + 2 onboard buttons + an
+  onboard ES8311 speaker/mic codec, on an ESP32-S3-PICO-1-N8R8 module, no
+  touch.
+- `esp32-s3-epaper397`: the Waveshare ESP32-S3-ePaper-3.97 — an 800x480
+  e-paper panel (rendered 1bpp-thresholded, not its native 4-gray — see
+  `display_epaper397.cpp` below) + a 3-way rotary nav switch + a Boot
+  button + the same ES8311 codec, on an ESP32-S3-WROOM-1-N16R8 module, no
+  touch. This board also carries a QMI8658 IMU, an SHTC3 temp/humidity
+  sensor, and a PCF85063 RTC that this firmware does not initialize or
+  use — see "Board pin map" below.
+
+Every board-specific source file is gated at compile time on a
+`BOARD_EPAPER_154`/`BOARD_EPAPER_397` build flag (one per env, see
+`platformio.ini`) — the same mechanism `transcribe.cpp/h`'s
+`AI_PROVIDER_*` flags use, see that bullet below. `src/display.h` declares
+the shared, board-agnostic surface (`SCREEN_W`/`SCREEN_H`, the
+`DisplayButton` enum, `display_init_panel()`/`display_init_input()`, ...)
+that each board's driver file implements.
+
+It's an MP3/WAV file browser: scans an SD card's root for audio files and
+lists them on an LVGL UI, with a WiFi connection manager (captive-portal
+setup) and an HTTP file manager for the SD card alongside. Selecting an
+audio file offers to transcribe it via an AI provider's API (OpenAI by
+default, selected at compile time — see `transcribe.cpp/h` below), saving
+the result as a sibling `.txt` file; it can also be played back or
+deleted, and a new voice memo can be recorded straight from the on-device
+UI (see `speaker.cpp/h`).
 
 ## Commands
 
-Build (`esp32-s3-epaper154` is the only environment defined):
+Build:
 ```
 pio run -e esp32-s3-epaper154
+pio run -e esp32-s3-epaper397
 ```
 Flash to a connected board:
 ```
 pio run -e esp32-s3-epaper154 -t upload
+pio run -e esp32-s3-epaper397 -t upload
 ```
 Serial monitor (115200 baud, set in platformio.ini):
 ```
@@ -46,13 +68,16 @@ bullets below) — then `web_server_handle()`, then `sleep_process_idle()`
 activity this pass has had a chance to reset its clock.
 
 - **sleep.cpp/h** — idle-timeout deep sleep, ported from the pala_note
-  sibling project's `enterUltraSleep()`/`resetActivity()` (same board
-  family: same `PWR_HOLD_PIN` battery latch, same battery ADC pin, same
-  button GPIOs, so the same approach applies unchanged).
+  sibling project's `enterUltraSleep()`/`resetActivity()` (154 board only:
+  same `PWR_HOLD_PIN` battery latch, same battery ADC pin, same button
+  GPIOs, so the same approach applies unchanged there — the 397 board
+  shares none of that, see "Board pin map" below).
   `sleep_process_idle()`, called last in `loop()`, deep-sleeps
-  (`esp_deep_sleep_start()`, ext1 wakeup armed on the Select/PWR button
-  only, `ESP_EXT1_WAKEUP_ANY_LOW` — BOOT/Next deliberately left out of the
-  mask so the sleep screen's "Hold Select to wake" stays true) once
+  (`esp_deep_sleep_start()`, ext1 wakeup armed on the Select button's pin
+  only — `SELECT_BUTTON_PIN` in sleep.cpp, board-conditional (154:
+  PWR/GPIO18, 397: Function/GPIO5) — `ESP_EXT1_WAKEUP_ANY_LOW`, every
+  other button deliberately left out of the mask so the sleep screen's
+  "Hold Select to wake" stays true) once
   `sleep_get_idle_timeout_minutes()` (default 30, persisted in NVS,
   clamped to 1–180 — see `IDLE_TIMEOUT_MIN_DEFAULT`/`_MIN`/`_MAX` in
   sleep.cpp) have passed with no activity, unless `ui.h`'s
@@ -84,24 +109,82 @@ activity this pass has had a chance to reset its clock.
   `/api/settings/idle-timeout`), takes effect on the very next
   `sleep_process_idle()` call, no reboot needed.
 
-- **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
-  e-paper panel driver (command/LUT sequence ported from Waveshare's own
-  example repo, waveshareteam/ESP32-S3-ePaper-1.54) bridged into LVGL v9,
-  plus the two onboard buttons (`display_button_poll()`, declared in
-  `display.h`). `disp_flush_cb` renders LVGL's normal RGB565 framebuffer
-  (`LV_DISPLAY_RENDER_MODE_FULL`, so it always sees the whole 200x200
-  screen in one call — there's no such thing as updating a sub-rect on
-  this controller) and thresholds it to 1bpp on the way out, rather than
-  switching `lv_conf.h` to a monochrome color depth. No touch, no
-  backlight, no shared-SPI peripheral to hand off —
+- **display_epaper.cpp** / **display_epaper397.cpp** (`display.h`'s two
+  implementations, each wrapped in `#ifdef BOARD_EPAPER_154`/`_397` for
+  its whole body — same "whole-file `#ifdef`, one compiles, one doesn't"
+  shape as `transcribe_<provider>.cpp`'s `AI_PROVIDER_*` gating, see that
+  bullet below) — both bridge their panel into LVGL v9 the same way:
+  `disp_flush_cb` renders LVGL's normal RGB565 framebuffer
+  (`LV_DISPLAY_RENDER_MODE_FULL`, so it always sees the whole screen in
+  one call every time) and thresholds it to 1bpp on the way out, rather
+  than switching `lv_conf.h` to a monochrome color depth — the 397 panel's
+  native 4-gray capability is deliberately unused, kept for parity with
+  the 154 panel's rendering rather than a UI-quality upgrade. No touch, no
+  backlight on either board, no shared-SPI peripheral to hand off —
   `display_suspend_touch()`/`display_resume_touch()` are no-op stubs so
   their callers (`web_server.cpp`, `transcribe.cpp`) don't need a special
   case around their SD access.
+  - `display_epaper.cpp`: an SSD1681-class driver (command/LUT sequence
+    ported from Waveshare's own example repo,
+    waveshareteam/ESP32-S3-ePaper-1.54) for the 154 board's 200x200 panel.
+  - `display_epaper397.cpp`: a different, LUT-less controller (command
+    sequence ported from waveshareteam/ESP32-S3-ePaper-3.97's own
+    `EPD_3IN97.c/h` example — refresh quality is selected per-call via a
+    single "display update control" byte instead of an uploaded waveform
+    table) for the 397 board's panel. The panel's own RAM is physically
+    800x480 (landscape) at the controller level (`PANEL_W`/`PANEL_H` in
+    this file — used for the panel's RAM-window commands, `epd_buf`'s
+    1bpp packing, and `epd_set_pixel()`), but the board is used in
+    portrait, so `display.h`'s `SCREEN_W`/`SCREEN_H` for this board are
+    480x800 — the *logical*, rotated dimensions LVGL/`ui_epaper.cpp`
+    actually see. `disp_flush_cb()` rotates every pixel 90 degrees
+    counter-clockwise from logical to physical coordinates before calling
+    `epd_set_pixel()` — confirmed against real hardware which direction is
+    correct (clockwise came out upside-down/mirrored); flip the two lines
+    right before that call if a different panel/mounting ever needs the
+    other direction. Its RGB565 LVGL render buffer (`draw_buf`, 768,000
+    bytes — same total regardless of logical vs. physical orientation)
+    doesn't fit in internal SRAM the way the 154 board's does — allocated
+    from PSRAM via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` in
+    `display_init_input()` instead. `display_init_panel()`'s first call is
+    `epd_power_on()`:
+    unlike the 154 board's `EPD_PWR_PIN` GPIO gate, this panel's analog
+    drive rail (VSH/VSL/VGH/VGL — what actually moves the electrophoretic
+    ink, as opposed to the panel's digital logic, which runs off a
+    separate always-on rail) is switched by the onboard AXP2101 PMIC's
+    ALDO1+ALDO2+ALDO3 outputs together (I2C address `0x34`, register `0x90`
+    bits 0-2) — confirmed against real hardware, not derived from a
+    datasheet: without it, the panel accepts every SPI command and BUSY
+    toggles with plausible, spec-matching refresh durations, so it looks
+    like it's working, but the glass never visibly changes, since the rail
+    that moves ink is off. Register values are copied from
+    78/xiaozhi-esp32's `main/boards/waveshare/esp32-s3-epaper-3.97/waveshare-s3-epaper-3.97.cc`
+    (the actual factory-shipped firmware source for this board) — enabling
+    only ALDO3 alone (as Waveshare's own simpler ESP-IDF example,
+    `epaper_port.c`'s `EPD_Power_ON()`, does) was tried first and did not
+    bring the panel up; all three rails together, exactly as that
+    reference does, is what real hardware needed. `epd_display_partial()`
+    (called from every LVGL flush) also deliberately does *not*
+    reset/re-address the panel on each call the way the barebones Arduino
+    example (and the 154 board's SSD1681 partial-update path) does — that
+    reset-every-call shape came from an untested example and left the
+    panel blank despite correct-looking BUSY timing; the proven shipped
+    firmware just resends `0x24` + the buffer and triggers the update,
+    reusing the RAM window/border-waveform state `epd_init_full()`
+    established once at boot. SPI clock (20MHz) and the 500ms post-power-on
+    settle delay before reset are likewise copied from that same proven
+    source rather than guessed conservatively.
+  - Both files' button-polling halves implement `display.h`'s
+    `display_button_poll()`/`display_button_raw_pressed()`/
+    `display_forget_wifi_combo_poll()` over their own board's physical
+    buttons — see "Board pin map" below for which pin is which.
 - **storage.cpp/h** — `load_mp3_catalog()` scans the SD root into the global
   `mp3Files`/`mp3FileCount` arrays (`storage.h`), filtering directories and
   dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). `sd_begin()`/
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
-  peripheral (1-bit mode, pins 39/41/40).
+  peripheral — 1-bit mode (CLK/CMD/D0 only) on the 154 board, full 4-bit
+  mode (CLK/CMD/D0-D3) on the 397 board, board-conditional pin constants
+  and `SD_MMC.setPins()`/`begin()` calls — see "Board pin map" below.
 - **ui_epaper.cpp** (`ui.h`'s implementation) — WiFi status, a scrollable
   file list, and per-file Play/Record/Transcribe/Delete/View (`.txt`
   transcripts only — `Screen::kTextView`, opened from the top of a `.txt`
@@ -141,11 +224,21 @@ activity this pass has had a chance to reset its clock.
   `mic_process()`, writing plain 16-bit PCM WAV — no encoder, no working
   set to allocate). Playback and
   recording share one module since they're the same physical peripherals
-  (one I2C bus, one I2S controller, one PA_EN power rail) taking turns,
-  never both at once — `mic_start_recording()` always stops playback
-  first. Both claim the SD card for their whole duration (`storage.h`'s
-  `sd_begin()`/`sd_end()`) and must be pumped every `loop()` iteration via
-  `ui_epaper.cpp`'s `ui_process_input()`.
+  (one I2C bus, one I2S controller, one amp-enable power rail) taking
+  turns, never both at once — `mic_start_recording()` always stops
+  playback first. Both claim the SD card for their whole duration
+  (`storage.h`'s `sd_begin()`/`sd_end()`) and must be pumped every
+  `loop()` iteration via `ui_epaper.cpp`'s `ui_process_input()`. Pin
+  constants are board-conditional (see "Board pin map" below); the 154
+  board has two separate amp-control pins (`PA_EN_PIN`, active-low rail
+  switch; `PA_CTRL_PIN`, active-high shutdown), the 397 board has only one
+  (`PA_CTRL_PIN`) doing both jobs — its polarity is an unverified guess
+  (active-low, matching the 154 board's `PA_EN` convention) pending real
+  hardware, flagged with a `TODO(board-397)` at `speaker_begin()`'s
+  bring-up sequence; this is the exact class of bug (wrong enable
+  polarity, I2C still ACKing, audio silently never powered) that already
+  cost real debugging time on the 154 board once — see that pin's own
+  comment.
 - **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. Two paths at
   boot depending on whether a network is already saved in NVS: none saved
   opens a captive portal AP ("Annota-Setup", no password) with no timeout
@@ -315,21 +408,43 @@ lib_deps sources like lvgl itself). The pinned lvgl version (9.2.2) is a
 config-compatible match for this v9.2.0-format `lv_conf.h` — don't bump it
 without checking that.
 
-`src/fonts/lv_font_it_{10,12,14,28}.c` (declared in `include/fonts_it.h`,
-used everywhere `ui_epaper.cpp` sets a text font) are custom-built
-replacements for lvgl's own `lv_font_montserrat_{10,12,14,28}` — the
-built-in ones only bake in ASCII, so accented letters (e.g. Italian's è à ò)
-silently render blank with them. Regenerated with `lv_font_conv` (via `npx`)
-from the exact same source `Montserrat-Medium.ttf` +
-`FontAwesome5-Solid+Brands+Regular.woff` lvgl itself ships at
-`<lvgl_lib_dep>/scripts/built_in_font/`, same options as each original font's
-own `Opts:` header-comment (still present, unchanged, at the top of each
-generated file here) plus one added `-r 0xC0-0xFF` range on the Montserrat
-font to pull in Latin-1 Supplement — same size/metrics/icon-glyph coverage,
-so they're drop-in replacements for the originals. If a call site needs a
-font size outside this set of four, either regenerate one more this same way
-or fall back to the plain `lv_font_montserrat_<size>` (which will just be
-missing accented glyphs for that one spot).
+`src/fonts/lv_font_it_{10,12,14,20,28,40}.c` (declared in
+`include/fonts_it.h`) are custom-built replacements for lvgl's own
+`lv_font_montserrat_<size>` — the built-in ones only bake in ASCII, so
+accented letters (e.g. Italian's è à ò) silently render blank with them.
+`ui_epaper.cpp` never references an `lv_font_it_<size>` directly — it
+uses `fonts_it.h`'s board-conditional `FONT_HINT`/`FONT_HEADER`/
+`FONT_BODY`/`FONT_ICON` role macros instead, so the same source picks the
+right size per board without any `#ifdef` of its own:
+- 154 (200x200 panel): the original `{10,12,14,28}` set — `FONT_HINT`=10,
+  `FONT_HEADER`=12 (header/battery/SD status row), `FONT_BODY`=14 (list
+  rows, menu options, message/details screens), `FONT_ICON`=28 (the one
+  large centered icon glyph).
+- 397 (much larger panel): bumped in three rounds of real-hardware
+  iteration - first a uniform 1.2x scale of the 154 set, then hint/header
+  unified at 12 with the rest scaled further to keep the visual hierarchy
+  gap, then `FONT_HEADER` raised to match `FONT_BODY` (both bigger read
+  better on this panel's header bar) - landing on `FONT_HINT`=12,
+  `FONT_HEADER`=`FONT_BODY`=20, `FONT_ICON`=40 (reusing the same
+  `lv_font_it_20`/`_40` files for two roles each, so only three distinct
+  sizes are actually generated for this board despite four roles).
+  `ui_epaper.cpp`'s `HEADER_H` is likewise board-conditional (154: 20,
+  397: 32) to fit the taller header font without clipping.
+
+Regenerated with `lv_font_conv` (via `npx`) from the exact same source
+`Montserrat-Medium.ttf` + `FontAwesome5-Solid+Brands+Regular.woff` lvgl
+itself ships at `<lvgl_lib_dep>/scripts/built_in_font/`, same options as
+each original font's own `Opts:` header-comment (still present, unchanged,
+at the top of each generated file here) plus one added `-r 0xC0-0xFF`
+range on the Montserrat font to pull in Latin-1 Supplement, and (as of the
+lv_font_conv version this project's `npx` currently resolves) a manual
+fix-up of the generated `#include "lvgl/lvgl.h"` line back to
+`#include <lvgl.h>` to match this project's `LV_CONF_INCLUDE_SIMPLE`
+setup — same size/metrics/icon-glyph coverage otherwise, so they're
+drop-in replacements for the originals. If a call site needs a font size
+outside this set, either regenerate one more this same way or fall back
+to the plain `lv_font_montserrat_<size>` (which will just be missing
+accented glyphs for that one spot).
 
 ### Filename gotcha (case-insensitive filesystem)
 
@@ -338,6 +453,42 @@ This repo is developed on macOS's default case-insensitive filesystem.
 project file named `wifi.h`/`wifi.cpp` sitting in `-Isrc`, breaking the
 build in confusing ways. That's why the WiFi module is named
 `wifi_manager.*`, not `wifi.*` — keep that naming if you touch it.
+
+### Board pin map
+
+Pin constants live scattered across each board-conditional source file
+(`#if defined(BOARD_EPAPER_154)` / `#elif defined(BOARD_EPAPER_397)`, see
+each file's own bullet above) - collected here for reference rather than
+re-derived from six different `.cpp` files:
+
+|                       | 154 board            | 397 board                     |
+|-----------------------|-----------------------|--------------------------------|
+| e-paper SPI           | SCK 12, MOSI 13, CS 11, DC 10, RST 9, BUSY 8, PWR 6 (active-low) | SCK 11, MOSI 12, CS 10, DC 9, RST 46, BUSY 3, no GPIO PWR pin - see "Panel power (PMIC)" below |
+| Buttons                | Boot/GPIO0 ("next"), PWR/GPIO18 ("select") | Down/GPIO6 ("next"), Function/GPIO5 ("select"), Up/GPIO4 ("prev"), Boot/GPIO0 (combo-only) |
+| SD (SDMMC)             | CLK 39, CMD 41, D0 40 (1-bit) | CLK 16, CMD 17, D0 15, D1 7, D2 8, D3 18 (4-bit) |
+| I2S (ES8311)           | MCLK 14, BCLK 15, WS 38, DOUT 45, DIN 16 | MCLK 13, BCLK 14, WS 47, DOUT 48, DIN 21 |
+| I2C (codec + ...)      | SDA 47, SCL 48 (codec only - RTC/SHTC3 unused) | SDA 41, SCL 42 (codec + AXP2101 PMIC + unused QMI8658/SHTC3/PCF85063) |
+| Amp enable             | PA_EN 42 (active-low), PA_CTRL 46 (active-high) | PA_CTRL 39 (polarity unverified guess - active-low; not yet tested against real hardware) |
+| Battery level          | ADC GPIO4 (200K/200K divider) | AXP2101 PMIC fuel gauge over I2C (not a GPIO) - unimplemented, stubbed |
+| Power latch            | `PWR_HOLD_PIN` GPIO17 (`main.cpp`) | none - AXP2101 PMIC handles power sequencing itself in hardware, confirmed no-op is safe on real hardware |
+
+**Panel power (PMIC, 397 board only):** the e-paper panel's analog drive
+rail is switched by the onboard AXP2101 PMIC (I2C address `0x34`) rather
+than any GPIO - `display_epaper397.cpp`'s `epd_power_on()` enables
+ALDO1+ALDO2+ALDO3 together (register `0x90` = `0x07`) before touching the
+panel over SPI at all. This was found the hard way against real
+hardware - see that function's own comment for the full story (the panel
+silently accepted every command and BUSY toggled with plausible timing
+the whole time it was unpowered, which is what made this take several
+bring-up iterations to isolate) and for where the exact register sequence
+came from (78/xiaozhi-esp32's factory-shipped board source, not a guess).
+
+The 397 board's battery-level reading is unimplemented (would need an
+AXP2101 register read via the same I2C bus, not `analogReadMilliVolts()`
+- `battery.cpp` returns `BATTERY_PERCENT_UNKNOWN`, which hides the
+header's battery readout rather than showing a bogus number) - stubbed as
+a feature addition beyond this port's scope, not because the answer is
+unknown.
 
 ### Dependency pin notes (see comments in platformio.ini)
 

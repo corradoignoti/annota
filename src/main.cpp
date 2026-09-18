@@ -11,16 +11,36 @@
 #include "web_server.h"
 #include "wifi_manager.h"
 
-// Battery power latch (Waveshare schematic): the physical power switch only
-// pulses the regulator on - the MCU must itself hold this pin high or the
-// board powers back off the moment the switch is released. Set first in
-// setup(), before anything else, so nothing downstream (panel init, WiFi,
-// SD) can lose power mid-init.
+// Battery power latch (154 board's Waveshare schematic): the physical
+// power switch only pulses the regulator on - the MCU must itself hold
+// this pin high or the board powers back off the moment the switch is
+// released. Set first in setup(), before anything else, so nothing
+// downstream (panel init, WiFi, SD) can lose power mid-init.
+//
+// The 397 board has no GPIO latch pin at all, and evidence points to it
+// not needing one: 78/xiaozhi-esp32's factory-shipped board source (see
+// display_epaper397.cpp's epd_power_on() comment for that source's role
+// in the panel-power fix) powers the board off via `pmic_->PowerOff()` -
+// an AXP2101 PMIC command, not a GPIO write - meaning the PMIC's own
+// PWRON-pin state machine handles power sequencing/hold entirely in
+// hardware on this board, unlike the 154 board's manual MCU-held latch.
+// Confirmed no-op is safe in practice too: real 397 hardware stayed
+// powered through repeated flash/boot cycles during this port's bring-up
+// with this function doing nothing on that board.
+#if defined(BOARD_EPAPER_154)
 #define PWR_HOLD_PIN 17
+#endif
 
 static void keepBatteryPowerOn() {
+#if defined(BOARD_EPAPER_154)
     pinMode(PWR_HOLD_PIN, OUTPUT);
     digitalWrite(PWR_HOLD_PIN, HIGH);
+#elif defined(BOARD_EPAPER_397)
+    // TODO(board-397): no confirmed power-latch pin - see this function's
+    // comment above.
+#else
+#error "No BOARD_EPAPER_* build flag defined - see display.h."
+#endif
 }
 
 void setup() {

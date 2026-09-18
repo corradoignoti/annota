@@ -1,5 +1,7 @@
 #include "display.h"
 
+#ifdef BOARD_EPAPER_154
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <lvgl.h>
@@ -7,6 +9,7 @@
 // -----------------------------------------------------------------------
 // Waveshare ESP32-S3-ePaper-1.54: 200x200 mono e-paper (SSD1681-class
 // controller) + 2 onboard buttons (BOOT/GPIO0, PWR/GPIO18), no touch.
+// Whole file gated on BOARD_EPAPER_154 - see platformio.ini and display.h.
 //
 // Pin table and the whole init/LUT/command sequence below are taken from
 // Waveshare's own example repo (waveshareteam/ESP32-S3-ePaper-1.54,
@@ -26,6 +29,10 @@
 #define EPD_BUSY_PIN 8
 #define EPD_PWR_PIN  6 // active-low: LOW powers the panel on
 
+// This board has only 2 physical buttons, so kPrev (display.h) has no pin
+// of its own - see NO_PIN below - and kBoot aliases the same pin as kNext,
+// since the forget-WiFi combo has always just been this board's two
+// buttons held together.
 #define BOOT_BUTTON_PIN 0  // "next" - active-low, has an onboard pull-up
 #define PWR_BUTTON_PIN  18 // "select" - active-low, has an onboard pull-up
 
@@ -319,6 +326,8 @@ void display_init_panel() {
 void display_init_input() {
     pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
     pinMode(PWR_BUTTON_PIN, INPUT_PULLUP);
+    // No pinMode() for kPrev's NO_PIN slot - it's never digitalRead(), see
+    // display_button_poll()/display_button_raw_pressed()'s guards above.
 
     lv_init();
     // This lvgl build (9.2.2) ignores lv_conf.h's LV_TICK_CUSTOM macro -
@@ -345,15 +354,22 @@ void display_resume_touch() {}
 static const uint32_t BUTTON_DEBOUNCE_MS = 30;
 static const uint32_t BUTTON_LONG_PRESS_MS = 700;
 
+// This board has no third button, so kPrev's slot uses this sentinel
+// instead of a real pin - display_button_poll()/display_button_raw_pressed()
+// guard on it below rather than ever calling digitalRead() on it.
+static const uint8_t NO_PIN = 255;
+
 struct ButtonState {
     uint8_t pin;
     uint32_t pressedSinceMs = 0; // 0 while not pressed
     bool longFired = false;
 };
-static ButtonState buttonStates[2] = {{BOOT_BUTTON_PIN}, {PWR_BUTTON_PIN}};
+// Indexed by DisplayButton (display.h): kNext, kSelect, kPrev, kBoot.
+static ButtonState buttonStates[4] = {{BOOT_BUTTON_PIN}, {PWR_BUTTON_PIN}, {NO_PIN}, {BOOT_BUTTON_PIN}};
 
 DisplayButtonEvent display_button_poll(DisplayButton b) {
     ButtonState &s = buttonStates[(int)b];
+    if (s.pin == NO_PIN) return DisplayButtonEvent::kNone;
     bool pressed = digitalRead(s.pin) == LOW; // active-low
     uint32_t now = millis();
 
@@ -381,7 +397,9 @@ DisplayButtonEvent display_button_poll(DisplayButton b) {
 }
 
 bool display_button_raw_pressed(DisplayButton b) {
-    return digitalRead(buttonStates[(int)b].pin) == LOW; // active-low
+    ButtonState &s = buttonStates[(int)b];
+    if (s.pin == NO_PIN) return false;
+    return digitalRead(s.pin) == LOW; // active-low
 }
 
 // See display.h's comment for why this runs its own hold timer instead of
@@ -391,7 +409,10 @@ static uint32_t comboPressedSinceMs = 0; // 0 while not both held
 static bool comboFired = false;
 
 bool display_forget_wifi_combo_poll() {
-    bool bothPressed = display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect);
+    // kBoot aliases BOOT_BUTTON_PIN (same pin as kNext on this board - see
+    // buttonStates above), so this is the same physical gesture (hold
+    // BOOT+PWR) as before, just named per display.h's board-agnostic enum.
+    bool bothPressed = display_button_raw_pressed(DisplayButton::kBoot) && display_button_raw_pressed(DisplayButton::kSelect);
     if (!bothPressed) {
         comboPressedSinceMs = 0;
         comboFired = false;
@@ -409,3 +430,5 @@ bool display_forget_wifi_combo_poll() {
     }
     return false;
 }
+
+#endif // BOARD_EPAPER_154

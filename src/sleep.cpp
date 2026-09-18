@@ -8,13 +8,21 @@
 #include "ui.h"
 #include "web_server.h"
 
-// Select/PWR button display_epaper.cpp drives (its own PWR_BUTTON_PIN,
-// private to that file) - duplicated here rather than exposed through
-// display.h since nothing else needs it outside this wakeup mask. Only
-// this one button wakes the device (see ui_show_sleep_screen()'s "Hold
-// Select to wake" - BOOT/Next is left out of the mask so that message
-// stays true instead of being a second, undocumented way to wake it).
-static const int PWR_BUTTON_PIN = 18;
+// The Select button's pin (private to each board's display_epaper*.cpp,
+// which drives it as PWR_BUTTON_PIN/FUNCTION_BUTTON_PIN there) - duplicated
+// here rather than exposed through display.h since nothing else needs it
+// outside this wakeup mask. Only this one button wakes the device (see
+// ui_show_sleep_screen()'s "Hold Select to wake" - every other button is
+// left out of the mask so that message stays true instead of being a
+// second, undocumented way to wake it). Both boards' pins are within the
+// ESP32-S3's RTC-capable GPIO range (0-21) that ext1 wakeup requires.
+#if defined(BOARD_EPAPER_154)
+static const int SELECT_BUTTON_PIN = 18;
+#elif defined(BOARD_EPAPER_397)
+static const int SELECT_BUTTON_PIN = 5;
+#else
+#error "No BOARD_EPAPER_* build flag defined - see display.h."
+#endif
 
 // Default before the user ever touches the Settings page slider, and the
 // clamp range for whatever they set it to - generous ceiling (3 hours) so
@@ -72,11 +80,13 @@ static void enter_deep_sleep() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
-    // PWR_HOLD_PIN (GPIO17, latched HIGH by main.cpp's
+    // On the 154 board, PWR_HOLD_PIN (GPIO17, latched HIGH by main.cpp's
     // keepBatteryPowerOn()) is deliberately left alone here - deep sleep
     // still needs the regulator latched on for ext1 wakeup to fire at all;
-    // only pulling the physical power switch again cuts it for good.
-    uint64_t wakeMask = (1ULL << PWR_BUTTON_PIN);
+    // only pulling the physical power switch again cuts it for good. The
+    // 397 board has no confirmed equivalent latch pin - see main.cpp's
+    // keepBatteryPowerOn() for that board's stub/TODO.
+    uint64_t wakeMask = (1ULL << SELECT_BUTTON_PIN);
     esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();
 }

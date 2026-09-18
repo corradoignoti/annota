@@ -5,6 +5,7 @@
 #include <cstring>
 #include <lvgl.h>
 
+#include "battery.h"
 #include "display.h"
 #include "fonts_it.h"
 #include "sleep.h"
@@ -57,7 +58,16 @@ enum class Screen {
     kTextView,
 };
 
+// HEADER_H is board-conditional since it has to fit FONT_HEADER
+// (fonts_it.h) - 154's header text is small (12px) so the row stays
+// tight; 397's header text was bumped to match FONT_BODY (20px), so the
+// row needs more headroom to avoid clipping/vertical-centering the text
+// too tight against the bar's edges.
+#if defined(BOARD_EPAPER_154)
 static const int16_t HEADER_H = 20;
+#elif defined(BOARD_EPAPER_397)
+static const int16_t HEADER_H = 32;
+#endif
 static const int16_t ROW_H = 20;
 static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
 // kList reserves its own top row (below) for the Audio/Text mode header,
@@ -66,7 +76,7 @@ static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
 static lv_obj_t *header_label = nullptr;
 static lv_obj_t *battery_label = nullptr;
-static uint8_t battery_last_percent = 255; // sentinel - forces the first ui_set_battery_percent() paint
+static uint8_t battery_last_percent = BATTERY_PERCENT_UNKNOWN; // sentinel - forces the first ui_set_battery_percent() paint
 static lv_obj_t *body = nullptr;
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
@@ -179,7 +189,7 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_label_set_text_fmt(label, "%s  %s", icon, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(label, &FONT_BODY, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
 }
@@ -208,14 +218,14 @@ static void render_list_header(size_t count, bool scrollable) {
     lv_obj_t *label = lv_label_create(hdr);
     lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                            showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
-    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(label, &FONT_BODY, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
 
     if (scrollable) {
         lv_obj_t *more = lv_label_create(hdr);
         lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &lv_font_it_14, 0);
+        lv_obj_set_style_text_font(more, &FONT_BODY, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
     }
@@ -246,7 +256,7 @@ static void add_info_card(const char *icon, const char *text) {
     if (icon && icon[0]) {
         lv_obj_t *icon_label = lv_label_create(card);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_it_28, 0);
+        lv_obj_set_style_text_font(icon_label, &FONT_ICON, 0);
         lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
     }
 
@@ -255,7 +265,7 @@ static void add_info_card(const char *icon, const char *text) {
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, card_w - pad * 2);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(msg, &FONT_BODY, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
     lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
@@ -279,7 +289,7 @@ static void add_hint(const char *text) {
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &lv_font_it_10, 0);
+    lv_obj_set_style_text_font(hint, &FONT_HINT, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
@@ -310,7 +320,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(title_label, &FONT_BODY, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
     lv_obj_set_pos(title_label, 6, pad);
@@ -421,7 +431,7 @@ static void render_body() {
             lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
             lv_obj_set_width(label, SCREEN_W - 8);
             lv_label_set_text(label, text_view_buffer);
-            lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_font(label, &FONT_BODY, 0);
             lv_obj_set_style_text_color(label, lv_color_black(), 0);
 
             // Clip via a fixed-height parent (LVGL's default child-clip
@@ -520,7 +530,7 @@ void build_main_screen(bool sdPresent) {
     lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     header_label = lv_label_create(header_bar);
-    lv_obj_set_style_text_font(header_label, &lv_font_it_12, 0);
+    lv_obj_set_style_text_font(header_label, &FONT_HEADER, 0);
     lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
     lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(header_label, "");
@@ -541,15 +551,15 @@ void build_main_screen(bool sdPresent) {
     lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
 
     battery_label = lv_label_create(status_icons);
-    lv_obj_set_style_text_font(battery_label, &lv_font_it_12, 0);
+    lv_obj_set_style_text_font(battery_label, &FONT_HEADER, 0);
     lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
     lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
-    battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
+    battery_last_percent = BATTERY_PERCENT_UNKNOWN; // force the next ui_set_battery_percent() call to repaint
 
     if (sdPresent) {
         lv_obj_t *sd_icon = lv_label_create(status_icons);
         lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
-        lv_obj_set_style_text_font(sd_icon, &lv_font_it_12, 0);
+        lv_obj_set_style_text_font(sd_icon, &FONT_HEADER, 0);
         lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
     }
 
@@ -575,6 +585,15 @@ void ui_set_wifi_status(const char *text) {
 
 void ui_set_battery_percent(uint8_t percent) {
     if (!battery_label) return;
+    if (percent == BATTERY_PERCENT_UNKNOWN) {
+        // No confirmed battery-ADC pin on this board (battery.cpp) - hide
+        // the readout instead of showing a bogus percentage.
+        if (battery_last_percent == BATTERY_PERCENT_UNKNOWN) return;
+        lv_label_set_text(battery_label, "");
+        battery_last_percent = BATTERY_PERCENT_UNKNOWN;
+        lv_timer_handler();
+        return;
+    }
     if (percent > 100) percent = 100;
     if (percent == battery_last_percent) return; // unchanged - skip the full e-paper repaint
     battery_last_percent = percent;
@@ -670,12 +689,19 @@ void ui_process_input() {
         render_body();
         return;
     }
-    if (display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect)) {
+    // Same pair display_forget_wifi_combo_poll() tracks above (kBoot
+    // aliases kNext's pin on the 154 board, so this is the same physical
+    // check there - see display.h/display_epaper.cpp's comments).
+    if (display_button_raw_pressed(DisplayButton::kBoot) && display_button_raw_pressed(DisplayButton::kSelect)) {
         return;
     }
 
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
+    // Cycle-backward - only physically wired on the 397 board (Up); on the
+    // 154 board this is permanently kNone (display_epaper.cpp's NO_PIN
+    // sentinel), so every prevEv branch below is dead code there.
+    DisplayButtonEvent prevEv = display_button_poll(DisplayButton::kPrev);
 
     // A held-back Select-short from kList (see select_press_pending's
     // comment) needs to fire even on a tick with no new button edge at
@@ -687,7 +713,7 @@ void ui_process_input() {
         open_action_menu_for_selected();
     }
 
-    if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
+    if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone && prevEv == DisplayButtonEvent::kNone) return;
     sleep_reset_activity(); // any button edge counts as activity - see sleep.h
 
     switch (state) {
@@ -730,6 +756,17 @@ void ui_process_input() {
                         break;
                     }
                     selected_index = (selected_index + 1) % count;
+                    render_body();
+                } else if (prevEv == DisplayButtonEvent::kShort) {
+                    // Mirror of the nextEv branch just above, cycling the
+                    // other direction - see its comment for why a
+                    // held-back Select press fires now rather than later.
+                    if (select_press_pending) {
+                        select_press_pending = false;
+                        open_action_menu_for_selected();
+                        break;
+                    }
+                    selected_index = (selected_index + count - 1) % count;
                     render_body();
                 } else if (selEv == DisplayButtonEvent::kShort) {
                     if (has_record_option() && selected_index == 0) {
@@ -778,6 +815,9 @@ void ui_process_input() {
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + optionCount - 1) % optionCount;
+                render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
                 render_body();
@@ -814,6 +854,9 @@ void ui_process_input() {
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 2; // only 2 options - backward == forward
+                render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
@@ -835,6 +878,9 @@ void ui_process_input() {
             int optionCount = showing_audio_files ? 5 : 4;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + optionCount - 1) % optionCount;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -876,6 +922,9 @@ void ui_process_input() {
         case Screen::kDeleteConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 2; // only 2 options - backward == forward
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -960,6 +1009,9 @@ void ui_process_input() {
         case Screen::kForgetWifiConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 2; // only 2 options - backward == forward
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;

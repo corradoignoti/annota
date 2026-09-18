@@ -48,6 +48,15 @@
 
 namespace {
 
+// 397 board pins (Waveshare's own example repo,
+// waveshareteam/ESP32-S3-ePaper-3.97, Arduino/examples/01_Audio_Test):
+//   I2S_MCLK -> GPIO13, I2S_BCLK -> GPIO14, I2S_LRCK (WS) -> GPIO47,
+//   I2S_DOUT -> GPIO48, I2S_DIN (mic in) -> GPIO21, I2C SDA -> GPIO41,
+//   SCL -> GPIO42 (shared with QMI8658/SHTC3/PCF85063, none of which this
+//   codebase initializes). Codec I2C address unchanged (0x18). Unlike the
+//   154 board, there's a single amp-enable pin (PA_CTRL) instead of two -
+//   see speaker_begin()'s board-conditional bring-up below.
+#if defined(BOARD_EPAPER_154)
 constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_14;
 constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_15;
 constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_38;
@@ -57,6 +66,18 @@ constexpr int PA_EN_PIN = 42;
 constexpr int PA_CTRL_PIN = 46;
 constexpr int I2C_SDA_PIN = 47;
 constexpr int I2C_SCL_PIN = 48;
+#elif defined(BOARD_EPAPER_397)
+constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_13;
+constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_14;
+constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_47;
+constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_48;
+constexpr gpio_num_t I2S_DIN_PIN = GPIO_NUM_21; // mic ADC data in
+constexpr int PA_CTRL_PIN = 39; // single amp-enable pin on this board - no separate PA_EN
+constexpr int I2C_SDA_PIN = 41;
+constexpr int I2C_SCL_PIN = 42;
+#else
+#error "No BOARD_EPAPER_* build flag defined - see display.h."
+#endif
 
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
@@ -376,6 +397,7 @@ void cleanup() {
 bool speaker_begin() {
     if (hwReady) return true;
 
+#if defined(BOARD_EPAPER_154)
     pinMode(PA_EN_PIN, OUTPUT);
     pinMode(PA_CTRL_PIN, OUTPUT);
     // Active-LOW, not active-high like every other enable pin here - per
@@ -390,6 +412,20 @@ bool speaker_begin() {
     // registers actually control was never powered.
     digitalWrite(PA_EN_PIN, LOW); // power the codec+amp analog rail
     delay(10); // let the rail settle before talking I2C to the codec
+#elif defined(BOARD_EPAPER_397)
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    // TODO(board-397): polarity unverified against real hardware/schematic
+    // - guessing active-low as a starting point (matches the 154 board's
+    // PA_EN convention above). This board has only one amp-enable pin
+    // (no separate PA_EN/PA_CTRL split), so this single write has to do
+    // both jobs. If audio stays silent, or the amp is audibly on/warm
+    // with nothing playing, try the opposite polarity first - see the
+    // 154 board's own PA_EN comment above for how exactly this class of
+    // bug (guessed-wrong enable polarity, I2C still ACKing) presented
+    // last time.
+    digitalWrite(PA_CTRL_PIN, LOW);
+    delay(10); // let the rail settle before talking I2C to the codec
+#endif
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
@@ -400,19 +436,31 @@ bool speaker_begin() {
     audioLogger = &Serial;
 
     bool codecOk = es8311_init(DEFAULT_SAMPLE_RATE, DEFAULT_VOLUME);
-    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding on SDA=47/SCL=48 @0x18?)");
+    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding?)");
     if (!codecOk) {
+#if defined(BOARD_EPAPER_154)
         digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#elif defined(BOARD_EPAPER_397)
+        digitalWrite(PA_CTRL_PIN, HIGH); // rail off (active-low guess, see above)
+#endif
         return false;
     }
     bool i2sOk = i2s_configure(DEFAULT_SAMPLE_RATE);
     Serial.printf("speaker: i2s_configure -> %s\n", i2sOk ? "ok" : "FAILED");
     if (!i2sOk) {
+#if defined(BOARD_EPAPER_154)
         digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#elif defined(BOARD_EPAPER_397)
+        digitalWrite(PA_CTRL_PIN, HIGH); // rail off (active-low guess, see above)
+#endif
         return false;
     }
 
+#if defined(BOARD_EPAPER_154)
     digitalWrite(PA_CTRL_PIN, HIGH); // un-shutdown the NS4150B amp
+#endif
+    // On the 397 board, PA_CTRL_PIN already powered the rail above - no
+    // separate amp un-shutdown step, since this board has only the one pin.
     hwReady = true;
     output = new Es8311Output();
     // AudioOutput's own constructor (ESP8266Audio/src/AudioOutput.h) never

@@ -5,19 +5,34 @@
 // -----------------------------------------------------------------------
 // MP3 catalog: SD card only - no card, no list, no fallback
 //
-// SD is on the ESP32-S3's dedicated SDMMC peripheral (1-bit mode: CLK/CMD/D0
-// only, pins 39/41/40 - see Waveshare's own example repo,
-// waveshareteam/ESP32-S3-ePaper-1.54), entirely separate from the e-paper
-// panel's SPI2_HOST - no borrowing/sharing needed, so sd_begin()/sd_end()
-// are just SD_MMC.begin()/end(). Everything below that pair (scanning,
-// capacity, file read/delete) is written against fs::FS.
+// SD is on the ESP32-S3's dedicated SDMMC peripheral, entirely separate
+// from the e-paper panel's SPI2_HOST - no borrowing/sharing needed, so
+// sd_begin()/sd_end() are just SD_MMC.begin()/end(). Everything below that
+// pair (scanning, capacity, file read/delete) is written against fs::FS.
+//
+// Pin count/mode differs per board: the 154 board's SD slot is wired
+// 1-bit (CLK/CMD/D0 only, pins 39/41/40 - see Waveshare's own example
+// repo, waveshareteam/ESP32-S3-ePaper-1.54); the 397 board's is wired full
+// 4-bit (CLK/CMD/D0-D3, pins 16/17/15/7/8/18 - see
+// waveshareteam/ESP32-S3-ePaper-3.97's Arduino/examples/05_SD_Test).
 // -----------------------------------------------------------------------
 
 #include <SD_MMC.h>
 
+#if defined(BOARD_EPAPER_154)
 #define SDMMC_CLK_PIN 39
 #define SDMMC_CMD_PIN 41
 #define SDMMC_D0_PIN  40
+#elif defined(BOARD_EPAPER_397)
+#define SDMMC_CLK_PIN 16
+#define SDMMC_CMD_PIN 17
+#define SDMMC_D0_PIN  15
+#define SDMMC_D1_PIN  7
+#define SDMMC_D2_PIN  8
+#define SDMMC_D3_PIN  18
+#else
+#error "No BOARD_EPAPER_* build flag defined - see display.h."
+#endif
 #define SD_FS SD_MMC
 
 Mp3Entry mp3Files[MAX_MP3_FILES];
@@ -106,8 +121,13 @@ static size_t count_files(fs::FS &fs, const char *ext) {
 }
 
 bool sd_begin() {
+#if defined(BOARD_EPAPER_154)
     SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
     return SD_MMC.begin("/sdcard", /*mode1bit=*/true);
+#elif defined(BOARD_EPAPER_397)
+    SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN, SDMMC_D1_PIN, SDMMC_D2_PIN, SDMMC_D3_PIN);
+    return SD_MMC.begin("/sdcard", /*mode1bit=*/false);
+#endif
 }
 
 void sd_end() {
