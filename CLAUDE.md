@@ -103,9 +103,16 @@ activity this pass has had a chance to reset its clock.
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
   peripheral (1-bit mode, pins 39/41/40).
 - **ui_epaper.cpp** (`ui.h`'s implementation) — WiFi status, a scrollable
-  file list, and per-file Play/Record/Transcribe/Delete — no on-screen
-  Settings, WiFi credential entry, or text-file preview, all of which stay
-  on `web_server.cpp`'s existing web UI. A small explicit state machine
+  file list, and per-file Play/Record/Transcribe/Delete/View (`.txt`
+  transcripts only — `Screen::kTextView`, opened from the top of a `.txt`
+  file's action menu via `storage.h`'s `read_text_file_preview()`; Select
+  short-press scrolls down, Next short-press scrolls up — reversed from
+  every other screen's Next-cycles/Select-confirms convention, since here
+  Select doubles as both the scroll-down and the long-press-to-go-back
+  action — and a Select long-press closes straight back to `kList` (not the
+  action menu it was opened from) so the menu doesn't reappear on exit) —
+  no on-screen Settings or WiFi credential entry, which stay on
+  `web_server.cpp`'s existing web UI. A small explicit state machine
   (`Screen` enum) driven by `display.h`'s `display_button_poll()` via
   `ui_process_input()`: Next cycles the current selection/menu option,
   Select opens/confirms (short press) or backs out (long press). Every
@@ -307,6 +314,22 @@ is added to the search path explicitly since PlatformIO doesn't do it for
 lib_deps sources like lvgl itself). The pinned lvgl version (9.2.2) is a
 config-compatible match for this v9.2.0-format `lv_conf.h` — don't bump it
 without checking that.
+
+`src/fonts/lv_font_it_{10,12,14,28}.c` (declared in `include/fonts_it.h`,
+used everywhere `ui_epaper.cpp` sets a text font) are custom-built
+replacements for lvgl's own `lv_font_montserrat_{10,12,14,28}` — the
+built-in ones only bake in ASCII, so accented letters (e.g. Italian's è à ò)
+silently render blank with them. Regenerated with `lv_font_conv` (via `npx`)
+from the exact same source `Montserrat-Medium.ttf` +
+`FontAwesome5-Solid+Brands+Regular.woff` lvgl itself ships at
+`<lvgl_lib_dep>/scripts/built_in_font/`, same options as each original font's
+own `Opts:` header-comment (still present, unchanged, at the top of each
+generated file here) plus one added `-r 0xC0-0xFF` range on the Montserrat
+font to pull in Latin-1 Supplement — same size/metrics/icon-glyph coverage,
+so they're drop-in replacements for the originals. If a call site needs a
+font size outside this set of four, either regenerate one more this same way
+or fall back to the plain `lv_font_montserrat_<size>` (which will just be
+missing accented glyphs for that one spot).
 
 ### Filename gotcha (case-insensitive filesystem)
 

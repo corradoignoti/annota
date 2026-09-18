@@ -6,6 +6,7 @@
 #include <lvgl.h>
 
 #include "display.h"
+#include "fonts_it.h"
 #include "sleep.h"
 #include "speaker.h"
 #include "storage.h"
@@ -14,8 +15,8 @@
 
 // -----------------------------------------------------------------------
 // The on-device screen: WiFi status, a scrollable file list, and per-file
-// Transcribe/Delete - deliberately small in scope (no on-device Settings,
-// WiFi credential entry, or text-file preview - all of those stay on the
+// Transcribe/Delete/View (.txt files only) - deliberately small in scope
+// (no on-device Settings or WiFi credential entry - those stay on the
 // existing web UI; see web_server.cpp). The panel is 200x200 mono with
 // only 2 buttons and a slow (~1-2s) refresh, so this is a small explicit
 // state machine driven by display.h's display_button_poll(), not a
@@ -53,6 +54,7 @@ enum class Screen {
     kSleeping,
     kForgetWifiConfirm,
     kRebootConfirm,
+    kTextView,
 };
 
 static const int16_t HEADER_H = 20;
@@ -94,6 +96,15 @@ static const uint32_t DOUBLE_PRESS_WINDOW_MS = 350;
 static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
+
+// kTextView - text_view_buffer holds the .txt file's content (read via
+// read_text_file_preview() when View is picked from kActionMenu), truncated
+// to fit; transcripts are short speech-to-text output, comfortably under
+// this size. text_view_scroll_px is the label's current negative y offset,
+// clamped in render_body() to the label's actual laid-out height.
+static char text_view_buffer[8192];
+static int32_t text_view_scroll_px = 0;
+static const int16_t TEXT_VIEW_SCROLL_STEP = 60; // ~3-4 lines at 14pt
 
 // kWifiSetup
 static char wifi_setup_ssid[64];
@@ -168,7 +179,7 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_label_set_text_fmt(label, "%s  %s", icon, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
 }
@@ -197,14 +208,14 @@ static void render_list_header(size_t count, bool scrollable) {
     lv_obj_t *label = lv_label_create(hdr);
     lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                            showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
 
     if (scrollable) {
         lv_obj_t *more = lv_label_create(hdr);
         lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(more, &lv_font_it_14, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
     }
@@ -235,7 +246,7 @@ static void add_info_card(const char *icon, const char *text) {
     if (icon && icon[0]) {
         lv_obj_t *icon_label = lv_label_create(card);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(icon_label, &lv_font_it_28, 0);
         lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
     }
 
@@ -244,7 +255,7 @@ static void add_info_card(const char *icon, const char *text) {
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, card_w - pad * 2);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
     lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
@@ -268,7 +279,7 @@ static void add_hint(const char *text) {
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(hint, &lv_font_it_10, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
@@ -299,7 +310,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_it_14, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
     lv_obj_set_pos(title_label, 6, pad);
@@ -380,9 +391,9 @@ static void render_body() {
                 static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "Cancel"};
                 render_option_menu(active_filename, icons, options, 5);
             } else {
-                static const char *icons[] = {LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Details", "Delete", "Cancel"};
-                render_option_menu(active_filename, icons, options, 3);
+                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"View", "Details", "Delete", "Cancel"};
+                render_option_menu(active_filename, icons, options, 4);
             }
             break;
         }
@@ -394,6 +405,37 @@ static void render_body() {
                      (unsigned long)((entry.size + 1023) / 1024));
             add_info_card(LV_SYMBOL_LIST, msg);
             add_hint("Select: close");
+            break;
+        }
+
+        case Screen::kTextView: {
+            const int16_t viewport_h = SCREEN_H - HEADER_H - HINT_H;
+            lv_obj_t *viewport = lv_obj_create(body);
+            lv_obj_remove_style_all(viewport);
+            lv_obj_set_size(viewport, SCREEN_W, viewport_h);
+            lv_obj_set_pos(viewport, 0, 0);
+            lv_obj_set_style_pad_all(viewport, 4, 0);
+            lv_obj_clear_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *label = lv_label_create(viewport);
+            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(label, SCREEN_W - 8);
+            lv_label_set_text(label, text_view_buffer);
+            lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_color(label, lv_color_black(), 0);
+
+            // Clip via a fixed-height parent (LVGL's default child-clip
+            // behavior) with the label's y offset doing the "scrolling" -
+            // same reasoning as kList's manual pagination: nothing in this
+            // file uses lv_obj_scroll*(). Height is only known after
+            // layout, so it's read back to clamp before the final position.
+            lv_obj_update_layout(label);
+            int32_t max_scroll = lv_obj_get_height(label) - (viewport_h - 8);
+            if (max_scroll < 0) max_scroll = 0;
+            if (text_view_scroll_px > max_scroll) text_view_scroll_px = max_scroll;
+            lv_obj_set_y(label, -text_view_scroll_px);
+
+            add_hint("Select: down   Next: up, hold Sel: close");
             break;
         }
 
@@ -478,7 +520,7 @@ void build_main_screen(bool sdPresent) {
     lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     header_label = lv_label_create(header_bar);
-    lv_obj_set_style_text_font(header_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(header_label, &lv_font_it_12, 0);
     lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
     lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(header_label, "");
@@ -499,7 +541,7 @@ void build_main_screen(bool sdPresent) {
     lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
 
     battery_label = lv_label_create(status_icons);
-    lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(battery_label, &lv_font_it_12, 0);
     lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
     lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
     battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
@@ -507,7 +549,7 @@ void build_main_screen(bool sdPresent) {
     if (sdPresent) {
         lv_obj_t *sd_icon = lv_label_create(status_icons);
         lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
-        lv_obj_set_style_text_font(sd_icon, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(sd_icon, &lv_font_it_12, 0);
         lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
     }
 
@@ -788,9 +830,9 @@ void ui_process_input() {
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
             // {Play, Transcribe, Details, Delete, Cancel} for audio,
-            // {Details, Delete, Cancel} for .txt (no Play/Transcribe there
-            // - see that comment).
-            int optionCount = showing_audio_files ? 5 : 3;
+            // {View, Details, Delete, Cancel} for .txt (no Play/Transcribe
+            // there - see that comment).
+            int optionCount = showing_audio_files ? 5 : 4;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -811,10 +853,15 @@ void ui_process_input() {
                     // moments from now, so redrawing the list first here
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
-                } else if (menu_index == (showing_audio_files ? 2 : 0)) {
+                } else if (!showing_audio_files && menu_index == 0) {
+                    read_text_file_preview(active_filename, text_view_buffer, sizeof(text_view_buffer));
+                    text_view_scroll_px = 0;
+                    state = Screen::kTextView;
+                    render_body();
+                } else if (menu_index == (showing_audio_files ? 2 : 1)) {
                     state = Screen::kDetails;
                     render_body();
-                } else if (menu_index == (showing_audio_files ? 3 : 1)) {
+                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -889,6 +936,20 @@ void ui_process_input() {
         case Screen::kDetails:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kActionMenu;
+                render_body();
+            }
+            break;
+
+        case Screen::kTextView:
+            if (selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kList;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                text_view_scroll_px += TEXT_VIEW_SCROLL_STEP;
+                render_body(); // clamps to content height itself
+            } else if (nextEv == DisplayButtonEvent::kShort) {
+                text_view_scroll_px -= TEXT_VIEW_SCROLL_STEP;
+                if (text_view_scroll_px < 0) text_view_scroll_px = 0;
                 render_body();
             }
             break;
