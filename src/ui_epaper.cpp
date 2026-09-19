@@ -69,10 +69,29 @@ static const int16_t HEADER_H = 20;
 static const int16_t HEADER_H = 32;
 #endif
 static const int16_t ROW_H = 20;
-static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
+// kList's own file rows - the screen's primary content - run taller than
+// every other ROW_H-based row (menu options, the list's own mode header)
+// and use FONT_LIST (fonts_it.h, bigger than FONT_BODY) instead. Sized
+// per board (unlike ROW_H) since FONT_LIST's point size differs per
+// board - tall enough to hold that font without clipping, at the cost of
+// fewer rows fitting on screen at once (VISIBLE_ROWS below).
+#if defined(BOARD_EPAPER_154)
+static const int16_t LIST_ROW_H = 38;
+#elif defined(BOARD_EPAPER_397)
+static const int16_t LIST_ROW_H = 54;
+#endif
+// kList's own "Audio/Text Files (N)" row (render_list_header()) - sized
+// to hold FONT_LIST_HEADER the same way LIST_ROW_H holds FONT_LIST,
+// instead of the plain ROW_H every other ROW_H-based row uses.
+#if defined(BOARD_EPAPER_154)
+static const int16_t LIST_HEADER_H = 26;
+#elif defined(BOARD_EPAPER_397)
+static const int16_t LIST_HEADER_H = 32;
+#endif
+static const int16_t HINT_H = 44; // fits add_hint()'s two wrapped lines at the bumped FONT_HINT size
 // kList reserves its own top row (below) for the Audio/Text mode header,
 // on top of HEADER_H/HINT_H.
-static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
+static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - LIST_HEADER_H) / LIST_ROW_H;
 
 static lv_obj_t *header_label = nullptr;
 static lv_obj_t *battery_label = nullptr;
@@ -172,8 +191,9 @@ static void clamp_selection() {
 // "focus" indicator this UI has. parent/x/y/w let this serve both the
 // full-width list (parent == body) and menu rows indented inside a
 // bordered panel (see render_option_menu()).
-static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
-    int16_t card_h = ROW_H - 2;
+static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, int16_t h, const char *icon, const char *text,
+                     bool selected, const lv_font_t &font) {
+    int16_t card_h = h - 2;
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, w, card_h);
@@ -189,9 +209,15 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_label_set_text_fmt(label, "%s  %s", icon, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &FONT_BODY, 0);
+    lv_obj_set_style_text_font(label, &font, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+}
+
+// Menu rows (render_option_menu()) keep the original ROW_H/FONT_BODY sizing -
+// only kList's file rows are bumped to LIST_ROW_H/FONT_LIST.
+static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
+    add_row(parent, x, y, w, ROW_H, icon, text, selected, FONT_BODY);
 }
 
 // kList's own top row: an icon, the Audio/Text mode label and file count,
@@ -208,7 +234,7 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
 static void render_list_header(size_t count, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
-    lv_obj_set_size(hdr, SCREEN_W, ROW_H);
+    lv_obj_set_size(hdr, SCREEN_W, LIST_HEADER_H);
     lv_obj_set_pos(hdr, 0, 0);
     lv_obj_set_style_border_width(hdr, 1, 0);
     lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
@@ -218,14 +244,14 @@ static void render_list_header(size_t count, bool scrollable) {
     lv_obj_t *label = lv_label_create(hdr);
     lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                            showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
-    lv_obj_set_style_text_font(label, &FONT_BODY, 0);
+    lv_obj_set_style_text_font(label, &FONT_LIST_HEADER, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
 
     if (scrollable) {
         lv_obj_t *more = lv_label_create(hdr);
         lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &FONT_BODY, 0);
+        lv_obj_set_style_text_font(more, &FONT_LIST_HEADER, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
     }
@@ -320,7 +346,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &FONT_BODY, 0);
+    lv_obj_set_style_text_font(title_label, &FONT_HINT, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
     lv_obj_set_pos(title_label, 6, pad);
@@ -360,12 +386,12 @@ static void render_body() {
             }
             clamp_selection();
             bool recordOption = has_record_option();
-            int16_t y = ROW_H;
+            int16_t y = LIST_HEADER_H;
             for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
                 const char *label = (recordOption && i == 0) ? "Record new" : mp3Files[recordOption ? i - 1 : i].filename;
                 const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
-                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
-                y += ROW_H;
+                add_row(body, 4, y, SCREEN_W - 8, LIST_ROW_H, icon, label, i == selected_index, FONT_LIST);
+                y += LIST_ROW_H;
             }
             add_hint("Next: move, hold: switch   Sel: open, hold: menu");
             break;
