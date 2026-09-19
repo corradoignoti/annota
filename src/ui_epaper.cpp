@@ -12,6 +12,7 @@
 #include "speaker.h"
 #include "storage.h"
 #include "transcribe.h"
+#include "ui_epaper_layout.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -69,26 +70,12 @@ static const int16_t HEADER_H = 20;
 static const int16_t HEADER_H = 32;
 #endif
 static const int16_t ROW_H = 20;
-// kList's own file rows - the screen's primary content - run taller than
-// every other ROW_H-based row (menu options, the list's own mode header)
-// and use FONT_LIST (fonts_it.h, bigger than FONT_BODY) instead. Sized
-// per board (unlike ROW_H) since FONT_LIST's point size differs per
-// board - tall enough to hold that font without clipping, at the cost of
-// fewer rows fitting on screen at once (VISIBLE_ROWS below).
-#if defined(BOARD_EPAPER_154)
-static const int16_t LIST_ROW_H = 38;
-#elif defined(BOARD_EPAPER_397)
-static const int16_t LIST_ROW_H = 54;
-#endif
-// kList's own "Audio/Text Files (N)" row (render_list_header()) - sized
-// to hold FONT_LIST_HEADER the same way LIST_ROW_H holds FONT_LIST,
-// instead of the plain ROW_H every other ROW_H-based row uses.
-#if defined(BOARD_EPAPER_154)
-static const int16_t LIST_HEADER_H = 26;
-#elif defined(BOARD_EPAPER_397)
-static const int16_t LIST_HEADER_H = 32;
-#endif
-static const int16_t HINT_H = 44; // fits add_hint()'s two wrapped lines at the bumped FONT_HINT size
+// LIST_ROW_H/LIST_HEADER_H/HINT_BAR_H (ui_epaper_layout.h) are 154:
+// identical to ROW_H/ROW_H/30 (this board's UI unchanged); 397: bumped
+// past ROW_H to hold that board's bigger FONT_LIST/FONT_LIST_HEADER/
+// FONT_HINT_BAR without clipping, at the cost of fewer rows fitting on
+// screen at once (VISIBLE_ROWS below).
+static const int16_t HINT_H = HINT_BAR_H; // fits add_hint()'s two wrapped lines
 // kList reserves its own top row (below) for the Audio/Text mode header,
 // on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - LIST_HEADER_H) / LIST_ROW_H;
@@ -315,7 +302,7 @@ static void add_hint(const char *text) {
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &FONT_HINT, 0);
+    lv_obj_set_style_text_font(hint, &FONT_HINT_BAR, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
@@ -346,7 +333,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &FONT_HINT, 0);
+    lv_obj_set_style_text_font(title_label, &FONT_MENU_TITLE, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
     lv_obj_set_pos(title_label, 6, pad);
