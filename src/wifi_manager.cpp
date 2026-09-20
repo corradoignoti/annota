@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "ui.h"
+#include "web_server.h"
 
 // -----------------------------------------------------------------------
 // WiFi connection manager (tzapu/WiFiManager captive portal).
@@ -80,14 +81,6 @@ bool wifi_clock_synced() {
 // there for why a retry can't just run try_connect() directly from the
 // UI callback that asked for it.
 static volatile bool reconnectRequested = false;
-
-// State for the background boot-time connect - see wifi_start_boot_connect()/
-// wifi_process_boot_connect() below. Unlike reconnectRequested's flag+block
-// pair, this one is polled to completion across many loop() iterations
-// instead of run to completion the first time loop() picks it up.
-static bool bootConnectPending = false;
-static unsigned long bootConnectDeadline = 0;
-static int bootConnectLastShownSecs = -1;
 
 // First-time setup: no network saved yet, so there's no "reconnect" to
 // attempt and no point giving up - the device has no other way online.
@@ -200,7 +193,7 @@ static bool try_connect() {
     return connected;
 }
 
-bool wifi_start_boot_connect() {
+void wifi_start_boot_connect() {
     WiFi.onEvent(on_wifi_got_ip, ARDUINO_EVENT_WIFI_STA_GOT_IP);
 
     // See try_connect()'s comment: WiFi.mode() must run before
@@ -213,47 +206,15 @@ bool wifi_start_boot_connect() {
         // way online and needs the user's phone/laptop anyway, so this
         // path stays exactly as blocking as it always was.
         try_connect();
-        return false;
+        return;
     }
 
-    ui_set_wifi_status("Connecting to WiFi...");
-    WiFi.begin();  // no args = reconnect with the credentials already in NVS, doesn't block
-    bootConnectPending = true;
-    bootConnectDeadline = millis() + WIFI_RECONNECT_TIMEOUT_SECONDS * 1000UL;
-    bootConnectLastShownSecs = -1;
-    return true;
-}
-
-WifiBootConnectResult wifi_process_boot_connect() {
-    if (!bootConnectPending) return WifiBootConnectResult::kIdle;
-
-    if (WiFi.status() == WL_CONNECTED) {
-        bootConnectPending = false;
-        char msg[64];
-        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
-        ui_set_wifi_status(msg);
-        Serial.println(msg);
-        sync_clock_via_ntp();
-        ui_refresh_wifi_retry_button();
-        return WifiBootConnectResult::kConnected;
-    }
-
-    if (millis() < bootConnectDeadline) {
-        int remainingSecs = (bootConnectDeadline - millis() + 999) / 1000;  // round up
-        if (remainingSecs != bootConnectLastShownSecs) {
-            char msg[48];
-            snprintf(msg, sizeof(msg), "WiFi chk... %ds", remainingSecs);
-            ui_set_wifi_status(msg);
-            bootConnectLastShownSecs = remainingSecs;
-        }
-        return WifiBootConnectResult::kPending;
-    }
-
-    bootConnectPending = false;
-    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
-    Serial.println("WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)");
-    ui_refresh_wifi_retry_button();
-    return WifiBootConnectResult::kFailed;
+    // WiFi is off by default - a saved network just means *some* network
+    // is available on demand (wifi_ensure_connected(), the manual Online
+    // toggle), not that we connect right now. Power the radio straight
+    // back off rather than leaving the STA driver idling unassociated.
+    Serial.println("WiFi: off by default - network saved, will connect on demand");
+    wifi_go_offline();
 }
 
 void wifi_request_reconnect() {
@@ -264,7 +225,7 @@ void wifi_process_pending_reconnect() {
     if (!reconnectRequested) return;
     reconnectRequested = false;
     ui_hide_wifi_setup_dialog();
-    try_connect();
+    if (try_connect()) web_server_start();
 }
 
 // Used by transcribe.cpp right before a transcription attempt: if already
@@ -289,11 +250,11 @@ bool wifi_ensure_connected() {
 
     WiFiManager wm;
     if (!wm.getWiFiIsSaved()) {
-        // Nothing to even try - leave the header saying so rather than
-        // whatever it happened to say before (stale "Connecting..." from
-        // an earlier attempt, say), same wording as every other failure
-        // path below.
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        // Nothing to even try - power back off (this call is the only
+        // thing that just touched the radio) rather than leave it
+        // initialized-but-unassociated.
+        Serial.println("WiFi: no saved network - can't connect for transcription");
+        wifi_go_offline();
         return false;
     }
 
@@ -305,11 +266,11 @@ bool wifi_ensure_connected() {
         ui_set_wifi_status(msg);
         Serial.println(msg);
         sync_clock_via_ntp();
+        ui_refresh_wifi_retry_button();
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
         Serial.println("WiFi: reconnect for transcription failed - still offline");
+        wifi_go_offline();
     }
-    ui_refresh_wifi_retry_button();
     return connected;
 }
 
@@ -329,16 +290,10 @@ bool wifi_is_connected() {
 }
 
 void wifi_go_offline() {
-    // Cancel a still-pending background boot connect (see
-    // wifi_process_boot_connect()) - otherwise it'd keep polling
-    // WiFi.status() against the connection we're about to drop and
-    // eventually overwrite the status line this call sets below with its
-    // own "working offline" once its own timeout lapses anyway.
-    bootConnectPending = false;
     WiFi.disconnect(true);  // true = power off the radio too (battery life); leaves NVS credentials alone
-    ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+    ui_set_wifi_status("");
     ui_refresh_wifi_retry_button();
-    Serial.println("WiFi: disconnected by user - working offline");
+    Serial.println("WiFi: radio off");
 }
 
 // Only fires this often (see WIFI_HEALTH_CHECK_INTERVAL_MS) - a plain

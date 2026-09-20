@@ -959,8 +959,8 @@ async function refresh() {
     wifiValue.textContent = info.ip;
     wifiValue.className = "value ok";
   } else {
-    wifiValue.textContent = "working offline";
-    wifiValue.className = "value warn";
+    wifiValue.textContent = "WiFi off";
+    wifiValue.className = "value";
   }
   document.getElementById("reconnectBtn").disabled = info.wifiConnected;
 
@@ -1486,6 +1486,10 @@ static WebServer::THandlerFunction with_activity(WebServer::THandlerFunction han
 }
 
 void web_server_start() {
+    static bool serverStarted = false;
+    if (serverStarted) return;
+    serverStarted = true;
+
     server.on("/", HTTP_GET, with_activity(handle_root));
     server.on("/settings", HTTP_GET, with_activity(handle_settings_page));
     server.on("/api/settings", HTTP_GET, with_activity(handle_settings_info));
