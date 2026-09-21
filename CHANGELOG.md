@@ -1,3 +1,18 @@
+# [1.3.0](https://github.com/corradoignoti/annota/compare/v1.2.0...v1.3.0) (2026-09-21)
+
+
+### Features
+
+* add Home screen (Audio/Text/File transfer carousel) ([882a642](https://github.com/corradoignoti/annota/commit/882a642fc7cc97a7e995efdce534a55be1e9db91))
+* allow skipping WiFi setup portal to work offline ([c07681b](https://github.com/corradoignoti/annota/commit/c07681bb6cbcc8cfbdb87f1eb06b380d4b804c38))
+* multi-AP WiFi list, web management, and on-device scan+join ([1f2819d](https://github.com/corradoignoti/annota/commit/1f2819dcf76e740e03185cae6120c56b719f2555))
+* on-device .txt preview screen, accented-letter font support ([188e2fe](https://github.com/corradoignoti/annota/commit/188e2fed5303bd2923d88b2ff0b13d144682fa9a))
+* on-device WiFi management screen (join AP / create AP) ([fb60831](https://github.com/corradoignoti/annota/commit/fb608316c1fca233cb44aecdca94659699e6be44))
+* show a connected screen after joining a WiFi network on-device ([c5cf205](https://github.com/corradoignoti/annota/commit/c5cf2053e94937b674d22a2b5862b27a763a68ae))
+* show a QR code on the standalone-AP screen ([8b7fa36](https://github.com/corradoignoti/annota/commit/8b7fa36a56d37595bfaf019f6cabca044415daa1))
+* show a QR code on the WiFi-joined screen ([5d5e66c](https://github.com/corradoignoti/annota/commit/5d5e66c9e4742de1ef13ed1afb233e5e90e994ea))
+* WiFi off by default, on-demand for on-device transcription ([072f086](https://github.com/corradoignoti/annota/commit/072f08615d5c66fa2716407da8c0019d0f00fe36))
+
 # [1.2.0](https://github.com/corradoignoti/annota/compare/v1.1.1...v1.2.0) (2026-09-15)
 
 
