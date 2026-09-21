@@ -136,6 +136,21 @@ bool wifi_ensure_connected();
 void wifi_request_file_transfer();
 void wifi_process_pending_file_transfer();
 
+// Same request/process split and reentrancy constraint as
+// wifi_request_file_transfer()/wifi_process_pending_file_transfer() above,
+// but scoped to one specific file rather than the whole SD root - wired to
+// the per-file action menu's "File transfer" option (ui_epaper.cpp's
+// kActionMenu case, both the audio and .txt variants). On success, shows
+// that file's download link plus a QR code (ui.h's
+// ui_show_file_transfer_screen()) instead of the generic root URL; on
+// failure, same fallback as the whole-root version
+// (ui_show_wifi_manage_screen()). filename is copied, so the caller's
+// buffer can be reused or go out of scope immediately after
+// wifi_request_file_link() returns - same idiom as transcribe.h's
+// transcribe_request().
+void wifi_request_file_link(const char *filename);
+void wifi_process_pending_file_link();
+
 // Erases the WiFi network saved in NVS (WiFiManager's resetSettings()) and
 // the multi-AP list below, then immediately reboots (ESP.restart()) so the
 // next boot has nothing saved and falls straight into

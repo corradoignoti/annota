@@ -68,6 +68,8 @@ void loop() {
     wifi_process_pending_join();
     // Same constraint - see wifi_request_file_transfer()'s comment.
     wifi_process_pending_file_transfer();
+    // Same constraint - see wifi_request_file_link()'s comment.
+    wifi_process_pending_file_link();
     // Cheap no-op almost every call - see its own comment for the every-
     // 15-minutes check it actually does.
     wifi_process_periodic_check();

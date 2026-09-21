@@ -57,6 +57,15 @@ void ui_refresh_wifi_retry_button();
 // on its own.
 void ui_show_wifi_joined_screen(const char *ip);
 
+// Shows a screen with a specific file's download link (text, plus a QR
+// code encoding the same URL) and forces one LVGL repaint - the per-file
+// counterpart to ui_show_wifi_joined_screen() above. Call once
+// wifi_manager.h's wifi_process_pending_file_link() actually connects;
+// same push pattern. WiFi stays on/connected until the user closes this
+// screen (see ui_process_input()'s kFileTransfer case), same as
+// kWifiJoined.
+void ui_show_file_transfer_screen(const char *ip, const char *filename);
+
 // Shows the WiFi management screen (join a saved network / create a
 // standalone AP - see ui_process_input()'s kWifiManage case) and forces
 // one repaint. Same push pattern as ui_show_wifi_joined_screen(). Called

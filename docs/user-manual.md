@@ -118,14 +118,21 @@ For audio files:
 - **Transcribe** — sends the file to the configured AI provider (see
   "Transcription" below) and saves the result as a `.txt` file with the
   same name.
-- **Details** — shows the filename, creation date, and size. Press
-  **Select** to close.
 - **Delete** — asks to confirm, then deletes the file.
+- **File transfer** — connects to WiFi and shows this one file's download
+  link as text plus a QR code, so you can grab just that file from a
+  phone or laptop without opening the full web file manager. Press
+  **Select** to close it and turn WiFi back off.
 - **Cancel** — closes the menu.
 
-For text files (transcripts), the menu only offers **Details**, **Delete**,
-and **Cancel** — no Play/Transcribe, since there's nothing to play or
-re-transcribe.
+For text files (transcripts) — no Play/Transcribe, since there's nothing
+to play or re-transcribe:
+- **View** — opens the transcript to read on-device. **Select** (short)
+  scrolls down, **Next** scrolls up, **Select** (long) closes back to the
+  list.
+- **Delete** — asks to confirm, then deletes the file.
+- **File transfer** — same as above, for this transcript file.
+- **Cancel** — closes the menu.
 
 ### On-device Menu
 

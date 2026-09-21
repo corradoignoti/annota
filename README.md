@@ -47,6 +47,9 @@ of the espressif32 platform.
   — see [AI transcription provider](#ai-transcription-provider)), with
   its API key entered either on-device or via the web UI and stored in
   NVS.
+- **Per-file transfer** — select a file's File transfer action to connect
+  to WiFi and show just that file's download link, as text plus a QR
+  code, without opening the full web file manager.
 - **Web file manager** — once WiFi is up, an HTTP server on port 80
   serves a file manager (list/upload/download/delete against the SD
   root) and a settings page (WiFi status, SD capacity, reconnect/forget
@@ -114,9 +117,10 @@ A small explicit state machine (`Screen` enum) driven by
 `display.h`'s `display_button_poll()`: Next cycles the current
 selection/menu option, Select opens/confirms it (short press) or backs
 out of it (long press). WiFi status, a scrollable file list, and
-per-file Play/Record/Transcribe/Delete — deliberately no on-screen
-Settings, WiFi credential entry, or text-file preview; those stay on the
-web UI (see `web_server.cpp`). Every screen is rebuilt from scratch
+per-file Play/Record/Transcribe/Delete/File transfer (a one-file
+download link plus QR code, connecting to WiFi on demand) — deliberately
+no on-screen Settings or WiFi credential entry; those stay on the web UI
+(see `web_server.cpp`). Every screen is rebuilt from scratch
 (`lv_obj_clean()` + repopulate) on each state change rather than kept as
 a tree of show/hide-toggled widgets — cheap next to the e-paper refresh
 itself dominating either way. Selecting Transcribe calls `transcribe.h`'s
