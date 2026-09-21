@@ -552,6 +552,7 @@ static void render_body() {
             char msg[128];
             snprintf(msg, sizeof(msg), "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", wifi_setup_ssid);
             add_info_card(LV_SYMBOL_WIFI, msg);
+            add_hint("Hold Select: work offline");
             break;
         }
 

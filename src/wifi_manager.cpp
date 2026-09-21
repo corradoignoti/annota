@@ -7,6 +7,7 @@
 #include <lvgl.h>
 #include <time.h>
 
+#include "display.h"
 #include "ui.h"
 #include "web_server.h"
 
@@ -289,26 +290,50 @@ static void fold_current_esp_idf_network_into_list() {
 }
 
 // First-time setup: no network saved yet, so there's no "reconnect" to
-// attempt and no point giving up - the device has no other way online.
-// Opens the "Annota-Setup" captive portal AP and blocks until the user
-// joins it and picks a network from a phone/laptop; credentials entered
-// there are saved to NVS for every boot after this one, and folded into
-// the multi-AP list right after (see fold_current_esp_idf_network_into_list()
-// above) so it's there for wifi_ensure_connected()/reconnect_saved_networks()
-// on every later boot, not just this one via the single ESP-IDF slot.
+// attempt and no point giving up on its own - the device has no other way
+// online. Opens the "Annota-Setup" captive portal AP and waits until either
+// the user joins it and picks a network from a phone/laptop (credentials
+// entered there are saved to NVS for every boot after this one, and folded
+// into the multi-AP list right after - see
+// fold_current_esp_idf_network_into_list() above - so it's there for
+// wifi_ensure_connected()/reconnect_saved_networks() on every later boot,
+// not just this one via the single ESP-IDF slot), or a long Select press
+// cancels out of it entirely to work offline instead (see the loop below).
+// Non-blocking config portal (setConfigPortalBlocking(false)) rather than
+// WiFiManager's own internal wait loop, specifically so this function can
+// run its own loop instead and watch for that cancel - the AP callback
+// still fires synchronously either way (WiFiManager.cpp fires it before
+// checking the blocking flag), so ui_show_wifi_setup_dialog() still forces
+// its one paint exactly as before.
 static bool run_setup_portal() {
     WiFiManager wm;
     wm.setConfigPortalTimeout(0);
-
-    // autoConnect() blocks loop() the whole time it runs, so the on-screen
-    // dialog only gets to paint once, from this callback.
-    // ui_show_wifi_setup_dialog() forces its own repaint since our normal
-    // loop()'s lv_timer_handler() isn't running.
+    wm.setConfigPortalBlocking(false);
     wm.setAPCallback([](WiFiManager *) { ui_show_wifi_setup_dialog(PORTAL_SSID); });
 
-    bool connected = wm.autoConnect(PORTAL_SSID);
+    wm.autoConnect(PORTAL_SSID);  // starts the portal (or connects) and returns right away
+
+    bool cancelled = false;
+    while (wm.getConfigPortalActive() && WiFi.status() != WL_CONNECTED) {
+        wm.process();  // services the portal's HTTP requests - autoConnect()'s own blocking loop would otherwise have done this
+        if (display_button_poll(DisplayButton::kSelect) == DisplayButtonEvent::kLong) {
+            wm.stopConfigPortal();
+            cancelled = true;
+            break;
+        }
+        delay(10);
+    }
+
+    bool connected = !cancelled && WiFi.status() == WL_CONNECTED;
     ui_hide_wifi_setup_dialog();
-    if (connected) fold_current_esp_idf_network_into_list();
+    if (connected) {
+        fold_current_esp_idf_network_into_list();
+    } else if (cancelled) {
+        // "Close the dialog and turn WiFi off" - stopConfigPortal() above
+        // only tears down the AP/webserver, not the radio itself.
+        Serial.println("WiFi: setup portal cancelled by user - working offline");
+        wifi_go_offline();
+    }
     return connected;
 }
 
