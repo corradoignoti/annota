@@ -56,6 +56,8 @@ enum class Screen {
     kWifiApActive,
     kRebootConfirm,
     kTextView,
+    kWifiScanning,
+    kWifiJoinList,
 };
 
 static const int16_t HEADER_H = 20;
@@ -188,18 +190,19 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
 }
 
-// kList's own top row: an icon, the Audio/Text mode label and file count,
-// with a bottom border separating it from the cards below - not a card
-// itself (never selectable), so it's built directly rather than through
-// add_row(). `scrollable` - true once the list has more rows than
-// VISIBLE_ROWS can show at once - draws a small down-arrow at the row's
-// right edge (mirrors build_main_screen()'s right-aligned status icons)
-// as the only hint that Next still reveals more: this list has no
-// scrollbar, and Next wraps around rather than stopping at the last item
-// (see ui_process_input()'s kList case), so the arrow stays fixed rather
-// than tracking top_index/whether the view is currently at the bottom -
-// there's always "more" to scroll to either way.
-static void render_list_header(size_t count, bool scrollable) {
+// A windowed list's top row: a leading icon, a label, and a bottom border
+// separating it from the cards below - not a card itself (never
+// selectable), so it's built directly rather than through add_row().
+// `scrollable` - true once the list has more rows than VISIBLE_ROWS can
+// show at once - draws a small down-arrow at the row's right edge (mirrors
+// build_main_screen()'s right-aligned status icons) as the only hint that
+// Next still reveals more: this list has no scrollbar, and Next wraps
+// around rather than stopping at the last item (see ui_process_input()'s
+// kList case), so the arrow stays fixed rather than tracking top_index/
+// whether the view is currently at the bottom - there's always "more" to
+// scroll to either way. Shared by kList (icon/label built from
+// showing_audio_files) and kWifiJoinList (its own icon/label).
+static void render_list_header(const char *icon, const char *label_text, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
     lv_obj_set_size(hdr, SCREEN_W, ROW_H);
@@ -210,8 +213,7 @@ static void render_list_header(size_t count, bool scrollable) {
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(hdr);
-    lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
-                           showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
+    lv_label_set_text_fmt(label, "%s  %s", icon, label_text);
     lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
@@ -345,7 +347,11 @@ static void render_body() {
 
         case Screen::kList: {
             size_t count = list_item_count();
-            render_list_header(mp3FileCount, count > (size_t)VISIBLE_ROWS);
+            char header_label[24];
+            snprintf(header_label, sizeof(header_label), "%s (%u)", showing_audio_files ? "Audio Files" : "Text Files",
+                     (unsigned)mp3FileCount);
+            render_list_header(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE, header_label,
+                                count > (size_t)VISIBLE_ROWS);
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
@@ -488,6 +494,38 @@ static void render_body() {
             add_info_card(LV_SYMBOL_WIFI, wifi_ap_message);
             add_hint("Select: stop AP");
             break;
+
+        case Screen::kWifiScanning:
+            add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
+            break;
+
+        case Screen::kWifiJoinList: {
+            int count = wifi_scan_in_range_count();
+            if (count == 0) {
+                add_info_card(LV_SYMBOL_WARNING, "No known networks in range.");
+                add_hint("Select: close");
+                break;
+            }
+            // Shares selected_index/top_index with kList - the two screens
+            // are never shown at the same time, same as kActionMenu sharing
+            // menu_index with kWifiManage.
+            if (selected_index >= (size_t)count) selected_index = count - 1;
+            if (selected_index < top_index) top_index = selected_index;
+            if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
+
+            char header_label[24];
+            snprintf(header_label, sizeof(header_label), "Networks (%u)", (unsigned)count);
+            render_list_header(LV_SYMBOL_WIFI, header_label, count > VISIBLE_ROWS);
+            int16_t y = ROW_H;
+            for (size_t i = top_index; i < (size_t)count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
+                char ssid[WIFI_SSID_MAX_LEN + 1];
+                wifi_scan_get_in_range_ssid(i, ssid, sizeof(ssid));
+                add_row(body, 4, y, SCREEN_W - 8, LV_SYMBOL_WIFI, ssid, i == selected_index);
+                y += ROW_H;
+            }
+            add_hint("Next: move   Select: join, hold: back");
+            break;
+        }
 
         case Screen::kPlaying: {
             char msg[96];
@@ -674,6 +712,15 @@ void ui_process_input() {
     // loop() iteration, not just on a button edge like everything below.
     speaker_process();
     mic_process();
+    if (state == Screen::kWifiScanning && wifi_scan_status() != WifiScanStatus::kRunning) {
+        // Same unconditional-pump idiom as speaker_process()/mic_process()
+        // above - wifi_scan_status() is a cheap, non-blocking check, safe
+        // to call every loop() iteration while waiting.
+        selected_index = 0;
+        top_index = 0;
+        state = Screen::kWifiJoinList;
+        render_body();
+    }
     if (state == Screen::kPlaying && !speaker_is_playing()) {
         // Track ended on its own (no Select press involved) - leave the
         // Playing screen the same way Select does.
@@ -1001,12 +1048,14 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    // wifi_process_pending_setup_portal() (loop(), after
-                    // lv_timer_handler()) does the actual blocking work
-                    // and paints its own dialog - same reasoning as
-                    // Transcribe's request/process split above.
-                    wifi_request_setup_portal();
-                    state = sd_present ? Screen::kList : Screen::kNoCard;
+                    // Non-blocking (WiFi.scanNetworks(true) returns right
+                    // away, the scan itself runs in the background) - safe
+                    // to call directly here, same reasoning as
+                    // wifi_start_standalone_ap() below. ui_process_input()'s
+                    // per-tick poll above picks up completion and moves on
+                    // to kWifiJoinList.
+                    wifi_start_scan();
+                    state = Screen::kWifiScanning;
                 } else {
                     // Non-blocking, safe to call directly here - shows
                     // the AP's IP on kWifiApActive instead of falling
@@ -1020,6 +1069,42 @@ void ui_process_input() {
                 render_body();
             }
             break;
+
+        case Screen::kWifiScanning:
+            break; // ui_process_input()'s per-tick poll above moves this along, not a button press
+
+        case Screen::kWifiJoinList: {
+            int count = wifi_scan_in_range_count();
+            if (count == 0) {
+                if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                    state = Screen::kWifiManage;
+                    menu_index = 0;
+                    render_body();
+                }
+                break;
+            }
+            if (nextEv == DisplayButtonEvent::kShort) {
+                selected_index = (selected_index + 1) % count;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                // "Previous screen" = the menu this list was opened from,
+                // same one-level-back convention as every other screen here.
+                state = Screen::kWifiManage;
+                menu_index = 0;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                char ssid[WIFI_SSID_MAX_LEN + 1];
+                wifi_scan_get_in_range_ssid(selected_index, ssid, sizeof(ssid));
+                // wifi_process_pending_join() (loop(), after
+                // lv_timer_handler()) does the actual blocking connect and
+                // paints its own status - same reasoning as the reconnect/
+                // setup-portal request/process splits elsewhere in this file.
+                wifi_request_join_network(ssid);
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+        }
 
         case Screen::kWifiApActive:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {

@@ -2,6 +2,19 @@
 
 #include <stddef.h>
 
+// Limits for the saved-network list below - small on purpose (NVS/heap
+// footprint on an ESP32-S3), generous enough for home + office + a phone
+// hotspot with a little headroom.
+static const size_t WIFI_SSID_MAX_LEN = 32;
+static const size_t WIFI_PASSWORD_MAX_LEN = 64;
+static const int WIFI_MAX_SAVED_NETWORKS = 5;
+
+// Fast-path budget for the preferred/default network (see
+// wifi_request_join_network() below) - short, since it's one specific
+// network rather than a full WiFiMulti sweep; a full sweep still follows if
+// this one fails.
+static const unsigned long WIFI_PREFERRED_TIMEOUT_SECONDS = 5;
+
 // Prepares WiFi at boot (including a deep-sleep wakeup, which is a full
 // MCU reset - see sleep.h - so there's no separate wake-time path). WiFi
 // is off by default - it only turns on on-demand (see
@@ -76,19 +89,6 @@ void wifi_request_reconnect();
 // actually take effect.
 void wifi_process_pending_reconnect();
 
-// Same request/process split as wifi_request_reconnect()/
-// wifi_process_pending_reconnect() above, but for opening the
-// "Annota-Setup" captive-portal AP on demand (not just at first boot) so
-// a different network can be joined without wiping the one already
-// saved - WiFiManager's portal overwrites saved credentials on submit,
-// no explicit erase needed first. wifi_process_pending_setup_portal()
-// does the actual blocking wm.autoConnect() call and paints its own
-// dialog via ui_show_wifi_setup_dialog()/ui_hide_wifi_setup_dialog() -
-// same reentrancy constraint as wifi_process_pending_reconnect(): call
-// from loop() top level, never nested inside lv_timer_handler().
-void wifi_request_setup_portal();
-void wifi_process_pending_setup_portal();
-
 // Puts the radio into standalone soft-AP mode ("Annota-AP", no password)
 // and starts the web file manager on it, so a phone/laptop can reach it
 // directly with no router/internet involved at all - distinct from the
@@ -123,12 +123,92 @@ void wifi_start_standalone_ap(char *ip_out, size_t ip_out_size);
 bool wifi_ensure_connected();
 
 // Erases the WiFi network saved in NVS (WiFiManager's resetSettings()) and
-// immediately reboots (ESP.restart()) so the next boot has nothing saved
-// and falls straight into wifi_start_boot_connect()'s first-time setup
-// portal - same recovery path as a factory-fresh board. Never returns. Irreversible -
-// callers (web_server.cpp's "Delete WiFi Setup" button) must confirm with
-// the user first; this function itself does no confirmation.
+// the multi-AP list below, then immediately reboots (ESP.restart()) so the
+// next boot has nothing saved and falls straight into
+// wifi_start_boot_connect()'s first-time setup portal - same recovery path
+// as a factory-fresh board. Never returns. Irreversible - callers
+// (web_server.cpp's "Delete WiFi Setup" button) must confirm with the user
+// first; this function itself does no confirmation.
 void wifi_forget_and_reboot();
+
+// Multi-AP list: web_server.cpp's Settings page lets the user save several
+// networks (home/office/hotspot) instead of just the one the captive
+// portal writes into ESP-IDF's single NVS slot. Persisted separately
+// (Preferences, namespace "annota" - see wifi_manager.cpp), consulted by
+// try_connect()/wifi_ensure_connected() via WiFiMulti so the device joins
+// whichever saved network is actually in range. Passwords are write-only
+// from here on out - same "never echo a saved secret back" rule as
+// transcribe.h's AI API key - so there's no getter for one, only
+// wifi_update_network_password() to replace it.
+
+// Number of networks currently saved (0..WIFI_MAX_SAVED_NETWORKS).
+int wifi_saved_network_count();
+
+// Writes the SSID at index (0-based, < wifi_saved_network_count()) into out
+// (outSize bytes, NUL-terminated); returns false if index is out of range.
+// Never returns the password - see the note above.
+bool wifi_get_saved_network_ssid(int index, char *out, size_t outSize);
+
+// Adds a new saved network. password may be empty (open network). Fails
+// (returns false, nothing changed) if ssid/password exceed
+// WIFI_SSID_MAX_LEN/WIFI_PASSWORD_MAX_LEN, ssid is already saved (use
+// wifi_update_network_password() instead), or the list is already at
+// WIFI_MAX_SAVED_NETWORKS.
+bool wifi_add_network(const char *ssid, const char *password);
+
+// Replaces the password of an already-saved ssid. Fails if ssid isn't
+// found or password exceeds WIFI_PASSWORD_MAX_LEN. The ssid itself is
+// immutable - remove and re-add to rename an entry.
+bool wifi_update_network_password(const char *ssid, const char *password);
+
+// Removes a saved network by ssid. Fails (returns false) if it isn't
+// found. No effect on whatever the radio is currently connected to.
+bool wifi_remove_network(const char *ssid);
+
+// On-device "Join an access point" (ui_epaper.cpp's kWifiManage menu):
+// scans for which of the saved networks above are actually in range right
+// now, ranked by signal strength, and lets the user pick one to connect to
+// immediately - distinct from wifi_add_network() (typing in a brand-new
+// ssid/password, done from the web UI), this only ever picks among
+// networks already saved.
+enum class WifiScanStatus { kRunning, kDone, kFailed };
+
+// Starts an async scan (WiFi.scanNetworks(true) - returns immediately, the
+// scan itself runs in the background) after the same driver-settle delay
+// wifi_start_standalone_ap() uses. Non-blocking - safe to call directly
+// from an LVGL callback, same reasoning as that function. Invalidates any
+// previously computed wifi_scan_in_range_count()/..._ssid() results.
+void wifi_start_scan();
+
+// Cheap, non-blocking poll of the scan started by wifi_start_scan(). Call
+// every loop() iteration while waiting, same idiom as speaker_process()/
+// mic_process() (see ui_process_input()).
+WifiScanStatus wifi_scan_status();
+
+// Valid once wifi_scan_status() reports kDone (or kFailed - reads as 0
+// results either way): how many of the saved networks were actually
+// detected in this scan, sorted strongest-first. A saved network the scan
+// didn't detect isn't counted - there's nothing to rank it by. Computed
+// once per completed scan and cached; wifi_start_scan() invalidates the
+// cache for the next one.
+int wifi_scan_in_range_count();
+
+// Writes the ssid at sorted rank (0 = strongest signal) into out. Returns
+// false if rank is out of range.
+bool wifi_scan_get_in_range_ssid(int rank, char *out, size_t outSize);
+
+// Request/process split, same pattern and reentrancy constraint as
+// wifi_request_reconnect()/wifi_process_pending_reconnect(): connecting
+// blocks for up to WIFI_RECONNECT_TIMEOUT_SECONDS, so
+// wifi_process_pending_join() must run from loop() top level, after
+// lv_timer_handler() has returned. ssid must already be a saved network -
+// its password is looked up internally and never exposed outside this
+// module. On a successful connect, ssid also becomes the new preferred/
+// default network: every later try_connect()/wifi_ensure_connected() call
+// tries it directly first (WIFI_PREFERRED_TIMEOUT_SECONDS budget) before
+// falling back to sweeping the whole saved list, same as today.
+void wifi_request_join_network(const char *ssid);
+void wifi_process_pending_join();
 
 // Plain WiFi.status() == WL_CONNECTED check, wrapped here so callers
 // (ui_epaper.cpp's on-device menu) don't need their own <WiFi.h> include
