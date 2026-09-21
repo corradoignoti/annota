@@ -30,8 +30,9 @@ The device has exactly two physical controls:
 
 A few gestures build on top of that:
 
-- **Long press Next** on the file list — switches between the Audio Files
-  view and the Text Files (transcripts) view.
+- **Long press Next** on the file list — opens the **Home screen** (see
+  below), a small carousel for switching to the Audio Files list, the Text
+  Files list, or starting a WiFi file transfer.
 - **Long press Select** on the file list — opens the on-device Menu
   (Refresh / Offline↔Online / Reboot / Close).
 - **Double-press Select quickly** (within about a third of a second) on any
@@ -39,10 +40,13 @@ A few gestures build on top of that:
   selection straight back to the top "Record new" row. A single press still
   opens the action menu as usual; the device briefly waits to see if a
   second press is coming before acting.
-- **Hold both buttons together for 5 seconds** — from anywhere, opens a
-  confirmation to erase the saved WiFi network and reboot into first-time
-  WiFi setup. This is the recovery gesture if the on-screen "Delete WiFi
-  Setup" button in the web UI isn't reachable (e.g. no WiFi at all).
+- **Hold both buttons together for 5 seconds** — from anywhere, stops any
+  recording/playback in progress and jumps straight to the on-device
+  **WiFi management** screen (join a saved network, or create a standalone
+  access point — see "WiFi setup" below). This is the fastest way to reach
+  WiFi options without going through the file list or Home screen, and the
+  main recovery path when the device is offline and the web UI isn't
+  reachable.
 
 ## Status bar
 
@@ -75,10 +79,11 @@ time:
 - **Text Files** — the `.txt` transcripts saved by transcription (see
   below). No "Record new" row here.
 
-Long-press **Next** to switch between the two modes. The header row above
-the list shows which mode you're in and how many files it holds; a small
-down-arrow appears if there are more rows than fit on screen at once (the
-list wraps around with **Next**, it doesn't stop at the last item).
+Long-press **Next** to open the Home screen, then pick **Audio** or
+**Text** there to switch modes (see "Home screen" below). The header row
+above the list shows which mode you're in and how many files it holds; a
+small down-arrow appears if there are more rows than fit on screen at once
+(the list wraps around with **Next**, it doesn't stop at the last item).
 
 - **Next** (short press) — move the highlighted row down one (wraps to the
   top).
@@ -131,10 +136,31 @@ Opened with a long **Select** press from the file list:
 - **Offline** / **Online** — toggles WiFi. The label always reflects the
   live connection state. Choosing **Offline** disconnects and powers down
   the WiFi radio (saved network credentials are kept); choosing **Online**
-  reconnects to the saved network. This does not erase any saved WiFi
-  setup.
+  reconnects using the saved networks (see "Reconnecting" under "WiFi
+  setup" below). This does not erase any saved WiFi setup.
 - **Reboot** — asks to confirm, then restarts the device.
 - **Close** — closes the menu with no action.
+
+## Home screen
+
+Reached with a **long press of Next** from the file list. A 3-item
+carousel — **Audio**, **Text**, **File transfer** — shown one at a time;
+the hint line at the bottom shows your position (e.g. "(1/3)").
+
+- **Next** (short press) — cycles to the next item, wrapping around.
+- **Select** (short press) — chooses the highlighted item.
+- **Select** (long press) — backs out to the file list with no change.
+
+What each item does:
+
+- **Audio** — loads and shows the Audio Files list.
+- **Text** — loads and shows the Text Files (transcripts) list.
+- **File transfer** — connects to WiFi (trying the most recently joined
+  network first) and, once connected, shows a QR code plus the device's
+  web address so you can reach its file manager from a phone or laptop. If
+  no saved network is in range, it opens the WiFi management screen
+  instead so you can join one or create a standalone access point (see
+  "WiFi setup" below).
 
 ## Transcription
 
@@ -144,9 +170,9 @@ provider's speech-to-text API and saves the returned text as a sibling
 OpenAI's Whisper API by default (`whisper-1`); switching providers is a
 compile-time choice.
 
-- If the device is offline, it makes one attempt to reconnect to the saved
-  WiFi network first. If that fails too, you'll see "No WiFi connection."
-  instead of a transcript.
+- If the device is offline, it makes one attempt to reconnect to a saved
+  network first (see "Reconnecting" under "WiFi setup" below). If that
+  fails too, you'll see "No WiFi connection." instead of a transcript.
 - An AI provider API key must already be set — from the web UI's Settings
   page (see below). Transcription fails with an error if no key is saved.
 - The screen shows "Transcribing <filename>..." while the request is in
@@ -163,33 +189,60 @@ point named **"Annota-Setup"** (no password) and shows an on-screen prompt.
 From a phone or laptop, join that network — a captive portal (or
 `http://192.168.4.1`) lets you pick your home WiFi network and enter its
 password. Once submitted, the device connects and remembers the network
-for every future boot.
+for every future boot. This screen can also be **skipped**: hold **Select**
+long to cancel setup and continue straight to the file list with WiFi off
+— useful if you don't want to set up WiFi yet, or at all.
 
-**Every boot after that:** the device reconnects to the saved network
-automatically in the background while the rest of the UI comes up — no
-setup portal, no blocking. If the router isn't reachable within about 10
-seconds, the device just continues offline; the status bar reflects this,
-but nothing modal interrupts whatever's on screen. Recording, playback,
-deleting, and browsing all work fine offline — only transcription and the
-web file manager need a network.
+**The device remembers up to 5 networks**, not just one — add, edit, or
+remove them from the web Settings page's WiFi Networks card (see "Web file
+manager" below), or add one on-device by joining it directly (below).
+
+**Reconnecting** (at boot, from the on-device Menu's Offline↔Online
+toggle, the Settings page's **Reconnect WiFi** button, or before a
+transcription) always follows the same order: try whichever network was
+most recently joined by hand first (a quick ~5 second attempt), then, if
+that fails or wasn't set, sweep every other saved network for up to 10
+seconds and connect to whichever is in range with the best signal. If
+nothing is reachable, the device just continues offline — nothing modal
+interrupts whatever's on screen, only the status bar reflects it. Recording,
+playback, deleting, and browsing all work fine offline — only transcription
+and the web file manager need a network.
 
 Every ~15 minutes, if the radio is on but the network has become
 unreachable (not just a one-time reconnect failure), the device
 automatically drops to offline mode on its own to save battery, rather
 than burning power retrying against a network that's gone.
 
-**Forgetting the saved network:** this is deliberately hard to trigger by
-accident, since it's irreversible. Two ways:
+### On-device WiFi management
 
-1. Web UI → Settings → **Delete WiFi Setup** (with a confirmation).
-2. On-device: hold both buttons together for 5 seconds, then confirm.
+Reach this screen either by choosing **File transfer** on the Home screen
+when no saved network is in range, or by **holding both buttons for 5
+seconds** from anywhere. Two options:
 
-Either way, the saved credentials are erased and the device reboots
-straight into the first-time setup portal.
+- **Join an access point** — scans for nearby networks, then lists only
+  your *saved* networks that were actually found in range (strongest
+  signal first); pick one to connect. If none of your saved networks are
+  nearby, it says so instead of listing anything.
+- **Create an AP** — starts a standalone access point named **"Annota-AP"**
+  (open, no password) alongside a QR code you can scan to join it directly
+  from a phone. Use this to reach the device's web UI with no router
+  around — e.g. to add or fix a saved network. Press **Select** to stop
+  the AP and return to the list.
 
-A plain reconnect retry (without erasing anything) is available from the
-on-device Menu's Offline↔Online toggle, or the web UI's **Reconnect WiFi**
-button.
+Once connected — either by joining a network here, or via the Home
+screen's File transfer shortcut — the device shows a "Connected" screen
+with a QR code encoding its own web address (`http://<ip>`), plus the
+address as text. Pressing **Select** on this screen turns WiFi back off
+and returns to the list.
+
+**Forgetting saved networks:** this is deliberately hard to trigger by
+accident, since it's irreversible, and only available from the web UI now:
+Settings → **Delete WiFi Setup** (with a confirmation) erases *every*
+saved network and reboots straight into the first-time setup portal. (The
+old on-device 5-second button-hold for this has been repurposed — it now
+opens WiFi management, above, instead of erasing anything.) To remove or
+fix a single network without wiping the rest, use the Settings page's WiFi
+Networks card instead.
 
 ## Web file manager
 
@@ -229,6 +282,10 @@ own Menu → Refresh.
 - **SD card** — capacity, space used (with a usage bar), and a count of
   audio files vs. text files.
 - **WiFi** — **Reconnect WiFi** button (disabled while already connected).
+- **WiFi Networks** — the up-to-5 saved networks: SSID list with per-row
+  **Edit** (retype the password — never shown, only ever write-only, same
+  as the AI key below) and **Remove** buttons, plus an "Add network" form
+  (SSID + optional password).
 - **Power** — a slider (1–180 minutes) for how long the device stays idle
   before deep-sleeping to save battery. Takes effect immediately, no
   reboot needed.
@@ -237,7 +294,7 @@ own Menu → Refresh.
   over plain HTTP). Enter a new key and **Save API Key**, or **Clear API
   Key** to remove it. Leaving the field blank and saving does nothing.
 - **Danger zone** — **Delete WiFi Setup**, with a confirmation prompt. See
-  "Forgetting the saved network" above.
+  "Forgetting saved networks" above.
 
 ## Power and sleep
 
@@ -270,10 +327,11 @@ cold power-on, including re-scanning the SD card and reconnecting to WiFi.
   saved on the Settings page.
 - **Can't reach the web file manager** — confirm the device's WiFi status
   (status bar, or Settings page once reachable) and that your browser is
-  on the same network. If the device is offline and you don't have the
-  setup portal available, hold both buttons for 5 seconds to reset WiFi
-  and start over.
+  on the same network. If the device is offline, hold both buttons for 5
+  seconds to open on-device WiFi management: join another saved network in
+  range, or create the standalone "Annota-AP" access point and scan its QR
+  code from a phone to reach the web UI, then use Delete WiFi Setup there
+  for a clean reset if needed.
 - **Stuck in "Annota-Setup" mode after already configuring WiFi once** —
-  this only happens after an explicit "Delete WiFi Setup" (or the 5-second
-  button-hold gesture). Reconfigure a network the same way as first-time
-  setup.
+  this only happens after an explicit web UI "Delete WiFi Setup".
+  Reconfigure a network the same way as first-time setup.
