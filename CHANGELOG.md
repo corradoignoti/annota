@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/corradoignoti/annota/compare/v1.3.0...v1.4.0) (2026-09-21)
+
+
+### Features
+
+* per-file "File transfer" link + QR code in file context menu ([7cf690c](https://github.com/corradoignoti/annota/commit/7cf690ce50d7419138c666fb23faedfd29713724))
+
 # [1.3.0](https://github.com/corradoignoti/annota/compare/v1.2.0...v1.3.0) (2026-09-21)
 
 
