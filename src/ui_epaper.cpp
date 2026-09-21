@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
+#include <qrcode.h>  // ricmoo/QRCode - kWifiJoined's scannable URL
 
 #include "display.h"
 #include "fonts_it.h"
@@ -120,6 +121,20 @@ static char wifi_ap_message[96];
 
 // kWifiJoined
 static char wifi_joined_message[96];
+static char wifi_joined_url[64];  // just the URL, separately from the sentence above - encoded into the QR code
+
+// QR code rendering for kWifiJoined - version 3 (29x29 modules) at
+// ECC_LOW gives 53 bytes of byte-mode capacity, comfortably more than
+// "http://" + the longest IPv4 dotted-quad ever needs. Scaled up 3px/module
+// (87x87 canvas) onto an RGB565 lv_canvas, drawn pixel-exact (no lv_image
+// zoom/interpolation) since this display thresholds everything to 1bpp on
+// flush and blurred edges would threshold unpredictably.
+static const uint8_t WIFI_QR_VERSION = 3;
+static const uint8_t WIFI_QR_SCALE = 3;
+static const uint8_t WIFI_QR_MODULES = WIFI_QR_VERSION * 4 + 17;
+static const uint16_t WIFI_QR_BUFFER_SIZE = (WIFI_QR_MODULES * WIFI_QR_MODULES + 7) / 8;
+static const int16_t WIFI_QR_PX = WIFI_QR_MODULES * WIFI_QR_SCALE;
+static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -524,10 +539,45 @@ static void render_body() {
             add_hint("Select: stop AP");
             break;
 
-        case Screen::kWifiJoined:
-            add_info_card(LV_SYMBOL_WIFI, wifi_joined_message);
+        case Screen::kWifiJoined: {
+            lv_obj_t *cont = lv_obj_create(body);
+            lv_obj_remove_style_all(cont);
+            lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
+            lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+            lv_obj_set_style_pad_row(cont, 4, 0);
+
+            QRCode qr;
+            uint8_t qr_data[WIFI_QR_BUFFER_SIZE];
+            if (qrcode_initText(&qr, qr_data, WIFI_QR_VERSION, ECC_LOW, wifi_joined_url) == 0) {
+                lv_obj_t *canvas = lv_canvas_create(cont);
+                lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
+                lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
+                for (uint8_t my = 0; my < qr.size; my++) {
+                    for (uint8_t mx = 0; mx < qr.size; mx++) {
+                        if (!qrcode_getModule(&qr, mx, my)) continue;
+                        for (uint8_t py = 0; py < WIFI_QR_SCALE; py++) {
+                            for (uint8_t px = 0; px < WIFI_QR_SCALE; px++) {
+                                lv_canvas_set_px(canvas, mx * WIFI_QR_SCALE + px, my * WIFI_QR_SCALE + py,
+                                                 lv_color_black(), LV_OPA_COVER);
+                            }
+                        }
+                    }
+                }
+            }
+
+            lv_obj_t *msg = lv_label_create(cont);
+            lv_label_set_text(msg, wifi_joined_message);
+            lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(msg, SCREEN_W - 16);
+            lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_font(msg, &lv_font_it_10, 0);
+            lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+
             add_hint("Select: close, WiFi off");
             break;
+        }
 
         case Screen::kWifiScanning:
             add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
@@ -716,6 +766,7 @@ void ui_refresh_wifi_retry_button() {}
 void ui_show_wifi_joined_screen(const char *ip) {
     snprintf(wifi_joined_message, sizeof(wifi_joined_message),
              "Connected. Open http://%s in a browser for settings or file transfer.", ip);
+    snprintf(wifi_joined_url, sizeof(wifi_joined_url), "http://%s", ip);
     state = Screen::kWifiJoined;
     render_body();
     lv_timer_handler();
