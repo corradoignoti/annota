@@ -54,6 +54,7 @@ enum class Screen {
     kSleeping,
     kWifiManage,
     kWifiApActive,
+    kWifiJoined,
     kRebootConfirm,
     kTextView,
     kWifiScanning,
@@ -114,6 +115,9 @@ static char wifi_setup_ssid[64];
 
 // kWifiApActive
 static char wifi_ap_message[96];
+
+// kWifiJoined
+static char wifi_joined_message[96];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -495,6 +499,11 @@ static void render_body() {
             add_hint("Select: stop AP");
             break;
 
+        case Screen::kWifiJoined:
+            add_info_card(LV_SYMBOL_WIFI, wifi_joined_message);
+            add_hint("Select: close, WiFi off");
+            break;
+
         case Screen::kWifiScanning:
             add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
             break;
@@ -679,6 +688,14 @@ void ui_hide_wifi_setup_dialog() {
 // No Settings view here to refresh a retry button on - see ui.h's comment.
 void ui_refresh_wifi_retry_button() {}
 
+void ui_show_wifi_joined_screen(const char *ip) {
+    snprintf(wifi_joined_message, sizeof(wifi_joined_message),
+             "Connected. Open http://%s in a browser for settings or file transfer.", ip);
+    state = Screen::kWifiJoined;
+    render_body();
+    lv_timer_handler();
+}
+
 void ui_show_transcribe_progress(const char *filename) {
     strncpy(transcribe_filename, filename, sizeof(transcribe_filename) - 1);
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
@@ -698,7 +715,7 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 
 bool ui_is_sleep_blocked() {
     return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
-           state == Screen::kWifiApActive;
+           state == Screen::kWifiApActive || state == Screen::kWifiJoined;
 }
 
 void ui_show_sleep_screen() {
@@ -1108,6 +1125,14 @@ void ui_process_input() {
         }
 
         case Screen::kWifiApActive:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                wifi_go_offline();
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kWifiJoined:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 wifi_go_offline();
                 state = sd_present ? Screen::kList : Screen::kNoCard;
