@@ -122,6 +122,20 @@ void wifi_start_standalone_ap(char *ip_out, size_t ip_out_size);
 // nested inside lv_timer_handler().
 bool wifi_ensure_connected();
 
+// Request/process split for the on-device Home screen's "File transfer"
+// row (ui_epaper.cpp's kHome case): makes one on-demand connect attempt
+// (wifi_ensure_connected() - never opens the setup portal, unlike
+// try_connect()) and, on success, starts the web file manager and shows
+// its IP (ui.h's ui_show_wifi_joined_screen()); on failure (nothing
+// saved, or the attempt failed) sends the user to the WiFi management
+// screen instead (ui.h's ui_show_wifi_manage_screen()) so they can join
+// or create an AP. Same request/process split and reentrancy constraint
+// as wifi_request_reconnect()/wifi_process_pending_reconnect() above -
+// call wifi_process_pending_file_transfer() from loop() top level, after
+// lv_timer_handler() has returned.
+void wifi_request_file_transfer();
+void wifi_process_pending_file_transfer();
+
 // Erases the WiFi network saved in NVS (WiFiManager's resetSettings()) and
 // the multi-AP list below, then immediately reboots (ESP.restart()) so the
 // next boot has nothing saved and falls straight into

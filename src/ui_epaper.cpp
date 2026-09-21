@@ -59,6 +59,7 @@ enum class Screen {
     kTextView,
     kWifiScanning,
     kWifiJoinList,
+    kHome,
 };
 
 static const int16_t HEADER_H = 20;
@@ -76,8 +77,9 @@ static bool sd_present = false;
 static Screen state = Screen::kNoCard;
 
 // kList. showing_audio_files: true while mp3Files/mp3FileCount hold
-// AUDIO_EXTS, false while showing .txt - toggled by a long Next press
-// (see ui_process_input()'s kList case).
+// AUDIO_EXTS, false while showing .txt - set by picking Audio/Text on
+// kHome (see ui_process_input()'s kHome case; reached from kList via a
+// long Next press).
 static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
@@ -359,7 +361,7 @@ static void render_body() {
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
-                add_hint("Sel(hold): menu   Next(hold): switch");
+                add_hint("Sel(hold): menu   Next(hold): home");
                 break;
             }
             clamp_selection();
@@ -371,7 +373,30 @@ static void render_body() {
                 add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move, hold: switch   Sel: open, hold: menu");
+            add_hint("Next: move, hold: home   Sel: open, hold: menu");
+            break;
+        }
+
+        // Reached from kList via a long Next press (see
+        // ui_process_input()'s kList case) - a horizontal carousel of 3
+        // cells, one full-screen icon+label card shown at a time
+        // (add_info_card(), same helper kNoCard/kMicError/etc. use),
+        // paged by Next; the hint bar's "(n/3)" is the position indicator
+        // (this font has no page-dot glyphs baked in, so text stays the
+        // safe choice - same idiom as "Audio Files (N)" above). Select
+        // confirms: Audio/Text set showing_audio_files and open kList
+        // (what the old long-Next toggle used to do directly); File
+        // transfer hands off to wifi_manager.h's request/process split
+        // (see ui_process_input()'s kHome case for why state isn't
+        // touched here for that branch).
+        case Screen::kHome: {
+            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD};
+            static const char *labels[] = {"Audio", "Text", "File transfer"};
+            render_list_header(LV_SYMBOL_HOME, "Home", false);
+            add_info_card(icons[menu_index], labels[menu_index]);
+            char hint[48];
+            snprintf(hint, sizeof(hint), "Next: cycle (%d/3)   Select: choose, hold: back", (int)menu_index + 1);
+            add_hint(hint);
             break;
         }
 
@@ -696,6 +721,13 @@ void ui_show_wifi_joined_screen(const char *ip) {
     lv_timer_handler();
 }
 
+void ui_show_wifi_manage_screen() {
+    state = Screen::kWifiManage;
+    menu_index = 0;
+    render_body();
+    lv_timer_handler();
+}
+
 void ui_show_transcribe_progress(const char *filename) {
     strncpy(transcribe_filename, filename, sizeof(transcribe_filename) - 1);
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
@@ -797,10 +829,8 @@ void ui_process_input() {
         case Screen::kList:
             if (nextEv == DisplayButtonEvent::kLong) {
                 select_press_pending = false; // leaving kList's row set - drop any held-back press
-                showing_audio_files = !showing_audio_files;
-                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
-                selected_index = 0;
-                top_index = 0;
+                menu_index = 0;
+                state = Screen::kHome;
                 render_body();
                 break;
             }
@@ -862,6 +892,32 @@ void ui_process_input() {
                         select_press_pending = true;
                         select_press_pending_since = millis();
                     }
+                }
+            }
+            break;
+
+        case Screen::kHome:
+            if (nextEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 3;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kList;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                if (menu_index == 0 || menu_index == 1) {
+                    showing_audio_files = (menu_index == 0);
+                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                    selected_index = 0;
+                    top_index = 0;
+                    state = Screen::kList;
+                    render_body();
+                } else {
+                    // Don't touch state/render here - wifi_manager.h's
+                    // wifi_process_pending_file_transfer() (called right
+                    // after this, same loop() iteration - see main.cpp)
+                    // shows its own status/result screens, same reasoning
+                    // as kActionMenu's Transcribe case above.
+                    wifi_request_file_transfer();
                 }
             }
             break;
