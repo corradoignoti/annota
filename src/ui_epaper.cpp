@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
-#include <qrcode.h>  // ricmoo/QRCode - kWifiJoined's scannable URL
+#include <qrcode.h>  // ricmoo/QRCode - kWifiJoined/kWifiApActive's scannable QR codes
 
 #include "display.h"
 #include "fonts_it.h"
@@ -123,9 +123,17 @@ static char wifi_ap_message[96];
 static char wifi_joined_message[96];
 static char wifi_joined_url[64];  // just the URL, separately from the sentence above - encoded into the QR code
 
-// QR code rendering for kWifiJoined - version 3 (29x29 modules) at
-// ECC_LOW gives 53 bytes of byte-mode capacity, comfortably more than
-// "http://" + the longest IPv4 dotted-quad ever needs. Scaled up 3px/module
+// kWifiApActive - STANDALONE_AP_SSID (wifi_manager.cpp) is a fixed literal
+// with no password, so unlike wifi_joined_url above this needs no runtime
+// buffer, just the WiFi-network-config QR payload format phones' camera
+// apps recognize (T:nopass - an open network, so no P: field).
+static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
+
+// QR code rendering, shared by kWifiJoined (its http:// URL) and
+// kWifiApActive (the AP's join string above) - only one of the two is ever
+// on screen at once, so they share one canvas backing buffer too. Version 3
+// (29x29 modules) at ECC_LOW gives 53 bytes of byte-mode capacity,
+// comfortably more than either payload ever needs. Scaled up 3px/module
 // (87x87 canvas) onto an RGB565 lv_canvas, drawn pixel-exact (no lv_image
 // zoom/interpolation) since this display thresholds everything to 1bpp on
 // flush and blurred edges would threshold unpredictably.
@@ -246,6 +254,48 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
     }
+}
+
+// A scannable QR code plus a wrapped caption below it, filling body - used
+// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
+// string) instead of add_info_card()'s icon+text layout, since a QR code
+// needs far more of body's limited space than a symbol-font glyph does.
+// See WIFI_QR_* above for the encoding/rendering choices.
+static void add_qr_screen(const char *qr_data, const char *caption) {
+    lv_obj_t *cont = lv_obj_create(body);
+    lv_obj_remove_style_all(cont);
+    lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(cont, 4, 0);
+
+    QRCode qr;
+    uint8_t qr_bytes[WIFI_QR_BUFFER_SIZE];
+    if (qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
+        lv_obj_t *canvas = lv_canvas_create(cont);
+        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
+        lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
+        for (uint8_t my = 0; my < qr.size; my++) {
+            for (uint8_t mx = 0; mx < qr.size; mx++) {
+                if (!qrcode_getModule(&qr, mx, my)) continue;
+                for (uint8_t py = 0; py < WIFI_QR_SCALE; py++) {
+                    for (uint8_t px = 0; px < WIFI_QR_SCALE; px++) {
+                        lv_canvas_set_px(canvas, mx * WIFI_QR_SCALE + px, my * WIFI_QR_SCALE + py,
+                                         lv_color_black(), LV_OPA_COVER);
+                    }
+                }
+            }
+        }
+    }
+
+    lv_obj_t *msg = lv_label_create(cont);
+    lv_label_set_text(msg, caption);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, SCREEN_W - 16);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_it_10, 0);
+    lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
@@ -535,49 +585,14 @@ static void render_body() {
         }
 
         case Screen::kWifiApActive:
-            add_info_card(LV_SYMBOL_WIFI, wifi_ap_message);
+            add_qr_screen(WIFI_AP_QR_DATA, wifi_ap_message);
             add_hint("Select: stop AP");
             break;
 
-        case Screen::kWifiJoined: {
-            lv_obj_t *cont = lv_obj_create(body);
-            lv_obj_remove_style_all(cont);
-            lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
-            lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
-            lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-            lv_obj_set_style_pad_row(cont, 4, 0);
-
-            QRCode qr;
-            uint8_t qr_data[WIFI_QR_BUFFER_SIZE];
-            if (qrcode_initText(&qr, qr_data, WIFI_QR_VERSION, ECC_LOW, wifi_joined_url) == 0) {
-                lv_obj_t *canvas = lv_canvas_create(cont);
-                lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
-                lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
-                for (uint8_t my = 0; my < qr.size; my++) {
-                    for (uint8_t mx = 0; mx < qr.size; mx++) {
-                        if (!qrcode_getModule(&qr, mx, my)) continue;
-                        for (uint8_t py = 0; py < WIFI_QR_SCALE; py++) {
-                            for (uint8_t px = 0; px < WIFI_QR_SCALE; px++) {
-                                lv_canvas_set_px(canvas, mx * WIFI_QR_SCALE + px, my * WIFI_QR_SCALE + py,
-                                                 lv_color_black(), LV_OPA_COVER);
-                            }
-                        }
-                    }
-                }
-            }
-
-            lv_obj_t *msg = lv_label_create(cont);
-            lv_label_set_text(msg, wifi_joined_message);
-            lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(msg, SCREEN_W - 16);
-            lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_set_style_text_font(msg, &lv_font_it_10, 0);
-            lv_obj_set_style_text_color(msg, lv_color_black(), 0);
-
+        case Screen::kWifiJoined:
+            add_qr_screen(wifi_joined_url, wifi_joined_message);
             add_hint("Select: close, WiFi off");
             break;
-        }
 
         case Screen::kWifiScanning:
             add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
