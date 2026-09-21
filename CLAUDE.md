@@ -122,7 +122,18 @@ has had a chance to reset its clock.
   directly rather than through a confirm dialog — safe here since
   `ui_process_input()` runs at `loop()`'s top level, not nested inside
   `lv_timer_handler()`; selecting Delete calls `storage.h`'s
-  `delete_file()` directly, same reasoning. A long Select press on the
+  `delete_file()` directly, same reasoning. Both the audio and `.txt`
+  action menus also carry a File transfer item (right before Cancel) that
+  hands off to `wifi_manager.h`'s `wifi_request_file_link()` the same way
+  Transcribe hands off to `transcribe_request()` — on success this shows
+  `Screen::kFileTransfer`, a per-file counterpart to the Home screen's own
+  generic File-transfer/QR screen (`kWifiJoined`, whole-SD-root URL) with
+  that one file's `/api/download` URL as text plus a QR code
+  (`ui_show_file_transfer_screen()`, sharing `add_qr_screen()`'s canvas and
+  `url_encode_component()` for any filename characters that need
+  percent-encoding); a Select press on it, short or long, calls
+  `wifi_go_offline()` and returns to `kList`, same as `kWifiJoined`'s own
+  exit handler. A long Select press on the
   list opens a small Refresh/Offline↔Online/Reboot/Close menu instead —
   Offline↔Online is driven by two new `wifi_manager.h` calls,
   `wifi_is_connected()` (labels the option) and `wifi_go_offline()`
@@ -196,6 +207,14 @@ has had a chance to reset its clock.
   the AP's gone, not just a reconnect attempt having failed once — it calls
   `wifi_go_offline()` silently, same as the on-device "Offline" item;
   mostly moot now that the radio is normally off already, but harmless.
+  `wifi_request_file_link()`/`wifi_process_pending_file_link()` are the
+  same request/process split, scoped to one SD file rather than the
+  Home screen's whole-root `wifi_request_file_transfer()` — wired to the
+  per-file action menu's File transfer option (`ui_epaper.cpp`'s
+  `kActionMenu` case); on success it shows that file's download link/QR
+  screen (`ui.h`'s `ui_show_file_transfer_screen()`) instead of the
+  generic root one, on failure the same `ui_show_wifi_manage_screen()`
+  fallback as the whole-root version.
 - **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
   split into a provider-agnostic half and a provider-specific half so a
   future second provider is a new file plus a new build flag, not a

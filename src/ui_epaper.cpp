@@ -51,11 +51,11 @@ enum class Screen {
     kWifiSetup,
     kTranscribeProgress,
     kTranscribeResult,
-    kDetails,
     kSleeping,
     kWifiManage,
     kWifiApActive,
     kWifiJoined,
+    kFileTransfer,
     kRebootConfirm,
     kTextView,
     kWifiScanning,
@@ -97,11 +97,9 @@ static bool select_press_pending = false;
 static uint32_t select_press_pending_since = 0;
 static const uint32_t DOUBLE_PRESS_WINDOW_MS = 350;
 
-// kActionMenu / kDeleteConfirm / kDetails - the file the menu/confirm was
-// opened for, and which option is currently highlighted. active_file_index
-// indexes mp3Files directly (Details reads created/size straight off it).
+// kActionMenu / kDeleteConfirm - the file the menu/confirm was opened for,
+// and which option is currently highlighted.
 static char active_filename[64];
-static size_t active_file_index = 0;
 static int menu_index = 0;
 
 // kTextView - text_view_buffer holds the .txt file's content (read via
@@ -123,21 +121,34 @@ static char wifi_ap_message[96];
 static char wifi_joined_message[96];
 static char wifi_joined_url[64];  // just the URL, separately from the sentence above - encoded into the QR code
 
+// kFileTransfer - the per-file counterpart to kWifiJoined above. url is
+// sized for the worst case (a fully percent-encoded active_filename, see
+// url_encode_component()) even though the QR code itself can't hold that
+// much - add_qr_screen() degrades to text-only in that case (see its
+// comment), and the message label below shows the plain filename either
+// way, word-wrapped.
+static char file_transfer_message[128];
+static char file_transfer_url[256];
+
 // kWifiApActive - STANDALONE_AP_SSID (wifi_manager.cpp) is a fixed literal
 // with no password, so unlike wifi_joined_url above this needs no runtime
 // buffer, just the WiFi-network-config QR payload format phones' camera
 // apps recognize (T:nopass - an open network, so no P: field).
 static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
 
-// QR code rendering, shared by kWifiJoined (its http:// URL) and
-// kWifiApActive (the AP's join string above) - only one of the two is ever
-// on screen at once, so they share one canvas backing buffer too. Version 3
-// (29x29 modules) at ECC_LOW gives 53 bytes of byte-mode capacity,
-// comfortably more than either payload ever needs. Scaled up 3px/module
-// (87x87 canvas) onto an RGB565 lv_canvas, drawn pixel-exact (no lv_image
-// zoom/interpolation) since this display thresholds everything to 1bpp on
-// flush and blurred edges would threshold unpredictably.
-static const uint8_t WIFI_QR_VERSION = 3;
+// QR code rendering, shared by kWifiJoined (its http:// URL),
+// kWifiApActive (the AP's join string above), and kFileTransfer (a
+// file-specific download URL, longer than either of the other two) - only
+// one of the three is ever on screen at once, so they share one canvas
+// backing buffer too. Version 4 (33x33 modules) at ECC_LOW gives 78 bytes
+// of byte-mode capacity - comfortably more than the AP/joined payloads
+// need, and enough for a download URL with a short-to-moderate filename;
+// add_qr_screen() degrades to text-only (see its comment) if a payload
+// ever doesn't fit. Scaled up 3px/module (99x99 canvas) onto an RGB565
+// lv_canvas, drawn pixel-exact (no lv_image zoom/interpolation) since this
+// display thresholds everything to 1bpp on flush and blurred edges would
+// threshold unpredictably.
+static const uint8_t WIFI_QR_VERSION = 4;
 static const uint8_t WIFI_QR_SCALE = 3;
 static const uint8_t WIFI_QR_MODULES = WIFI_QR_VERSION * 4 + 17;
 static const uint16_t WIFI_QR_BUFFER_SIZE = (WIFI_QR_MODULES * WIFI_QR_MODULES + 7) / 8;
@@ -168,7 +179,6 @@ static bool has_record_option() {
 // select_press_pending's comment above.
 static void open_action_menu_for_selected() {
     size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
-    active_file_index = fileIndex;
     strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
     active_filename[sizeof(active_filename) - 1] = '\0';
     menu_index = 0;
@@ -256,11 +266,43 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
     }
 }
 
+// Percent-encodes src into out (RFC 3986 unreserved characters -
+// letters/digits/'-'/'_'/'.'/'~' - passed through as-is, everything else
+// as %XX), same rule web_server.cpp's own JS applies via
+// encodeURIComponent() before hitting /api/download. Needed because
+// ui_show_file_transfer_screen() below builds that same URL on-device, and
+// ESP32 WebServer::arg() decodes the query string automatically - so the
+// two sides already agree with no server-side change. Truncates (rather
+// than overflowing) if out is too small; SD filenames this app deals with
+// are root-only and mostly need no encoding at all (see sanitize_name() in
+// web_server.cpp), so this only matters for edge-case characters like
+// spaces.
+static void url_encode_component(const char *src, char *out, size_t outLen) {
+    static const char *hex = "0123456789ABCDEF";
+    size_t o = 0;
+    for (size_t i = 0; src[i] != '\0' && o + 1 < outLen; i++) {
+        unsigned char c = (unsigned char)src[i];
+        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+                           c == '_' || c == '.' || c == '~';
+        if (unreserved) {
+            out[o++] = (char)c;
+        } else if (o + 3 < outLen) {
+            out[o++] = '%';
+            out[o++] = hex[c >> 4];
+            out[o++] = hex[c & 0x0F];
+        } else {
+            break;
+        }
+    }
+    out[o] = '\0';
+}
+
 // A scannable QR code plus a wrapped caption below it, filling body - used
-// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
-// string) instead of add_info_card()'s icon+text layout, since a QR code
-// needs far more of body's limited space than a symbol-font glyph does.
-// See WIFI_QR_* above for the encoding/rendering choices.
+// by kWifiJoined (its http:// URL), kWifiApActive (the AP's WiFi-join
+// string), and kFileTransfer (a file's download URL) instead of
+// add_info_card()'s icon+text layout, since a QR code needs far more of
+// body's limited space than a symbol-font glyph does. See WIFI_QR_* above
+// for the encoding/rendering choices.
 static void add_qr_screen(const char *qr_data, const char *caption) {
     lv_obj_t *cont = lv_obj_create(body);
     lv_obj_remove_style_all(cont);
@@ -489,26 +531,19 @@ static void render_body() {
 
         case Screen::kActionMenu: {
             // Play/Transcription only make sense for audio files, not the
-            // .txt transcripts this same list shows when toggled.
+            // .txt transcripts this same list shows when toggled. File
+            // transfer (per-file download link + QR, see kFileTransfer)
+            // applies to both, placed right before Cancel in each.
             if (showing_audio_files) {
-                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "Cancel"};
+                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
+                                               LV_SYMBOL_CLOSE};
+                static const char *options[] = {"Play", "Transcribe", "Delete", "File transfer", "Cancel"};
                 render_option_menu(active_filename, icons, options, 5);
             } else {
-                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"View", "Details", "Delete", "Cancel"};
+                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"View", "Delete", "File transfer", "Cancel"};
                 render_option_menu(active_filename, icons, options, 4);
             }
-            break;
-        }
-
-        case Screen::kDetails: {
-            const Mp3Entry &entry = mp3Files[active_file_index];
-            char msg[160];
-            snprintf(msg, sizeof(msg), "%s\n\nCreated: %s\nSize: %lu KB", entry.filename, entry.created,
-                     (unsigned long)((entry.size + 1023) / 1024));
-            add_info_card(LV_SYMBOL_LIST, msg);
-            add_hint("Select: close");
             break;
         }
 
@@ -591,6 +626,11 @@ static void render_body() {
 
         case Screen::kWifiJoined:
             add_qr_screen(wifi_joined_url, wifi_joined_message);
+            add_hint("Select: close, WiFi off");
+            break;
+
+        case Screen::kFileTransfer:
+            add_qr_screen(file_transfer_url, file_transfer_message);
             add_hint("Select: close, WiFi off");
             break;
 
@@ -787,6 +827,17 @@ void ui_show_wifi_joined_screen(const char *ip) {
     lv_timer_handler();
 }
 
+void ui_show_file_transfer_screen(const char *ip, const char *filename) {
+    char encoded[190];
+    url_encode_component(filename, encoded, sizeof(encoded));
+    snprintf(file_transfer_url, sizeof(file_transfer_url), "http://%s/api/download?name=%s", ip, encoded);
+    snprintf(file_transfer_message, sizeof(file_transfer_message), "Open this link (or scan) to download:\n%s",
+             filename);
+    state = Screen::kFileTransfer;
+    render_body();
+    lv_timer_handler();
+}
+
 void ui_show_wifi_manage_screen() {
     state = Screen::kWifiManage;
     menu_index = 0;
@@ -813,7 +864,7 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 
 bool ui_is_sleep_blocked() {
     return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
-           state == Screen::kWifiApActive || state == Screen::kWifiJoined;
+           state == Screen::kWifiApActive || state == Screen::kWifiJoined || state == Screen::kFileTransfer;
 }
 
 void ui_show_sleep_screen() {
@@ -1051,9 +1102,9 @@ void ui_process_input() {
 
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
-            // {Play, Transcribe, Details, Delete, Cancel} for audio,
-            // {View, Details, Delete, Cancel} for .txt (no Play/Transcribe
-            // there - see that comment).
+            // {Play, Transcribe, Delete, File transfer, Cancel} for audio,
+            // {View, Delete, File transfer, Cancel} for .txt (no
+            // Play/Transcribe there - see that comment).
             int optionCount = showing_audio_files ? 5 : 4;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
@@ -1081,12 +1132,16 @@ void ui_process_input() {
                     state = Screen::kTextView;
                     render_body();
                 } else if (menu_index == (showing_audio_files ? 2 : 1)) {
-                    state = Screen::kDetails;
-                    render_body();
-                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
+                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
+                    // Don't touch state/render here - wifi_manager.h's
+                    // wifi_process_pending_file_link() (called right after
+                    // this, same loop() iteration - see main.cpp) shows its
+                    // own status/result screens, same reasoning as
+                    // Transcribe above.
+                    wifi_request_file_link(active_filename);
                 } else {
                     state = Screen::kList;
                     render_body();
@@ -1151,13 +1206,6 @@ void ui_process_input() {
         case Screen::kTranscribeResult:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
-            }
-            break;
-
-        case Screen::kDetails:
-            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
-                state = Screen::kActionMenu;
                 render_body();
             }
             break;
@@ -1255,6 +1303,14 @@ void ui_process_input() {
             break;
 
         case Screen::kWifiJoined:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                wifi_go_offline();
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kFileTransfer:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 wifi_go_offline();
                 state = sd_present ? Screen::kList : Screen::kNoCard;

@@ -512,6 +512,27 @@ void wifi_process_pending_file_transfer() {
     }
 }
 
+// See wifi_manager.h's declaration.
+static volatile bool fileLinkRequested = false;
+static char fileLinkTargetFilename[64];
+
+void wifi_request_file_link(const char *filename) {
+    strncpy(fileLinkTargetFilename, filename, sizeof(fileLinkTargetFilename) - 1);
+    fileLinkTargetFilename[sizeof(fileLinkTargetFilename) - 1] = '\0';
+    fileLinkRequested = true;
+}
+
+void wifi_process_pending_file_link() {
+    if (!fileLinkRequested) return;
+    fileLinkRequested = false;
+    if (wifi_ensure_connected()) {
+        web_server_start();
+        ui_show_file_transfer_screen(WiFi.localIP().toString().c_str(), fileLinkTargetFilename);
+    } else {
+        ui_show_wifi_manage_screen();
+    }
+}
+
 // -----------------------------------------------------------------------
 // On-device scan-and-join (ui_epaper.cpp's kWifiManage "Join an access
 // point"): which of the saved networks above are actually in range right
