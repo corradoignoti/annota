@@ -38,12 +38,11 @@ No test suite exists yet (`test/` is the stock PlatformIO placeholder).
 `lv_timer_handler()` first, then `ui_process_input()` (button-driven nav —
 see its bullet below), then, only after `lv_timer_handler()` has returned,
 the deferred-work pumps that a nested LVGL click handler can't safely
-trigger directly — `wifi_process_pending_reconnect()`, `wifi_process_boot_connect()`
-(the background boot-time connect `setup()` kicks off — see
-`wifi_manager.cpp/h` below) and `transcribe_process_pending()` (see their
-bullets below) — then `web_server_handle()`, then `sleep_process_idle()`
-(see `sleep.cpp/h` below) last, once everything else that could count as
-activity this pass has had a chance to reset its clock.
+trigger directly — `wifi_process_pending_reconnect()` and
+`transcribe_process_pending()` (see their bullets below) — then
+`web_server_handle()`, then `sleep_process_idle()` (see `sleep.cpp/h`
+below) last, once everything else that could count as activity this pass
+has had a chance to reset its clock.
 
 - **sleep.cpp/h** — idle-timeout deep sleep, ported from the pala_note
   sibling project's `enterUltraSleep()`/`resetActivity()` (same board
@@ -146,51 +145,57 @@ activity this pass has had a chance to reset its clock.
   first. Both claim the SD card for their whole duration (`storage.h`'s
   `sd_begin()`/`sd_end()`) and must be pumped every `loop()` iteration via
   `ui_epaper.cpp`'s `ui_process_input()`.
-- **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. Two paths at
-  boot depending on whether a network is already saved in NVS: none saved
-  opens a captive portal AP ("Annota-Setup", no password) with no timeout
-  and shows the on-screen dialog, blocking `setup()` until the user
-  configures one from a phone/laptop (`wifi_start_boot_connect()` returns
-  false once that's resolved either way — nothing left to poll); one
-  saved instead kicks off `WiFi.begin()` and returns immediately, true,
-  so `setup()` can build the UI and start the SD scan without the screen
-  sitting frozen for however long the router takes to answer.
-  `wifi_process_boot_connect()`, called from `loop()` right after
-  `wifi_process_pending_reconnect()`, polls that reconnect to completion —
-  up to `WIFI_RECONNECT_TIMEOUT_SECONDS` (wifi_manager.cpp, currently 10s)
-  — and, on success, is what `main.cpp` calls `web_server_start()` off of.
-  The setup portal never reappears on its own once a network is saved — a
-  reconnect timeout just leaves the device offline, said only via the
-  header status line (`ui_set_wifi_status()`) rather than a modal, so
-  whatever's on screen (the file list, say) isn't interrupted — rather
-  than wiping the saved credentials, since WiFiManager's "saved" check
-  reading stale NVS state isn't reason enough to drop the user back into
-  AP setup out from under them. The device stays fully usable offline —
+- **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. WiFi is off by
+  default: `wifi_start_boot_connect()` takes two paths at boot depending on
+  whether a network is already saved in NVS: none saved opens a captive
+  portal AP ("Annota-Setup", no password) with no timeout and shows the
+  on-screen dialog, blocking `setup()` until the user configures one from a
+  phone/laptop (unchanged from before); one saved instead just confirms
+  that (briefly initializing the WiFi driver so the saved-network check
+  reads real NVS state, not uninitialized garbage) and immediately powers
+  the radio back off via `wifi_go_offline()` — no background connect is
+  attempted, so there's no boot-time polling in `loop()` any more. Going
+  online afterwards is always on-demand or explicit: `wifi_ensure_connected()`
+  (used by `transcribe.cpp`'s `transcribe_process_pending()` before a
+  transcription — see that bullet) makes one blocking reconnect attempt to
+  the saved network, never opens the portal, and powers the radio back off
+  again itself if that attempt fails (a failure here only ever happens on a
+  radio the call itself just touched, so there's nothing left initialized-
+  but-unassociated to clean up elsewhere); the on-device Offline↔Online
+  menu item and the Settings page's "Reconnect WiFi" button both go through
+  `wifi_request_reconnect()`/`wifi_process_pending_reconnect()` (it fires
+  from an LVGL click handler already nested inside `lv_timer_handler()`,
+  which refuses to run itself again while it's running — so the actual
+  retry can't happen there; `loop()` picks it up and blocks until it
+  connects or times out, since this is a wait the user explicitly asked
+  for) and start the web file manager (`web_server_start()`, idempotent —
+  see `web_server.cpp/h` below) on success. The setup portal never
+  reappears on its own once a network is saved — a reconnect timeout just
+  leaves the device offline, said only via the header status line
+  (`ui_set_wifi_status()`, left blank rather than any warning once WiFi is
+  off by design — see `wifi_go_offline()`) rather than a modal, so
+  whatever's on screen (the file list, say) isn't interrupted — rather than
+  wiping the saved credentials, since WiFiManager's "saved" check reading
+  stale NVS state isn't reason enough to drop the user back into AP setup
+  out from under them. The device stays fully usable with WiFi off —
   record, delete, and preview all work with no network — and this same
-  logic runs unchanged on every boot, including a deep-sleep wakeup
+  boot logic runs unchanged on every boot, including a deep-sleep wakeup
   (waking is a full MCU reset, see `sleep.cpp/h` above, so there's no
   separate wake-time path). The only way back to the setup portal is the
   explicit, irreversible "Delete WiFi Setup" button
-  (`wifi_forget_and_reboot()`); a plain reconnect retry is the Settings
-  page's "Reconnect WiFi" button, which only calls
-  `wifi_request_reconnect()` (it fires from an LVGL click handler already
-  nested inside `lv_timer_handler()`, which refuses to run itself again
-  while it's running — so the actual retry can't happen there); `loop()`
-  picks up the request via `wifi_process_pending_reconnect()`, which does
-  block (unlike the boot-time connect, this is a wait the user explicitly
-  asked for by pressing the button) until it connects or times out. Must
-  be called after `build_main_screen()` so it has a screen to paint
-  status onto. `wifi_ensure_connected()` is a third entry point: a
-  no-portal, single blocking reconnect attempt, used by
-  `transcribe.cpp`'s `transcribe_process_pending()` to retry the saved
-  network before a transcription rather than failing outright just
-  because the device booted offline. `wifi_process_periodic_check()`,
-  called from `loop()` alongside the other `wifi_process_*()` functions,
-  is a fourth: every 15 minutes (`WIFI_HEALTH_CHECK_INTERVAL_MS`), if the
-  radio's on but not connected — the AP's gone, not just the boot-time
-  reconnect having failed once — it calls `wifi_go_offline()` (radio off,
-  saved network kept, no dialog) rather than leaving the radio burning
-  power retrying against nothing.
+  (`wifi_forget_and_reboot()`). `wifi_go_offline()` (`WiFi.disconnect(true)`,
+  powering the radio off for battery life, saved network untouched) has
+  three callers: the on-device Offline menu item, `wifi_start_boot_connect()`'s
+  stay-off-at-boot path, and `transcribe_process_pending()`'s post-
+  transcription auto-off (only when that call is the one that turned WiFi
+  on in the first place — see `transcribe.cpp/h` below for the guard
+  against cutting a manual Online session out from under the user).
+  `wifi_process_periodic_check()`, called from `loop()` alongside the other
+  `wifi_process_*()` functions, is a last entry point: every 15 minutes
+  (`WIFI_HEALTH_CHECK_INTERVAL_MS`), if the radio's on but not connected —
+  the AP's gone, not just a reconnect attempt having failed once — it calls
+  `wifi_go_offline()` silently, same as the on-device "Offline" item;
+  mostly moot now that the radio is normally off already, but harmless.
 - **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
   split into a provider-agnostic half and a provider-specific half so a
   future second provider is a new file plus a new build flag, not a
@@ -206,13 +211,22 @@ activity this pass has had a chance to reset its clock.
   repaint" (from `main.cpp`'s `loop()`, after `lv_timer_handler()`
   returns) for the same reentrancy reason; it also `#error`s at compile
   time if no `AI_PROVIDER_*` build flag is defined, so a missing one fails
-  loudly here instead of as a confusing link error. `transcribe_process_pending()`
-  first checks `WiFi.status()` and, if offline, calls
-  `wifi_manager.h`'s `wifi_ensure_connected()` for one blocking retry
-  against the saved network before giving up with "No WiFi connection." —
-  the device can otherwise be offline going into this (see
-  `wifi_manager.cpp/h` above) since recording/deleting/previewing don't
-  need a network but transcription does. `transcribe_process_pending()`
+  loudly here instead of as a confusing link error. WiFi is off by default
+  (see `wifi_manager.cpp/h` above), so `transcribe_process_pending()` first
+  checks `wifi_is_connected()`; if it was already true (e.g. the user is
+  manually Online, browsing the web file manager) it leaves WiFi exactly as
+  found and never turns it off afterward — only when it was false does it
+  call `wifi_manager.h`'s `wifi_ensure_connected()` for one blocking retry
+  against the saved network (giving up with "No WiFi connection." if that
+  fails — `wifi_ensure_connected()` itself already powers the radio back
+  off on failure, so there's nothing to clean up on that branch), call the
+  now-idempotent `web_server_start()` (this may be the first WiFi
+  connection since boot, since boot no longer auto-connects), and then,
+  once `ai_transcribe_file()` returns either way, call
+  `wifi_manager.h`'s `wifi_go_offline()` before painting the result screen
+  — recording/deleting/previewing don't need a network but transcription
+  does, and this is what keeps WiFi on only for the duration of an actual
+  transcription. `transcribe_process_pending()`
   calls `sleep.h`'s `sleep_reset_activity()` right after the blocking
   `ai_transcribe_file()` call returns, before showing the result screen -
   without it, a transcription slow enough to outlast `sleep.cpp`'s idle
@@ -275,11 +289,14 @@ activity this pass has had a chance to reset its clock.
   `/api/settings` (GET, a status snapshot) and `/api/settings/reconnect`,
   `/api/settings/forget`, `/api/settings/ai-key`,
   `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above).
-  Only started once WiFi is up — either
-  synchronously from `setup()` (first-boot portal case) or from `loop()`
-  once `wifi_process_boot_connect()` reports the background boot-time
-  connect landed (see `wifi_manager.cpp/h` above). Each handler that
-  touches the card calls
+  `web_server_start()` is idempotent (a file-scoped `static bool` guard —
+  a no-op past the first call), since WiFi is off by default and can newly
+  become connected from several places, each of which calls it
+  opportunistically: `setup()` (first-boot portal case), a successful
+  `wifi_process_pending_reconnect()` (manual Online toggle / Settings
+  page's "Reconnect WiFi"), and `transcribe_process_pending()`'s on-demand
+  connect before a transcription (see `wifi_manager.cpp/h` and
+  `transcribe.cpp/h` above). Each handler that touches the card calls
   `display_suspend_touch()` + `storage.h`'s `sd_begin()` (and releases both
   after) — no-ops on this board, kept so a future board with a shared SPI
   peripheral wouldn't need new call sites; the AI key handler is the one

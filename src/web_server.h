@@ -11,10 +11,16 @@
 // only affect the SD card; the on-screen MP3 list isn't refreshed until
 // reboot.
 //
-// Call web_server_start() once WiFi is up (after wifi_start_boot_connect()
-// resolves synchronously, or wifi_process_boot_connect() reports
-// kConnected - see wifi_manager.h), and web_server_handle() every loop()
-// iteration alongside lv_timer_handler().
+// Idempotent (a no-op past the first call) - WiFi is off by default (see
+// wifi_manager.h) and can newly become connected from several places, so
+// this is called opportunistically from each of them rather than from one
+// single "WiFi just came up" event: setup() (first-time portal resolving
+// synchronously), wifi_process_pending_reconnect() (manual Online toggle /
+// web UI's "Reconnect WiFi"), and transcribe_process_pending() (the
+// on-demand connect before a transcription, which may be the first
+// connection since boot). Call web_server_handle() every loop() iteration
+// alongside lv_timer_handler() regardless of WiFi state - a no-op if the
+// server was never started.
 void web_server_start();
 void web_server_handle();
 

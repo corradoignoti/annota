@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <WiFi.h>
 #include <lvgl.h>
 
 #include "battery.h"
@@ -40,13 +39,17 @@ void setup() {
 
     // wifi_start_boot_connect() paints its own status onto the screen it
     // finds here (ui_set_wifi_status() forces a repaint), so
-    // build_main_screen() must run first. A saved network kicks off a
-    // background reconnect and returns immediately - loop()'s
-    // wifi_process_boot_connect() sees it through and starts the web file
-    // manager once it lands. No saved network at all falls back to the
-    // blocking setup portal (nothing else useful to do without it), same
-    // as before.
-    if (!wifi_start_boot_connect() && WiFi.status() == WL_CONNECTED) {
+    // build_main_screen() must run first. WiFi is off by default - a saved
+    // network just stays off until something asks for it on demand
+    // (wifi_ensure_connected(), transcribe.cpp) or explicitly
+    // (wifi_request_reconnect(), the on-device Online toggle). Only the
+    // no-saved-network first-time setup portal can leave WiFi connected by
+    // the time this returns - web_server_start() is idempotent, so calling
+    // it opportunistically from every place WiFi can become connected
+    // (here, wifi_process_pending_reconnect(), transcribe_process_pending())
+    // is safe.
+    wifi_start_boot_connect();
+    if (wifi_is_connected()) {
         web_server_start();
     }
 }
@@ -61,13 +64,8 @@ void loop() {
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
-    // Sees the background boot-time connect (if any) through to
-    // completion - see wifi_start_boot_connect()'s comment. Same
-    // reentrancy constraint as wifi_process_pending_reconnect() just
-    // above, though this one never blocks.
-    if (wifi_process_boot_connect() == WifiBootConnectResult::kConnected) {
-        web_server_start();
-    }
+    // Same constraint - see wifi_request_join_network()'s comment.
+    wifi_process_pending_join();
     // Cheap no-op almost every call - see its own comment for the every-
     // 15-minutes check it actually does.
     wifi_process_periodic_check();

@@ -46,6 +46,17 @@ void ui_hide_wifi_setup_dialog();
 // so wifi_manager.cpp doesn't need a special case.
 void ui_refresh_wifi_retry_button();
 
+// Shows a screen inviting the user to open the given IP in a browser for
+// settings/file transfer, and forces one LVGL repaint. Call once a
+// wifi_manager.h join (wifi_process_pending_join()) actually succeeds -
+// same push pattern as ui_show_wifi_setup_dialog()/
+// ui_show_transcribe_progress() for a screen change that originates
+// outside ui_process_input(). WiFi stays on/connected until the user
+// closes this screen (see ui_process_input()'s kWifiJoined case) - unlike
+// every other on-demand WiFi action here, nothing else turns it back off
+// on its own.
+void ui_show_wifi_joined_screen(const char *ip);
+
 // Shows a modal "Transcribing <filename>..." status, floated above
 // whatever's on screen (no buttons), and forces one LVGL repaint. Call
 // only from loop() (via transcribe.h's transcribe_process_pending()),

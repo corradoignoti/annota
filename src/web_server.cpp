@@ -914,8 +914,16 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card">
-  <h2>WiFi</h2>
-  <button class="accent" id="reconnectBtn">↻ Reconnect WiFi</button>
+  <h2>WiFi Networks</h2>
+  <div id="networkList"></div>
+  <div class="row-item" style="display:block;margin-top:0.6rem;padding-top:0.8rem;border-top:1px solid rgba(20,20,15,0.12);">
+    <input id="newSsid" type="text" placeholder="Network name (SSID)"
+      style="width:100%;margin-bottom:0.5rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
+    <input id="newPass" type="password" placeholder="Password (blank = open network)"
+      style="width:100%;margin-bottom:0.5rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
+    <button class="accent" id="addNetBtn">+ Add network</button>
+  </div>
+  <button class="accent" id="reconnectBtn" style="margin-top:0.6rem;">↻ Reconnect WiFi</button>
 </div>
 
 <div class="card">
@@ -959,8 +967,8 @@ async function refresh() {
     wifiValue.textContent = info.ip;
     wifiValue.className = "value ok";
   } else {
-    wifiValue.textContent = "working offline";
-    wifiValue.className = "value warn";
+    wifiValue.textContent = "WiFi off";
+    wifiValue.className = "value";
   }
   document.getElementById("reconnectBtn").disabled = info.wifiConnected;
 
@@ -991,6 +999,93 @@ async function refresh() {
     document.getElementById("textValue").textContent = "-";
   }
 }
+
+function renderNetworks(ssids) {
+  const container = document.getElementById("networkList");
+  container.innerHTML = "";
+  if (ssids.length === 0) {
+    container.innerHTML = '<div class="row-item"><span class="label">No networks saved</span></div>';
+    return;
+  }
+  ssids.forEach((ssid) => {
+    const row = document.createElement("div");
+    row.className = "row-item";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = ssid;
+    const actions = document.createElement("span");
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.style.cssText = "width:auto;padding:0.3rem 0.6rem;";
+    editBtn.onclick = () => startEditNetwork(row, ssid);
+    const removeBtn = document.createElement("button");
+    removeBtn.className = "danger";
+    removeBtn.textContent = "Remove";
+    removeBtn.style.cssText = "width:auto;padding:0.3rem 0.6rem;margin-left:0.4rem;";
+    removeBtn.onclick = () => removeNetwork(ssid);
+    actions.appendChild(editBtn);
+    actions.appendChild(removeBtn);
+    row.appendChild(label);
+    row.appendChild(actions);
+    container.appendChild(row);
+  });
+}
+
+function startEditNetwork(row, ssid) {
+  row.innerHTML = "";
+  const input = document.createElement("input");
+  input.type = "password";
+  input.placeholder = "New password";
+  input.style.cssText = "flex:1;margin-right:0.5rem;";
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Save";
+  saveBtn.style.cssText = "width:auto;";
+  saveBtn.onclick = async () => {
+    if (!input.value) return; // blank = no-op, same guard as keySaveBtn
+    const form = new URLSearchParams();
+    form.set("ssid", ssid);
+    form.set("password", input.value);
+    const res = await fetch("/api/wifi/networks/update", { method: "POST", body: form });
+    document.getElementById("status").textContent = res.ok ? "Network updated." : "Update failed: " + (await res.text());
+    loadNetworks();
+  };
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.style.cssText = "width:auto;margin-left:0.4rem;";
+  cancelBtn.onclick = loadNetworks;
+  row.appendChild(input);
+  row.appendChild(saveBtn);
+  row.appendChild(cancelBtn);
+}
+
+async function removeNetwork(ssid) {
+  if (!confirm(`Remove "${ssid}" from saved networks?`)) return;
+  const form = new URLSearchParams();
+  form.set("ssid", ssid);
+  const res = await fetch("/api/wifi/networks/remove", { method: "POST", body: form });
+  document.getElementById("status").textContent = res.ok ? "Network removed." : "Remove failed: " + (await res.text());
+  loadNetworks();
+}
+
+async function loadNetworks() {
+  const res = await fetch("/api/wifi/networks");
+  const data = await res.json();
+  renderNetworks(data.networks);
+}
+
+document.getElementById("addNetBtn").onclick = async () => {
+  const ssidInput = document.getElementById("newSsid");
+  const passInput = document.getElementById("newPass");
+  if (!ssidInput.value) return;
+  const form = new URLSearchParams();
+  form.set("ssid", ssidInput.value);
+  form.set("password", passInput.value);
+  const res = await fetch("/api/wifi/networks", { method: "POST", body: form });
+  document.getElementById("status").textContent = res.ok ? "Network added." : "Add failed: " + (await res.text());
+  ssidInput.value = "";
+  passInput.value = "";
+  loadNetworks();
+};
 
 let pollTimer = null;
 
@@ -1069,6 +1164,7 @@ document.getElementById("forgetBtn").onclick = async () => {
 };
 
 refresh();
+loadNetworks();
 </script>
 </body>
 </html>
@@ -1192,6 +1288,73 @@ static void handle_settings_set_ai_key() {
     }
     ai_provider_set_api_key(key.c_str());
     server.send(200, "text/plain", "OK");
+}
+
+// GET /api/wifi/networks - SSID-only list for the Settings page's WiFi
+// Networks card. Never returns a password - same "never echo a saved
+// secret back" rule handle_settings_info() applies to the AI key.
+static void handle_wifi_list() {
+    JsonDocument doc;
+    JsonArray arr = doc["networks"].to<JsonArray>();
+    char ssid[WIFI_SSID_MAX_LEN + 1];
+    int count = wifi_saved_network_count();
+    for (int i = 0; i < count; i++) {
+        if (wifi_get_saved_network_ssid(i, ssid, sizeof(ssid))) arr.add(ssid);
+    }
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+// POST /api/wifi/networks (ssid, password) - adds a network to the saved
+// list (wifi_manager.h). password may be empty (open network). Rejects a
+// duplicate ssid (use the update route instead), a full list, or
+// oversized fields.
+static void handle_wifi_add() {
+    if (!server.hasArg("ssid") || server.arg("ssid").length() == 0) {
+        server.send(400, "text/plain", "Missing ssid");
+        return;
+    }
+    String ssid = server.arg("ssid");
+    String password = server.hasArg("password") ? server.arg("password") : "";
+    if (ssid.length() > WIFI_SSID_MAX_LEN) {
+        server.send(400, "text/plain", "SSID too long");
+        return;
+    }
+    if (password.length() > WIFI_PASSWORD_MAX_LEN) {
+        server.send(400, "text/plain", "Password too long");
+        return;
+    }
+    bool ok = wifi_add_network(ssid.c_str(), password.c_str());
+    server.send(ok ? 200 : 400, "text/plain", ok ? "OK" : "Already saved or list full");
+}
+
+// POST /api/wifi/networks/update (ssid, password) - the Edit action: retype-
+// only, same convention as the AI key field (never prefilled, blank means
+// no-op) - SETTINGS_HTML's startEditNetwork() never submits this with a
+// blank password, so a missing/empty one here is treated as a bad request
+// rather than "keep existing".
+static void handle_wifi_update() {
+    if (!server.hasArg("ssid") || !server.hasArg("password") || server.arg("password").length() == 0) {
+        server.send(400, "text/plain", "Missing ssid or password");
+        return;
+    }
+    if (server.arg("password").length() > WIFI_PASSWORD_MAX_LEN) {
+        server.send(400, "text/plain", "Password too long");
+        return;
+    }
+    bool ok = wifi_update_network_password(server.arg("ssid").c_str(), server.arg("password").c_str());
+    server.send(ok ? 200 : 404, "text/plain", ok ? "OK" : "Not found");
+}
+
+// POST /api/wifi/networks/remove (ssid).
+static void handle_wifi_remove() {
+    if (!server.hasArg("ssid")) {
+        server.send(400, "text/plain", "Missing ssid");
+        return;
+    }
+    bool ok = wifi_remove_network(server.arg("ssid").c_str());
+    server.send(ok ? 200 : 404, "text/plain", ok ? "OK" : "Not found");
 }
 
 // GET /api/transcript-key - the one deliberate exception to
@@ -1486,6 +1649,10 @@ static WebServer::THandlerFunction with_activity(WebServer::THandlerFunction han
 }
 
 void web_server_start() {
+    static bool serverStarted = false;
+    if (serverStarted) return;
+    serverStarted = true;
+
     server.on("/", HTTP_GET, with_activity(handle_root));
     server.on("/settings", HTTP_GET, with_activity(handle_settings_page));
     server.on("/api/settings", HTTP_GET, with_activity(handle_settings_info));
@@ -1493,6 +1660,10 @@ void web_server_start() {
     server.on("/api/settings/forget", HTTP_POST, with_activity(handle_settings_forget));
     server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
     server.on("/api/settings/idle-timeout", HTTP_POST, with_activity(handle_settings_set_idle_timeout));
+    server.on("/api/wifi/networks", HTTP_GET, with_activity(handle_wifi_list));
+    server.on("/api/wifi/networks", HTTP_POST, with_activity(handle_wifi_add));
+    server.on("/api/wifi/networks/update", HTTP_POST, with_activity(handle_wifi_update));
+    server.on("/api/wifi/networks/remove", HTTP_POST, with_activity(handle_wifi_remove));
     server.on("/api/transcript-key", HTTP_GET, with_activity(handle_get_transcript_key));
     server.on("/api/transcript", HTTP_POST, with_activity(handle_save_transcript));
     server.on("/api/files", HTTP_GET, with_activity(handle_list));
