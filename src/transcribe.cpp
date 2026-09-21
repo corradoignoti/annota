@@ -1,11 +1,11 @@
 #include "transcribe.h"
 
-#include <WiFi.h>
 #include <cstring>
 
 #include "display.h"
 #include "sleep.h"
 #include "ui.h"
+#include "web_server.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -41,21 +41,37 @@ void transcribe_process_pending() {
 
     ui_show_transcribe_progress(transcribeTargetFilename);
 
-    // Transcribing needs the AI provider's network API. Recording,
-    // deleting, and previewing all work fine offline (see wifi_manager.h),
-    // so this is the one place that needs the device online - retry the
-    // saved network once here rather than making the user go find
-    // "Reconnect WiFi" first.
-    if (WiFi.status() != WL_CONNECTED && !wifi_ensure_connected()) {
-        sleep_reset_activity();
-        ui_show_transcribe_result(false, "No WiFi connection.");
-        return;
+    // WiFi is off by default (see wifi_manager.h) - transcribing is the
+    // one place that needs the device online. Only turn it on (and take
+    // responsibility for turning it back off below) if it wasn't already
+    // on for some other reason, e.g. a manual Online session browsing the
+    // web file manager - that session shouldn't get cut out from under the
+    // user just because an on-device transcription also ran.
+    bool wifiWasOnAlready = wifi_is_connected();
+    bool weTurnedWifiOn = false;
+    if (!wifiWasOnAlready) {
+        if (!wifi_ensure_connected()) {
+            // wifi_ensure_connected() already powered the radio back off
+            // on failure - nothing left to clean up here.
+            sleep_reset_activity();
+            ui_show_transcribe_result(false, "No WiFi connection.");
+            return;
+        }
+        weTurnedWifiOn = true;
+        // Idempotent - may be the first WiFi connection since boot, since
+        // boot no longer auto-connects.
+        web_server_start();
     }
 
     display_suspend_touch();
     char err[96];
     bool ok = ai_transcribe_file(transcribeTargetFilename, err, sizeof(err));
     display_resume_touch();
+
+    // Turn back off before the result screen paints, so the header
+    // doesn't flash a stale "connected" status - header_label persists
+    // across every screen, including kTranscribeResult.
+    if (weTurnedWifiOn) wifi_go_offline();
 
     // A big/slow upload can easily run past sleep.h's idle timeout on its
     // own - without this, sleep_process_idle() (running right after this

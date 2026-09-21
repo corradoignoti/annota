@@ -4,8 +4,10 @@
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
+#include <qrcode.h>  // ricmoo/QRCode - kWifiJoined/kWifiApActive's scannable QR codes
 
 #include "display.h"
+#include "fonts_it.h"
 #include "sleep.h"
 #include "speaker.h"
 #include "storage.h"
@@ -14,8 +16,8 @@
 
 // -----------------------------------------------------------------------
 // The on-device screen: WiFi status, a scrollable file list, and per-file
-// Transcribe/Delete - deliberately small in scope (no on-device Settings,
-// WiFi credential entry, or text-file preview - all of those stay on the
+// Transcribe/Delete/View (.txt files only) - deliberately small in scope
+// (no on-device Settings or WiFi credential entry - those stay on the
 // existing web UI; see web_server.cpp). The panel is 200x200 mono with
 // only 2 buttons and a slow (~1-2s) refresh, so this is a small explicit
 // state machine driven by display.h's display_button_poll(), not a
@@ -51,8 +53,14 @@ enum class Screen {
     kTranscribeResult,
     kDetails,
     kSleeping,
-    kForgetWifiConfirm,
+    kWifiManage,
+    kWifiApActive,
+    kWifiJoined,
     kRebootConfirm,
+    kTextView,
+    kWifiScanning,
+    kWifiJoinList,
+    kHome,
 };
 
 static const int16_t HEADER_H = 20;
@@ -70,8 +78,9 @@ static bool sd_present = false;
 static Screen state = Screen::kNoCard;
 
 // kList. showing_audio_files: true while mp3Files/mp3FileCount hold
-// AUDIO_EXTS, false while showing .txt - toggled by a long Next press
-// (see ui_process_input()'s kList case).
+// AUDIO_EXTS, false while showing .txt - set by picking Audio/Text on
+// kHome (see ui_process_input()'s kHome case; reached from kList via a
+// long Next press).
 static bool showing_audio_files = true;
 static size_t selected_index = 0;
 static size_t top_index = 0;
@@ -95,8 +104,45 @@ static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
 
+// kTextView - text_view_buffer holds the .txt file's content (read via
+// read_text_file_preview() when View is picked from kActionMenu), truncated
+// to fit; transcripts are short speech-to-text output, comfortably under
+// this size. text_view_scroll_px is the label's current negative y offset,
+// clamped in render_body() to the label's actual laid-out height.
+static char text_view_buffer[8192];
+static int32_t text_view_scroll_px = 0;
+static const int16_t TEXT_VIEW_SCROLL_STEP = 60; // ~3-4 lines at 14pt
+
 // kWifiSetup
 static char wifi_setup_ssid[64];
+
+// kWifiApActive
+static char wifi_ap_message[96];
+
+// kWifiJoined
+static char wifi_joined_message[96];
+static char wifi_joined_url[64];  // just the URL, separately from the sentence above - encoded into the QR code
+
+// kWifiApActive - STANDALONE_AP_SSID (wifi_manager.cpp) is a fixed literal
+// with no password, so unlike wifi_joined_url above this needs no runtime
+// buffer, just the WiFi-network-config QR payload format phones' camera
+// apps recognize (T:nopass - an open network, so no P: field).
+static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
+
+// QR code rendering, shared by kWifiJoined (its http:// URL) and
+// kWifiApActive (the AP's join string above) - only one of the two is ever
+// on screen at once, so they share one canvas backing buffer too. Version 3
+// (29x29 modules) at ECC_LOW gives 53 bytes of byte-mode capacity,
+// comfortably more than either payload ever needs. Scaled up 3px/module
+// (87x87 canvas) onto an RGB565 lv_canvas, drawn pixel-exact (no lv_image
+// zoom/interpolation) since this display thresholds everything to 1bpp on
+// flush and blurred edges would threshold unpredictably.
+static const uint8_t WIFI_QR_VERSION = 3;
+static const uint8_t WIFI_QR_SCALE = 3;
+static const uint8_t WIFI_QR_MODULES = WIFI_QR_VERSION * 4 + 17;
+static const uint16_t WIFI_QR_BUFFER_SIZE = (WIFI_QR_MODULES * WIFI_QR_MODULES + 7) / 8;
+static const int16_t WIFI_QR_PX = WIFI_QR_MODULES * WIFI_QR_SCALE;
+static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -168,23 +214,24 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_label_set_text_fmt(label, "%s  %s", icon, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
 }
 
-// kList's own top row: an icon, the Audio/Text mode label and file count,
-// with a bottom border separating it from the cards below - not a card
-// itself (never selectable), so it's built directly rather than through
-// add_row(). `scrollable` - true once the list has more rows than
-// VISIBLE_ROWS can show at once - draws a small down-arrow at the row's
-// right edge (mirrors build_main_screen()'s right-aligned status icons)
-// as the only hint that Next still reveals more: this list has no
-// scrollbar, and Next wraps around rather than stopping at the last item
-// (see ui_process_input()'s kList case), so the arrow stays fixed rather
-// than tracking top_index/whether the view is currently at the bottom -
-// there's always "more" to scroll to either way.
-static void render_list_header(size_t count, bool scrollable) {
+// A windowed list's top row: a leading icon, a label, and a bottom border
+// separating it from the cards below - not a card itself (never
+// selectable), so it's built directly rather than through add_row().
+// `scrollable` - true once the list has more rows than VISIBLE_ROWS can
+// show at once - draws a small down-arrow at the row's right edge (mirrors
+// build_main_screen()'s right-aligned status icons) as the only hint that
+// Next still reveals more: this list has no scrollbar, and Next wraps
+// around rather than stopping at the last item (see ui_process_input()'s
+// kList case), so the arrow stays fixed rather than tracking top_index/
+// whether the view is currently at the bottom - there's always "more" to
+// scroll to either way. Shared by kList (icon/label built from
+// showing_audio_files) and kWifiJoinList (its own icon/label).
+static void render_list_header(const char *icon, const char *label_text, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
     lv_obj_set_size(hdr, SCREEN_W, ROW_H);
@@ -195,19 +242,60 @@ static void render_list_header(size_t count, bool scrollable) {
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(hdr);
-    lv_label_set_text_fmt(label, "%s  %s (%u)", showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
-                           showing_audio_files ? "Audio Files" : "Text Files", (unsigned)count);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    lv_label_set_text_fmt(label, "%s  %s", icon, label_text);
+    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
 
     if (scrollable) {
         lv_obj_t *more = lv_label_create(hdr);
         lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(more, &lv_font_it_14, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
         lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
     }
+}
+
+// A scannable QR code plus a wrapped caption below it, filling body - used
+// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
+// string) instead of add_info_card()'s icon+text layout, since a QR code
+// needs far more of body's limited space than a symbol-font glyph does.
+// See WIFI_QR_* above for the encoding/rendering choices.
+static void add_qr_screen(const char *qr_data, const char *caption) {
+    lv_obj_t *cont = lv_obj_create(body);
+    lv_obj_remove_style_all(cont);
+    lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(cont, 4, 0);
+
+    QRCode qr;
+    uint8_t qr_bytes[WIFI_QR_BUFFER_SIZE];
+    if (qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
+        lv_obj_t *canvas = lv_canvas_create(cont);
+        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
+        lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
+        for (uint8_t my = 0; my < qr.size; my++) {
+            for (uint8_t mx = 0; mx < qr.size; mx++) {
+                if (!qrcode_getModule(&qr, mx, my)) continue;
+                for (uint8_t py = 0; py < WIFI_QR_SCALE; py++) {
+                    for (uint8_t px = 0; px < WIFI_QR_SCALE; px++) {
+                        lv_canvas_set_px(canvas, mx * WIFI_QR_SCALE + px, my * WIFI_QR_SCALE + py,
+                                         lv_color_black(), LV_OPA_COVER);
+                    }
+                }
+            }
+        }
+    }
+
+    lv_obj_t *msg = lv_label_create(cont);
+    lv_label_set_text(msg, caption);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, SCREEN_W - 16);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_it_10, 0);
+    lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
@@ -235,7 +323,7 @@ static void add_info_card(const char *icon, const char *text) {
     if (icon && icon[0]) {
         lv_obj_t *icon_label = lv_label_create(card);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_font(icon_label, &lv_font_it_28, 0);
         lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
     }
 
@@ -244,7 +332,7 @@ static void add_info_card(const char *icon, const char *text) {
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, card_w - pad * 2);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(msg, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
     lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
@@ -268,7 +356,7 @@ static void add_hint(const char *text) {
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(hint, &lv_font_it_10, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
@@ -299,7 +387,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_it_14, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
     lv_obj_set_pos(title_label, 6, pad);
@@ -330,11 +418,15 @@ static void render_body() {
 
         case Screen::kList: {
             size_t count = list_item_count();
-            render_list_header(mp3FileCount, count > (size_t)VISIBLE_ROWS);
+            char header_label[24];
+            snprintf(header_label, sizeof(header_label), "%s (%u)", showing_audio_files ? "Audio Files" : "Text Files",
+                     (unsigned)mp3FileCount);
+            render_list_header(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE, header_label,
+                                count > (size_t)VISIBLE_ROWS);
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
-                add_hint("Sel(hold): menu   Next(hold): switch");
+                add_hint("Sel(hold): menu   Next(hold): home");
                 break;
             }
             clamp_selection();
@@ -346,7 +438,30 @@ static void render_body() {
                 add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move, hold: switch   Sel: open, hold: menu");
+            add_hint("Next: move, hold: home   Sel: open, hold: menu");
+            break;
+        }
+
+        // Reached from kList via a long Next press (see
+        // ui_process_input()'s kList case) - a horizontal carousel of 3
+        // cells, one full-screen icon+label card shown at a time
+        // (add_info_card(), same helper kNoCard/kMicError/etc. use),
+        // paged by Next; the hint bar's "(n/3)" is the position indicator
+        // (this font has no page-dot glyphs baked in, so text stays the
+        // safe choice - same idiom as "Audio Files (N)" above). Select
+        // confirms: Audio/Text set showing_audio_files and open kList
+        // (what the old long-Next toggle used to do directly); File
+        // transfer hands off to wifi_manager.h's request/process split
+        // (see ui_process_input()'s kHome case for why state isn't
+        // touched here for that branch).
+        case Screen::kHome: {
+            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD};
+            static const char *labels[] = {"Audio", "Text", "File transfer"};
+            render_list_header(LV_SYMBOL_HOME, "Home", false);
+            add_info_card(icons[menu_index], labels[menu_index]);
+            char hint[48];
+            snprintf(hint, sizeof(hint), "Next: cycle (%d/3)   Select: choose, hold: back", (int)menu_index + 1);
+            add_hint(hint);
             break;
         }
 
@@ -380,9 +495,9 @@ static void render_body() {
                 static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "Cancel"};
                 render_option_menu(active_filename, icons, options, 5);
             } else {
-                static const char *icons[] = {LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Details", "Delete", "Cancel"};
-                render_option_menu(active_filename, icons, options, 3);
+                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"View", "Details", "Delete", "Cancel"};
+                render_option_menu(active_filename, icons, options, 4);
             }
             break;
         }
@@ -397,6 +512,37 @@ static void render_body() {
             break;
         }
 
+        case Screen::kTextView: {
+            const int16_t viewport_h = SCREEN_H - HEADER_H - HINT_H;
+            lv_obj_t *viewport = lv_obj_create(body);
+            lv_obj_remove_style_all(viewport);
+            lv_obj_set_size(viewport, SCREEN_W, viewport_h);
+            lv_obj_set_pos(viewport, 0, 0);
+            lv_obj_set_style_pad_all(viewport, 4, 0);
+            lv_obj_clear_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *label = lv_label_create(viewport);
+            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(label, SCREEN_W - 8);
+            lv_label_set_text(label, text_view_buffer);
+            lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_color(label, lv_color_black(), 0);
+
+            // Clip via a fixed-height parent (LVGL's default child-clip
+            // behavior) with the label's y offset doing the "scrolling" -
+            // same reasoning as kList's manual pagination: nothing in this
+            // file uses lv_obj_scroll*(). Height is only known after
+            // layout, so it's read back to clamp before the final position.
+            lv_obj_update_layout(label);
+            int32_t max_scroll = lv_obj_get_height(label) - (viewport_h - 8);
+            if (max_scroll < 0) max_scroll = 0;
+            if (text_view_scroll_px > max_scroll) text_view_scroll_px = max_scroll;
+            lv_obj_set_y(label, -text_view_scroll_px);
+
+            add_hint("Select: down   Next: up, hold Sel: close");
+            break;
+        }
+
         case Screen::kDeleteConfirm: {
             char title[96];
             snprintf(title, sizeof(title), "Delete %s?", active_filename);
@@ -406,10 +552,77 @@ static void render_body() {
             break;
         }
 
-        case Screen::kForgetWifiConfirm: {
-            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-            static const char *options[] = {"Forget & reboot", "Cancel"};
-            render_option_menu("Forget saved WiFi?", icons, options, 2);
+        // Full-screen, not render_option_menu()'s small floating panel -
+        // only two items, so the extra room reads as a dedicated screen
+        // rather than a transient menu. Header bar follows
+        // render_list_header()'s look (border-bottom title row); rows are
+        // the same add_row() cards kList's own rows use, full body width.
+        case Screen::kWifiManage: {
+            lv_obj_t *hdr = lv_obj_create(body);
+            lv_obj_remove_style_all(hdr);
+            lv_obj_set_size(hdr, SCREEN_W, ROW_H);
+            lv_obj_set_pos(hdr, 0, 0);
+            lv_obj_set_style_border_width(hdr, 1, 0);
+            lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
+            lv_obj_set_style_border_color(hdr, lv_color_black(), 0);
+            lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *hdr_label = lv_label_create(hdr);
+            lv_label_set_text(hdr_label, LV_SYMBOL_WIFI "  WiFi");
+            lv_obj_set_style_text_font(hdr_label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_color(hdr_label, lv_color_black(), 0);
+            lv_obj_align(hdr_label, LV_ALIGN_LEFT_MID, 6, -1);
+
+            static const char *icons[] = {LV_SYMBOL_WIFI, LV_SYMBOL_UPLOAD};
+            static const char *options[] = {"Join an access point", "Create an AP"};
+            int16_t y = ROW_H;
+            for (int i = 0; i < 2; i++) {
+                add_row(body, 4, y, SCREEN_W - 8, icons[i], options[i], i == menu_index);
+                y += ROW_H;
+            }
+            add_hint("Next: cycle   Select: choose, hold: back");
+            break;
+        }
+
+        case Screen::kWifiApActive:
+            add_qr_screen(WIFI_AP_QR_DATA, wifi_ap_message);
+            add_hint("Select: stop AP");
+            break;
+
+        case Screen::kWifiJoined:
+            add_qr_screen(wifi_joined_url, wifi_joined_message);
+            add_hint("Select: close, WiFi off");
+            break;
+
+        case Screen::kWifiScanning:
+            add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
+            break;
+
+        case Screen::kWifiJoinList: {
+            int count = wifi_scan_in_range_count();
+            if (count == 0) {
+                add_info_card(LV_SYMBOL_WARNING, "No known networks in range.");
+                add_hint("Select: close");
+                break;
+            }
+            // Shares selected_index/top_index with kList - the two screens
+            // are never shown at the same time, same as kActionMenu sharing
+            // menu_index with kWifiManage.
+            if (selected_index >= (size_t)count) selected_index = count - 1;
+            if (selected_index < top_index) top_index = selected_index;
+            if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
+
+            char header_label[24];
+            snprintf(header_label, sizeof(header_label), "Networks (%u)", (unsigned)count);
+            render_list_header(LV_SYMBOL_WIFI, header_label, count > VISIBLE_ROWS);
+            int16_t y = ROW_H;
+            for (size_t i = top_index; i < (size_t)count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
+                char ssid[WIFI_SSID_MAX_LEN + 1];
+                wifi_scan_get_in_range_ssid(i, ssid, sizeof(ssid));
+                add_row(body, 4, y, SCREEN_W - 8, LV_SYMBOL_WIFI, ssid, i == selected_index);
+                y += ROW_H;
+            }
+            add_hint("Next: move   Select: join, hold: back");
             break;
         }
 
@@ -438,6 +651,7 @@ static void render_body() {
             char msg[128];
             snprintf(msg, sizeof(msg), "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", wifi_setup_ssid);
             add_info_card(LV_SYMBOL_WIFI, msg);
+            add_hint("Hold Select: work offline");
             break;
         }
 
@@ -478,7 +692,7 @@ void build_main_screen(bool sdPresent) {
     lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     header_label = lv_label_create(header_bar);
-    lv_obj_set_style_text_font(header_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(header_label, &lv_font_it_12, 0);
     lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
     lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(header_label, "");
@@ -499,7 +713,7 @@ void build_main_screen(bool sdPresent) {
     lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
 
     battery_label = lv_label_create(status_icons);
-    lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(battery_label, &lv_font_it_12, 0);
     lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
     lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
     battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
@@ -507,7 +721,7 @@ void build_main_screen(bool sdPresent) {
     if (sdPresent) {
         lv_obj_t *sd_icon = lv_label_create(status_icons);
         lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
-        lv_obj_set_style_text_font(sd_icon, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(sd_icon, &lv_font_it_12, 0);
         lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
     }
 
@@ -564,6 +778,22 @@ void ui_hide_wifi_setup_dialog() {
 // No Settings view here to refresh a retry button on - see ui.h's comment.
 void ui_refresh_wifi_retry_button() {}
 
+void ui_show_wifi_joined_screen(const char *ip) {
+    snprintf(wifi_joined_message, sizeof(wifi_joined_message),
+             "Connected. Open http://%s in a browser for settings or file transfer.", ip);
+    snprintf(wifi_joined_url, sizeof(wifi_joined_url), "http://%s", ip);
+    state = Screen::kWifiJoined;
+    render_body();
+    lv_timer_handler();
+}
+
+void ui_show_wifi_manage_screen() {
+    state = Screen::kWifiManage;
+    menu_index = 0;
+    render_body();
+    lv_timer_handler();
+}
+
 void ui_show_transcribe_progress(const char *filename) {
     strncpy(transcribe_filename, filename, sizeof(transcribe_filename) - 1);
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
@@ -582,7 +812,8 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 bool ui_is_sleep_blocked() {
-    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress;
+    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
+           state == Screen::kWifiApActive || state == Screen::kWifiJoined;
 }
 
 void ui_show_sleep_screen() {
@@ -597,6 +828,15 @@ void ui_process_input() {
     // loop() iteration, not just on a button edge like everything below.
     speaker_process();
     mic_process();
+    if (state == Screen::kWifiScanning && wifi_scan_status() != WifiScanStatus::kRunning) {
+        // Same unconditional-pump idiom as speaker_process()/mic_process()
+        // above - wifi_scan_status() is a cheap, non-blocking check, safe
+        // to call every loop() iteration while waiting.
+        selected_index = 0;
+        top_index = 0;
+        state = Screen::kWifiJoinList;
+        render_body();
+    }
     if (state == Screen::kPlaying && !speaker_is_playing()) {
         // Track ended on its own (no Select press involved) - leave the
         // Playing screen the same way Select does.
@@ -623,7 +863,7 @@ void ui_process_input() {
         sleep_reset_activity();
         if (state == Screen::kRecording) mic_stop_recording();
         if (state == Screen::kPlaying) speaker_stop();
-        state = Screen::kForgetWifiConfirm;
+        state = Screen::kWifiManage;
         menu_index = 0;
         render_body();
         return;
@@ -655,10 +895,8 @@ void ui_process_input() {
         case Screen::kList:
             if (nextEv == DisplayButtonEvent::kLong) {
                 select_press_pending = false; // leaving kList's row set - drop any held-back press
-                showing_audio_files = !showing_audio_files;
-                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
-                selected_index = 0;
-                top_index = 0;
+                menu_index = 0;
+                state = Screen::kHome;
                 render_body();
                 break;
             }
@@ -724,6 +962,32 @@ void ui_process_input() {
             }
             break;
 
+        case Screen::kHome:
+            if (nextEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 1) % 3;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kList;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                if (menu_index == 0 || menu_index == 1) {
+                    showing_audio_files = (menu_index == 0);
+                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                    selected_index = 0;
+                    top_index = 0;
+                    state = Screen::kList;
+                    render_body();
+                } else {
+                    // Don't touch state/render here - wifi_manager.h's
+                    // wifi_process_pending_file_transfer() (called right
+                    // after this, same loop() iteration - see main.cpp)
+                    // shows its own status/result screens, same reasoning
+                    // as kActionMenu's Transcribe case above.
+                    wifi_request_file_transfer();
+                }
+            }
+            break;
+
         // Refresh / Offline↔Online / Close - opened by a long Select press
         // from kList (see above). Offline/Online reuses the exact same
         // wifi_manager.h calls the web UI's Settings page drives
@@ -766,7 +1030,7 @@ void ui_process_input() {
 
         // Reboot needs its own confirm - unlike Refresh/Offline-Online,
         // it's disruptive enough (drops whatever's on screen, same as a
-        // power cycle) to warrant the same guard as Delete/Forget-WiFi
+        // power cycle) to warrant the same guard as Delete/WiFi-management
         // below rather than firing straight off the menu row.
         case Screen::kRebootConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
@@ -788,9 +1052,9 @@ void ui_process_input() {
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
             // {Play, Transcribe, Details, Delete, Cancel} for audio,
-            // {Details, Delete, Cancel} for .txt (no Play/Transcribe there
-            // - see that comment).
-            int optionCount = showing_audio_files ? 5 : 3;
+            // {View, Details, Delete, Cancel} for .txt (no Play/Transcribe
+            // there - see that comment).
+            int optionCount = showing_audio_files ? 5 : 4;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -811,10 +1075,15 @@ void ui_process_input() {
                     // moments from now, so redrawing the list first here
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
-                } else if (menu_index == (showing_audio_files ? 2 : 0)) {
+                } else if (!showing_audio_files && menu_index == 0) {
+                    read_text_file_preview(active_filename, text_view_buffer, sizeof(text_view_buffer));
+                    text_view_scroll_px = 0;
+                    state = Screen::kTextView;
+                    render_body();
+                } else if (menu_index == (showing_audio_files ? 2 : 1)) {
                     state = Screen::kDetails;
                     render_body();
-                } else if (menu_index == (showing_audio_files ? 3 : 1)) {
+                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -893,10 +1162,24 @@ void ui_process_input() {
             }
             break;
 
+        case Screen::kTextView:
+            if (selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kList;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                text_view_scroll_px += TEXT_VIEW_SCROLL_STEP;
+                render_body(); // clamps to content height itself
+            } else if (nextEv == DisplayButtonEvent::kShort) {
+                text_view_scroll_px -= TEXT_VIEW_SCROLL_STEP;
+                if (text_view_scroll_px < 0) text_view_scroll_px = 0;
+                render_body();
+            }
+            break;
+
         case Screen::kSleeping:
             break; // device deep-sleeps right after showing this - never reached
 
-        case Screen::kForgetWifiConfirm:
+        case Screen::kWifiManage:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
@@ -905,10 +1188,75 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    // Never returns (ESP.restart()) - no state/render
-                    // needed after.
-                    wifi_forget_and_reboot();
+                    // Non-blocking (WiFi.scanNetworks(true) returns right
+                    // away, the scan itself runs in the background) - safe
+                    // to call directly here, same reasoning as
+                    // wifi_start_standalone_ap() below. ui_process_input()'s
+                    // per-tick poll above picks up completion and moves on
+                    // to kWifiJoinList.
+                    wifi_start_scan();
+                    state = Screen::kWifiScanning;
+                } else {
+                    // Non-blocking, safe to call directly here - shows
+                    // the AP's IP on kWifiApActive instead of falling
+                    // back to kList.
+                    char ip[16];
+                    wifi_start_standalone_ap(ip, sizeof(ip));
+                    snprintf(wifi_ap_message, sizeof(wifi_ap_message),
+                             "Connect to WiFi \"Annota-AP\", then open http://%s in a browser.", ip);
+                    state = Screen::kWifiApActive;
                 }
+                render_body();
+            }
+            break;
+
+        case Screen::kWifiScanning:
+            break; // ui_process_input()'s per-tick poll above moves this along, not a button press
+
+        case Screen::kWifiJoinList: {
+            int count = wifi_scan_in_range_count();
+            if (count == 0) {
+                if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                    state = Screen::kWifiManage;
+                    menu_index = 0;
+                    render_body();
+                }
+                break;
+            }
+            if (nextEv == DisplayButtonEvent::kShort) {
+                selected_index = (selected_index + 1) % count;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                // "Previous screen" = the menu this list was opened from,
+                // same one-level-back convention as every other screen here.
+                state = Screen::kWifiManage;
+                menu_index = 0;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                char ssid[WIFI_SSID_MAX_LEN + 1];
+                wifi_scan_get_in_range_ssid(selected_index, ssid, sizeof(ssid));
+                // wifi_process_pending_join() (loop(), after
+                // lv_timer_handler()) does the actual blocking connect and
+                // paints its own status - same reasoning as the reconnect/
+                // setup-portal request/process splits elsewhere in this file.
+                wifi_request_join_network(ssid);
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+        }
+
+        case Screen::kWifiApActive:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                wifi_go_offline();
+                state = sd_present ? Screen::kList : Screen::kNoCard;
+                render_body();
+            }
+            break;
+
+        case Screen::kWifiJoined:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                wifi_go_offline();
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }
