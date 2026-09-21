@@ -57,6 +57,14 @@ void ui_refresh_wifi_retry_button();
 // on its own.
 void ui_show_wifi_joined_screen(const char *ip);
 
+// Shows the WiFi management screen (join a saved network / create a
+// standalone AP - see ui_process_input()'s kWifiManage case) and forces
+// one repaint. Same push pattern as ui_show_wifi_joined_screen(). Called
+// by wifi_manager.cpp's wifi_process_pending_file_transfer() when the
+// Home screen's File transfer row couldn't connect (nothing saved, or
+// the attempt failed).
+void ui_show_wifi_manage_screen();
+
 // Shows a modal "Transcribing <filename>..." status, floated above
 // whatever's on screen (no buttons), and forces one LVGL repaint. Call
 // only from loop() (via transcribe.h's transcribe_process_pending()),

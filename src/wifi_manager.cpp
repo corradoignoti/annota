@@ -494,6 +494,24 @@ void wifi_process_pending_reconnect() {
     if (try_connect()) web_server_start();
 }
 
+// See wifi_manager.h's declaration.
+static volatile bool fileTransferRequested = false;
+
+void wifi_request_file_transfer() {
+    fileTransferRequested = true;
+}
+
+void wifi_process_pending_file_transfer() {
+    if (!fileTransferRequested) return;
+    fileTransferRequested = false;
+    if (wifi_ensure_connected()) {
+        web_server_start();
+        ui_show_wifi_joined_screen(WiFi.localIP().toString().c_str());
+    } else {
+        ui_show_wifi_manage_screen();
+    }
+}
+
 // -----------------------------------------------------------------------
 // On-device scan-and-join (ui_epaper.cpp's kWifiManage "Join an access
 // point"): which of the saved networks above are actually in range right
