@@ -13,6 +13,7 @@
 // -----------------------------------------------------------------------
 
 static const char *PORTAL_SSID = "Annota-Setup";
+static const char *STANDALONE_AP_SSID = "Annota-AP";
 static bool clockSynced = false;
 
 // Budget for reconnecting to the network already saved in NVS before
@@ -219,6 +220,52 @@ void wifi_start_boot_connect() {
 
 void wifi_request_reconnect() {
     reconnectRequested = true;
+}
+
+// Set by wifi_request_setup_portal(), consumed once by
+// wifi_process_pending_setup_portal() from loop() - same reentrancy
+// reasoning as reconnectRequested above.
+static volatile bool setupPortalRequested = false;
+
+void wifi_request_setup_portal() {
+    setupPortalRequested = true;
+}
+
+void wifi_process_pending_setup_portal() {
+    if (!setupPortalRequested) return;
+    setupPortalRequested = false;
+
+    bool connected = run_setup_portal();
+    if (connected) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " %s", WiFi.localIP().toString().c_str());
+        ui_set_wifi_status(msg);
+        Serial.println(msg);
+        sync_clock_via_ntp();
+        web_server_start();
+    } else {
+        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        Serial.println("WiFi: setup portal exited without a connection - continuing offline");
+    }
+    ui_refresh_wifi_retry_button();
+}
+
+void wifi_start_standalone_ap(char *ip_out, size_t ip_out_size) {
+    // See try_connect()'s comment: switching mode on a radio that was
+    // fully powered off (wifi_go_offline()'s esp_wifi_deinit(), or WiFi
+    // off by default at boot) needs a settle delay, or the AP comes up
+    // visible but rejects every association attempt - same re-init/
+    // reload race, just hit here via WIFI_AP instead of WIFI_STA.
+    WiFi.mode(WIFI_AP);
+    delay(100);
+    WiFi.softAP(STANDALONE_AP_SSID);  // no password, same convention as PORTAL_SSID
+    strncpy(ip_out, WiFi.softAPIP().toString().c_str(), ip_out_size - 1);
+    ip_out[ip_out_size - 1] = '\0';
+    char msg[64];
+    snprintf(msg, sizeof(msg), LV_SYMBOL_WIFI " AP: %s", STANDALONE_AP_SSID);
+    ui_set_wifi_status(msg);
+    web_server_start();
+    Serial.printf("WiFi: standalone AP '%s' started, IP %s\n", STANDALONE_AP_SSID, ip_out);
 }
 
 void wifi_process_pending_reconnect() {

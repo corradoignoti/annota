@@ -52,7 +52,8 @@ enum class Screen {
     kTranscribeResult,
     kDetails,
     kSleeping,
-    kForgetWifiConfirm,
+    kWifiManage,
+    kWifiApActive,
     kRebootConfirm,
     kTextView,
 };
@@ -108,6 +109,9 @@ static const int16_t TEXT_VIEW_SCROLL_STEP = 60; // ~3-4 lines at 14pt
 
 // kWifiSetup
 static char wifi_setup_ssid[64];
+
+// kWifiApActive
+static char wifi_ap_message[96];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -448,12 +452,42 @@ static void render_body() {
             break;
         }
 
-        case Screen::kForgetWifiConfirm: {
-            static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-            static const char *options[] = {"Forget & reboot", "Cancel"};
-            render_option_menu("Forget saved WiFi?", icons, options, 2);
+        // Full-screen, not render_option_menu()'s small floating panel -
+        // only two items, so the extra room reads as a dedicated screen
+        // rather than a transient menu. Header bar follows
+        // render_list_header()'s look (border-bottom title row); rows are
+        // the same add_row() cards kList's own rows use, full body width.
+        case Screen::kWifiManage: {
+            lv_obj_t *hdr = lv_obj_create(body);
+            lv_obj_remove_style_all(hdr);
+            lv_obj_set_size(hdr, SCREEN_W, ROW_H);
+            lv_obj_set_pos(hdr, 0, 0);
+            lv_obj_set_style_border_width(hdr, 1, 0);
+            lv_obj_set_style_border_side(hdr, LV_BORDER_SIDE_BOTTOM, 0);
+            lv_obj_set_style_border_color(hdr, lv_color_black(), 0);
+            lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *hdr_label = lv_label_create(hdr);
+            lv_label_set_text(hdr_label, LV_SYMBOL_WIFI "  WiFi");
+            lv_obj_set_style_text_font(hdr_label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_color(hdr_label, lv_color_black(), 0);
+            lv_obj_align(hdr_label, LV_ALIGN_LEFT_MID, 6, -1);
+
+            static const char *icons[] = {LV_SYMBOL_WIFI, LV_SYMBOL_UPLOAD};
+            static const char *options[] = {"Join an access point", "Create an AP"};
+            int16_t y = ROW_H;
+            for (int i = 0; i < 2; i++) {
+                add_row(body, 4, y, SCREEN_W - 8, icons[i], options[i], i == menu_index);
+                y += ROW_H;
+            }
+            add_hint("Next: cycle   Select: choose, hold: back");
             break;
         }
+
+        case Screen::kWifiApActive:
+            add_info_card(LV_SYMBOL_WIFI, wifi_ap_message);
+            add_hint("Select: stop AP");
+            break;
 
         case Screen::kPlaying: {
             char msg[96];
@@ -624,7 +658,8 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 bool ui_is_sleep_blocked() {
-    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress;
+    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
+           state == Screen::kWifiApActive;
 }
 
 void ui_show_sleep_screen() {
@@ -665,7 +700,7 @@ void ui_process_input() {
         sleep_reset_activity();
         if (state == Screen::kRecording) mic_stop_recording();
         if (state == Screen::kPlaying) speaker_stop();
-        state = Screen::kForgetWifiConfirm;
+        state = Screen::kWifiManage;
         menu_index = 0;
         render_body();
         return;
@@ -808,7 +843,7 @@ void ui_process_input() {
 
         // Reboot needs its own confirm - unlike Refresh/Offline-Online,
         // it's disruptive enough (drops whatever's on screen, same as a
-        // power cycle) to warrant the same guard as Delete/Forget-WiFi
+        // power cycle) to warrant the same guard as Delete/WiFi-management
         // below rather than firing straight off the menu row.
         case Screen::kRebootConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
@@ -957,7 +992,7 @@ void ui_process_input() {
         case Screen::kSleeping:
             break; // device deep-sleeps right after showing this - never reached
 
-        case Screen::kForgetWifiConfirm:
+        case Screen::kWifiManage:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
@@ -966,10 +1001,29 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    // Never returns (ESP.restart()) - no state/render
-                    // needed after.
-                    wifi_forget_and_reboot();
+                    // wifi_process_pending_setup_portal() (loop(), after
+                    // lv_timer_handler()) does the actual blocking work
+                    // and paints its own dialog - same reasoning as
+                    // Transcribe's request/process split above.
+                    wifi_request_setup_portal();
+                    state = sd_present ? Screen::kList : Screen::kNoCard;
+                } else {
+                    // Non-blocking, safe to call directly here - shows
+                    // the AP's IP on kWifiApActive instead of falling
+                    // back to kList.
+                    char ip[16];
+                    wifi_start_standalone_ap(ip, sizeof(ip));
+                    snprintf(wifi_ap_message, sizeof(wifi_ap_message),
+                             "Connect to WiFi \"Annota-AP\", then open http://%s in a browser.", ip);
+                    state = Screen::kWifiApActive;
                 }
+                render_body();
+            }
+            break;
+
+        case Screen::kWifiApActive:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                wifi_go_offline();
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }

@@ -64,6 +64,8 @@ void loop() {
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
+    // Same constraint - see wifi_request_setup_portal()'s comment.
+    wifi_process_pending_setup_portal();
     // Cheap no-op almost every call - see its own comment for the every-
     // 15-minutes check it actually does.
     wifi_process_periodic_check();

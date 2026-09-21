@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 // Prepares WiFi at boot (including a deep-sleep wakeup, which is a full
 // MCU reset - see sleep.h - so there's no separate wake-time path). WiFi
 // is off by default - it only turns on on-demand (see
@@ -73,6 +75,34 @@ void wifi_request_reconnect();
 // lv_timer_handler() to not already be running so its own status repaints
 // actually take effect.
 void wifi_process_pending_reconnect();
+
+// Same request/process split as wifi_request_reconnect()/
+// wifi_process_pending_reconnect() above, but for opening the
+// "Annota-Setup" captive-portal AP on demand (not just at first boot) so
+// a different network can be joined without wiping the one already
+// saved - WiFiManager's portal overwrites saved credentials on submit,
+// no explicit erase needed first. wifi_process_pending_setup_portal()
+// does the actual blocking wm.autoConnect() call and paints its own
+// dialog via ui_show_wifi_setup_dialog()/ui_hide_wifi_setup_dialog() -
+// same reentrancy constraint as wifi_process_pending_reconnect(): call
+// from loop() top level, never nested inside lv_timer_handler().
+void wifi_request_setup_portal();
+void wifi_process_pending_setup_portal();
+
+// Puts the radio into standalone soft-AP mode ("Annota-AP", no password)
+// and starts the web file manager on it, so a phone/laptop can reach it
+// directly with no router/internet involved at all - distinct from the
+// captive portal above, which is a join-a-network flow that happens to
+// use its own AP along the way. Non-blocking (WiFi.softAP() returns
+// immediately), so unlike the two request/process pairs above this is
+// safe to call directly from an LVGL callback. Writes the AP's IP
+// (dotted-quad text, e.g. "192.168.4.1") into ip_out (ip_out_size bytes)
+// so the caller can display it - same out-buffer idiom as
+// mic_start_recording()'s filename param. wifi_go_offline()'s
+// WiFi.disconnect(true) already tears this back down (mode-agnostic
+// esp_wifi_stop() under wifioff=true), so the existing on-device
+// Offline/Online toggle doubles as the way out of this mode too.
+void wifi_start_standalone_ap(char *ip_out, size_t ip_out_size);
 
 // If already connected, returns true immediately with no side effects -
 // callers can use this to tell whether they're the ones turning WiFi on
