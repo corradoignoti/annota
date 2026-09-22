@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/corradoignoti/annota/compare/v1.4.1...v1.5.0) (2026-09-22)
+
+
+### Features
+
+* WiFi password show/hide toggle, drop Delete WiFi Setup, view .txt inline ([b887639](https://github.com/corradoignoti/annota/commit/b887639bc6133399d3682cea161ce22940a07b32))
+
 ## [1.4.1](https://github.com/corradoignoti/annota/compare/v1.4.0...v1.4.1) (2026-09-22)
 
 
