@@ -138,6 +138,24 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   #player audio { width: 100%; height: 32px; }
   #player #playerClose { margin-top: 0.4rem; color: var(--danger); border-color: var(--danger); }
   #player #playerClose:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+
+  #textViewer { padding: 0.9rem 1rem; }
+  #textViewer #textViewerName { font-size: 0.85rem; margin-bottom: 0.5rem; word-break: break-all; }
+  #textViewer #textViewerName::before { content: "\2630  "; }
+  #textViewer #textViewerBody {
+    max-height: 50vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 0.85rem;
+    padding: 0.7rem;
+    border: 1.5px solid var(--border);
+    border-radius: 4px;
+    background: var(--paper);
+    margin-bottom: 0.6rem;
+  }
+  #textViewer #textViewerClose { color: var(--danger); border-color: var(--danger); }
+  #textViewer #textViewerClose:hover { background: var(--ink); color: var(--surface); border-color: var(--ink); }
   td.play { white-space: nowrap; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 0.65rem 0.8rem; vertical-align: middle; }
@@ -274,6 +292,12 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   <button id="playerClose" class="btn">✕ Stop</button>
 </div>
 
+<div id="textViewer" class="card" hidden>
+  <div id="textViewerName"></div>
+  <div id="textViewerBody"></div>
+  <button id="textViewerClose" class="btn">✕ Close</button>
+</div>
+
 <div id="batchBar" class="card" hidden>
   <span id="batchCount"></span>
   <div class="actions">
@@ -407,11 +431,37 @@ function isAudio(name) {
   return /\.wav$/i.test(name);
 }
 
+function isText(name) {
+  return /\.txt$/i.test(name);
+}
+
+async function viewFile(name) {
+  const status = document.getElementById("status");
+  try {
+    const res = await fetch("/api/download?name=" + encodeURIComponent(name));
+    if (!res.ok) throw new Error(await res.text());
+    const text = await res.text();
+    document.getElementById("textViewerName").textContent = name;
+    document.getElementById("textViewerBody").textContent = text;
+    document.getElementById("player").hidden = true; // mutually exclusive with the audio player
+    const viewer = document.getElementById("textViewer");
+    viewer.hidden = false;
+    viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (e) {
+    status.textContent = "View failed: " + e.message;
+  }
+}
+
+document.getElementById("textViewerClose").onclick = () => {
+  document.getElementById("textViewer").hidden = true;
+};
+
 function playFile(name) {
   const player = document.getElementById("player");
   const audio = document.getElementById("playerAudio");
   document.getElementById("playerName").textContent = name;
   audio.src = "/api/play?name=" + encodeURIComponent(name);
+  document.getElementById("textViewer").hidden = true; // mutually exclusive with the text viewer
   player.hidden = false;
   player.scrollIntoView({ behavior: "smooth", block: "nearest" });
   audio.play();
@@ -515,6 +565,14 @@ function render() {
       transcribe.title = "Transcribe";
       transcribe.onclick = () => transcribeFile(f.name, transcribe);
       actions.appendChild(transcribe);
+    }
+
+    if (isText(f.name)) {
+      const view = document.createElement("button");
+      view.textContent = "👁";
+      view.title = "View";
+      view.onclick = () => viewFile(f.name);
+      actions.appendChild(view);
     }
 
     const dl = document.createElement("a");
@@ -887,6 +945,22 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
   button.danger { color: var(--danger); border-color: var(--danger); background: var(--surface); }
   button.danger:hover { background: var(--danger); color: var(--surface); }
   #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--ink-soft); text-align: center; }
+  .pwd-wrap { position: relative; }
+  .pwd-wrap input { padding-right: 2.4rem !important; }
+  .pwd-toggle {
+    position: absolute;
+    right: 0.3rem;
+    top: 50%;
+    transform: translateY(-50%);
+    width: auto;
+    border: none;
+    background: none;
+    padding: 0.2rem 0.3rem;
+    font-size: 0.95rem;
+    line-height: 1;
+    color: var(--ink-soft);
+  }
+  .pwd-toggle:hover { background: none; color: var(--ink); }
 </style>
 </head>
 <body>
@@ -919,8 +993,11 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
   <div class="row-item" style="display:block;margin-top:0.6rem;padding-top:0.8rem;border-top:1px solid rgba(20,20,15,0.12);">
     <input id="newSsid" type="text" placeholder="Network name (SSID)"
       style="width:100%;margin-bottom:0.5rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
-    <input id="newPass" type="password" placeholder="Password (blank = open network)"
-      style="width:100%;margin-bottom:0.5rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
+    <div class="pwd-wrap" style="margin-bottom:0.5rem;">
+      <input id="newPass" type="password" placeholder="Password (blank = open network)"
+        style="width:100%;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
+      <button type="button" class="pwd-toggle" id="newPassToggle" aria-label="Show password">👁</button>
+    </div>
     <button class="accent" id="addNetBtn">+ Add network</button>
   </div>
   <button class="accent" id="reconnectBtn" style="margin-top:0.6rem;">↻ Reconnect WiFi</button>
@@ -940,11 +1017,6 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
     style="width:100%;margin-top:0.6rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
   <button class="accent" id="keySaveBtn" style="margin-top:0.6rem;">Save API Key</button>
   <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">✕ Clear API Key</button>
-</div>
-
-<div class="card">
-  <h2>Danger zone</h2>
-  <button class="danger" id="forgetBtn">✕ Delete WiFi Setup</button>
 </div>
 
 <div id="status"></div>
@@ -1031,12 +1103,30 @@ function renderNetworks(ssids) {
   });
 }
 
+function togglePwd(input, btn) {
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  btn.textContent = show ? "🙈" : "👁";
+  btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+}
+
 function startEditNetwork(row, ssid) {
   row.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "pwd-wrap";
+  wrap.style.cssText = "flex:1;margin-right:0.5rem;";
   const input = document.createElement("input");
   input.type = "password";
   input.placeholder = "New password";
-  input.style.cssText = "flex:1;margin-right:0.5rem;";
+  input.style.cssText = "width:100%;";
+  const toggleBtn = document.createElement("button");
+  toggleBtn.type = "button";
+  toggleBtn.className = "pwd-toggle";
+  toggleBtn.textContent = "👁";
+  toggleBtn.setAttribute("aria-label", "Show password");
+  toggleBtn.onclick = () => togglePwd(input, toggleBtn);
+  wrap.appendChild(input);
+  wrap.appendChild(toggleBtn);
   const saveBtn = document.createElement("button");
   saveBtn.textContent = "Save";
   saveBtn.style.cssText = "width:auto;";
@@ -1053,7 +1143,7 @@ function startEditNetwork(row, ssid) {
   cancelBtn.textContent = "Cancel";
   cancelBtn.style.cssText = "width:auto;margin-left:0.4rem;";
   cancelBtn.onclick = loadNetworks;
-  row.appendChild(input);
+  row.appendChild(wrap);
   row.appendChild(saveBtn);
   row.appendChild(cancelBtn);
 }
@@ -1072,6 +1162,9 @@ async function loadNetworks() {
   const data = await res.json();
   renderNetworks(data.networks);
 }
+
+document.getElementById("newPassToggle").onclick = () => togglePwd(
+  document.getElementById("newPass"), document.getElementById("newPassToggle"));
 
 document.getElementById("addNetBtn").onclick = async () => {
   const ssidInput = document.getElementById("newSsid");
@@ -1152,17 +1245,6 @@ document.getElementById("keyClearBtn").onclick = async () => {
   refresh();
 };
 
-document.getElementById("forgetBtn").onclick = async () => {
-  if (!confirm("Delete the saved WiFi network and reboot into setup mode? This can't be undone from here - you'll need to join the device's setup WiFi network again.")) return;
-  document.getElementById("status").textContent = "Rebooting into setup mode...";
-  try {
-    await fetch("/api/settings/forget", { method: "POST" });
-  } catch (e) {
-    // Expected: the device reboots mid-response.
-  }
-  document.getElementById("status").textContent = "Rebooted. Join the \"Annota-Setup\" WiFi network from your phone or laptop to reconfigure.";
-};
-
 refresh();
 loadNetworks();
 </script>
@@ -1238,16 +1320,6 @@ static void handle_settings_info() {
 static void handle_settings_reconnect() {
     wifi_request_reconnect();
     server.send(200, "text/plain", "Reconnecting");
-}
-
-// POST /api/settings/forget - the "Delete WiFi Setup" button's handler;
-// the confirmation happens client-side
-// (confirm() in SETTINGS_HTML) since wifi_forget_and_reboot() itself does
-// none and never returns. The response must be sent *before* calling it -
-// once called, the device reboots and no code after it ever runs.
-static void handle_settings_forget() {
-    server.send(200, "text/plain", "Rebooting into setup mode");
-    wifi_forget_and_reboot();
 }
 
 // POST /api/settings/idle-timeout - saves the idle-sleep slider from
@@ -1657,7 +1729,6 @@ void web_server_start() {
     server.on("/settings", HTTP_GET, with_activity(handle_settings_page));
     server.on("/api/settings", HTTP_GET, with_activity(handle_settings_info));
     server.on("/api/settings/reconnect", HTTP_POST, with_activity(handle_settings_reconnect));
-    server.on("/api/settings/forget", HTTP_POST, with_activity(handle_settings_forget));
     server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
     server.on("/api/settings/idle-timeout", HTTP_POST, with_activity(handle_settings_set_idle_timeout));
     server.on("/api/wifi/networks", HTTP_GET, with_activity(handle_wifi_list));
