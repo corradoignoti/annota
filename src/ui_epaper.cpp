@@ -818,7 +818,21 @@ void ui_hide_wifi_setup_dialog() {
 // No Settings view here to refresh a retry button on - see ui.h's comment.
 void ui_refresh_wifi_retry_button() {}
 
+// Guards against a caller racing ahead of reality (e.g. wifi_ensure_connected()'s
+// fast WiFi.status()-already-true path, which returns without touching the
+// header) - without this check the header could still read a stale
+// "working offline" from an earlier failed attempt while this QR claims a
+// live connection. Falls back to kWifiManage (with the header status
+// blanked, like wifi_go_offline()) rather than trusting the caller's ip.
 void ui_show_wifi_joined_screen(const char *ip) {
+    if (!wifi_is_connected()) {
+        ui_set_wifi_status("");
+        ui_show_wifi_manage_screen();
+        return;
+    }
+    char status[64];
+    snprintf(status, sizeof(status), LV_SYMBOL_WIFI " %s", ip);
+    ui_set_wifi_status(status);
     snprintf(wifi_joined_message, sizeof(wifi_joined_message),
              "Connected. Open http://%s in a browser for settings or file transfer.", ip);
     snprintf(wifi_joined_url, sizeof(wifi_joined_url), "http://%s", ip);
@@ -827,7 +841,17 @@ void ui_show_wifi_joined_screen(const char *ip) {
     lv_timer_handler();
 }
 
+// Same "really connected" guard as ui_show_wifi_joined_screen() above, same
+// reasoning.
 void ui_show_file_transfer_screen(const char *ip, const char *filename) {
+    if (!wifi_is_connected()) {
+        ui_set_wifi_status("");
+        ui_show_wifi_manage_screen();
+        return;
+    }
+    char status[64];
+    snprintf(status, sizeof(status), LV_SYMBOL_WIFI " %s", ip);
+    ui_set_wifi_status(status);
     char encoded[190];
     url_encode_component(filename, encoded, sizeof(encoded));
     snprintf(file_transfer_url, sizeof(file_transfer_url), "http://%s/api/download?name=%s", ip, encoded);
