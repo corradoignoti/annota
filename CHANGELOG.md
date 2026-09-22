@@ -1,3 +1,10 @@
+## [1.4.1](https://github.com/corradoignoti/annota/compare/v1.4.0...v1.4.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* don't show connection QR unless WiFi is really connected ([4ad0327](https://github.com/corradoignoti/annota/commit/4ad03273c883dc9366b283a947c2119a5c1f10b9))
+
 # [1.4.0](https://github.com/corradoignoti/annota/compare/v1.3.0...v1.4.0) (2026-09-21)
 
 
