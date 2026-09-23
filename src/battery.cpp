@@ -19,17 +19,20 @@ uint16_t battery_read_millivolts() {
 
 uint8_t battery_read_percent() {
     // Piecewise-linear approximation of a Li-ion discharge curve (steeper
-    // in the 3.70-4.20V band, flatter below it where real cells sag) -
-    // closer to a true fuel-gauge than one straight line end to end.
+    // in the 3.60-4.10V band, flatter below it where real cells sag),
+    // shifted 100mV down from the textbook 3.30-4.20V Li-ion range - this
+    // board's divider/ADC chain measures a full (charger-terminated,
+    // resting) cell at ~4.10V, not 4.20V, so the un-shifted curve topped
+    // out at 90% and never reached 100.
     float v = (float)battery_read_millivolts() / 1000.0f;
     float pct;
-    if (v >= 4.20f) pct = 100.0f;
-    else if (v >= 4.10f) pct = 90.0f + (v - 4.10f) * (10.0f / 0.10f);
-    else if (v >= 4.00f) pct = 75.0f + (v - 4.00f) * (15.0f / 0.10f);
-    else if (v >= 3.85f) pct = 50.0f + (v - 3.85f) * (25.0f / 0.15f);
-    else if (v >= 3.70f) pct = 25.0f + (v - 3.70f) * (25.0f / 0.15f);
-    else if (v >= 3.50f) pct = 5.0f + (v - 3.50f) * (20.0f / 0.20f);
-    else if (v >= 3.30f) pct = (v - 3.30f) * (5.0f / 0.20f);
+    if (v >= 4.10f) pct = 100.0f;
+    else if (v >= 4.00f) pct = 90.0f + (v - 4.00f) * (10.0f / 0.10f);
+    else if (v >= 3.90f) pct = 75.0f + (v - 3.90f) * (15.0f / 0.10f);
+    else if (v >= 3.75f) pct = 50.0f + (v - 3.75f) * (25.0f / 0.15f);
+    else if (v >= 3.60f) pct = 25.0f + (v - 3.60f) * (25.0f / 0.15f);
+    else if (v >= 3.40f) pct = 5.0f + (v - 3.40f) * (20.0f / 0.20f);
+    else if (v >= 3.20f) pct = (v - 3.20f) * (5.0f / 0.20f);
     else pct = 0.0f;
     if (pct < 0.0f) pct = 0.0f;
     if (pct > 100.0f) pct = 100.0f;
