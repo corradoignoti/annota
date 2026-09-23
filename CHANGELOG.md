@@ -1,3 +1,10 @@
+## [1.5.1](https://github.com/corradoignoti/annota/compare/v1.5.0...v1.5.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* recalibrate battery percent curve, never reached 100% ([572bcc8](https://github.com/corradoignoti/annota/commit/572bcc80bf8e4512d2ff6d6bb1d0283c39945783))
+
 # [1.5.0](https://github.com/corradoignoti/annota/compare/v1.4.1...v1.5.0) (2026-09-22)
 
 
