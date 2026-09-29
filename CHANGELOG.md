@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/corradoignoti/annota/compare/v1.5.1...v1.6.0) (2026-09-29)
+
+
+### Features
+
+* hold both buttons 5s to reboot, even when hung ([d3780ae](https://github.com/corradoignoti/annota/commit/d3780ae44742318e62285866acf248102081dcc6))
+
 ## [1.5.1](https://github.com/corradoignoti/annota/compare/v1.5.0...v1.5.1) (2026-09-23)
 
 
