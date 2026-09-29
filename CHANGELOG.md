@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/corradoignoti/annota/compare/v1.7.0...v1.8.0) (2026-09-29)
+
+
+### Features
+
+* Details screen in file action menu ([392b78a](https://github.com/corradoignoti/annota/commit/392b78a60b1d9d5746e4d821461df6ed27a23ca8))
+
 # [1.7.0](https://github.com/corradoignoti/annota/compare/v1.6.0...v1.7.0) (2026-09-29)
 
 
