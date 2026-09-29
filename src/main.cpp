@@ -1,8 +1,10 @@
 #include <Arduino.h>
+#include <driver/gpio.h>
 #include <lvgl.h>
 
 #include "battery.h"
 #include "display.h"
+#include "reboot_combo.h"
 #include "sleep.h"
 #include "storage.h"
 #include "transcribe.h"
@@ -10,20 +12,22 @@
 #include "web_server.h"
 #include "wifi_manager.h"
 
-// Battery power latch (Waveshare schematic): the physical power switch only
-// pulses the regulator on - the MCU must itself hold this pin high or the
-// board powers back off the moment the switch is released. Set first in
-// setup(), before anything else, so nothing downstream (panel init, WiFi,
-// SD) can lose power mid-init.
-#define PWR_HOLD_PIN 17
-
+// Battery power latch - see PWR_HOLD_PIN's comment in reboot_combo.h. Set
+// first in setup(), before anything else, so nothing downstream (panel
+// init, WiFi, SD) can lose power mid-init.
 static void keepBatteryPowerOn() {
     pinMode(PWR_HOLD_PIN, OUTPUT);
     digitalWrite(PWR_HOLD_PIN, HIGH);
+    // Release the pad hold reboot_now() may have latched across a software
+    // reset - only after driving HIGH, so the level never glitches low.
+    gpio_hold_dis((gpio_num_t)PWR_HOLD_PIN);
 }
 
 void setup() {
     keepBatteryPowerOn();
+    // Right after the power latch, before anything that could hang
+    // (panel busy-wait, SD, the first-boot captive portal) - see reboot_combo.h.
+    reboot_combo_start();
     sleep_reset_activity(); // starts the idle-sleep clock from boot - see sleep.h
 
     Serial.begin(115200);
