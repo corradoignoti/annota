@@ -540,7 +540,8 @@ function render() {
 
     const date = document.createElement("td");
     date.className = "date";
-    date.textContent = fmtDate(f.mtime);
+    // Audio files show no date, same as the on-device Details screen.
+    date.textContent = isAudio(f.name) ? "" : fmtDate(f.mtime);
     tr.appendChild(date);
 
     const size = document.createElement("td");
