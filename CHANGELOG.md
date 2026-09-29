@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/corradoignoti/annota/compare/v1.8.0...v1.9.0) (2026-09-29)
+
+
+### Features
+
+* USB drive mode exposing the SD card as mass storage ([c8698f8](https://github.com/corradoignoti/annota/commit/c8698f81210639121ee5521f99c76fd339f3b4e0))
+
 # [1.8.0](https://github.com/corradoignoti/annota/compare/v1.7.0...v1.8.0) (2026-09-29)
 
 
