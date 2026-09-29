@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/corradoignoti/annota/compare/v1.6.0...v1.7.0) (2026-09-29)
+
+
+### Features
+
+* transcription progress screen, upload bar, and failure log ([f89a529](https://github.com/corradoignoti/annota/commit/f89a529e8d02ce94c96142471e7ab68478386ce4))
+
 # [1.6.0](https://github.com/corradoignoti/annota/compare/v1.5.1...v1.6.0) (2026-09-29)
 
 
