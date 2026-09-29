@@ -13,6 +13,7 @@
 #include "speaker.h"
 #include "storage.h"
 #include "transcribe.h"
+#include "usb_drive.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -63,6 +64,9 @@ enum class Screen {
     kWifiJoinList,
     kHome,
     kDetails,
+    kUsbDrive,
+    kUsbDriveError,
+    kUsbDriveRestarting,
 };
 
 static const int16_t HEADER_H = 20;
@@ -605,24 +609,25 @@ static void render_body() {
         }
 
         // Reached from kList via a long Next press (see
-        // ui_process_input()'s kList case) - a horizontal carousel of 3
+        // ui_process_input()'s kList case) - a horizontal carousel of 4
         // cells, one full-screen icon+label card shown at a time
         // (add_info_card(), same helper kNoCard/kMicError/etc. use),
-        // paged by Next; the hint bar's "(n/3)" is the position indicator
+        // paged by Next; the hint bar's "(n/4)" is the position indicator
         // (this font has no page-dot glyphs baked in, so text stays the
         // safe choice - same idiom as "Audio Files (N)" above). Select
         // confirms: Audio/Text set showing_audio_files and open kList
         // (what the old long-Next toggle used to do directly); File
         // transfer hands off to wifi_manager.h's request/process split
         // (see ui_process_input()'s kHome case for why state isn't
-        // touched here for that branch).
+        // touched here for that branch); USB drive hands the card to a
+        // USB host (usb_drive.h) and shows kUsbDrive.
         case Screen::kHome: {
-            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD};
-            static const char *labels[] = {"Audio", "Text", "File transfer"};
+            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB};
+            static const char *labels[] = {"Audio", "Text", "File transfer", "USB drive"};
             render_list_header(LV_SYMBOL_HOME, "Home", false);
             add_info_card(icons[menu_index], labels[menu_index]);
             char hint[48];
-            snprintf(hint, sizeof(hint), "Next: cycle (%d/3)   Select: choose, hold: back", (int)menu_index + 1);
+            snprintf(hint, sizeof(hint), "Next: cycle (%d/4)   Select: choose, hold: back", (int)menu_index + 1);
             add_hint(hint);
             break;
         }
@@ -812,6 +817,25 @@ static void render_body() {
         case Screen::kMicError:
             add_info_card(LV_SYMBOL_WARNING, mic_last_error());
             add_hint("Select: close");
+            break;
+
+        // USB drive mode (usb_drive.h) - the SD card belongs to the USB
+        // host until it ejects the drive, the cable is pulled, or the
+        // user cancels; every one of those ends in a reboot
+        // (kUsbDriveRestarting is the last thing painted before it).
+        case Screen::kUsbDrive:
+            render_list_header(LV_SYMBOL_USB, "USB drive", false);
+            add_info_card(LV_SYMBOL_USB, "Connected as a USB drive. Eject it on the computer to finish.");
+            add_hint("Hold Select: cancel (eject first!)");
+            break;
+
+        case Screen::kUsbDriveError:
+            add_info_card(LV_SYMBOL_WARNING, "Could not open the SD card for USB drive mode.");
+            add_hint("Select: close");
+            break;
+
+        case Screen::kUsbDriveRestarting:
+            add_info_card(LV_SYMBOL_REFRESH, "USB drive closed. Restarting...");
             break;
 
         case Screen::kWifiSetup: {
@@ -1039,7 +1063,14 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 
 bool ui_is_sleep_blocked() {
     return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
-           state == Screen::kWifiApActive || state == Screen::kWifiJoined || state == Screen::kFileTransfer;
+           state == Screen::kWifiApActive || state == Screen::kWifiJoined || state == Screen::kFileTransfer ||
+           state == Screen::kUsbDrive;
+}
+
+void ui_show_usb_drive_restarting() {
+    state = Screen::kUsbDriveRestarting;
+    render_body();
+    lv_timer_handler();
 }
 
 void ui_show_sleep_screen() {
@@ -1177,7 +1208,7 @@ void ui_process_input() {
 
         case Screen::kHome:
             if (nextEv == DisplayButtonEvent::kShort) {
-                menu_index = (menu_index + 1) % 3;
+                menu_index = (menu_index + 1) % 4;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -1190,13 +1221,22 @@ void ui_process_input() {
                     top_index = 0;
                     state = Screen::kList;
                     render_body();
-                } else {
+                } else if (menu_index == 2) {
                     // Don't touch state/render here - wifi_manager.h's
                     // wifi_process_pending_file_transfer() (called right
                     // after this, same loop() iteration - see main.cpp)
                     // shows its own status/result screens, same reasoning
                     // as kActionMenu's Transcribe case above.
                     wifi_request_file_transfer();
+                } else {
+                    // The USB host writes raw sectors behind FATFS's back
+                    // from here on - take WiFi (and with it the web file
+                    // manager's SD handlers) out of the picture first.
+                    if (wifi_is_connected()) {
+                        wifi_go_offline();
+                    }
+                    state = usb_drive_start() ? Screen::kUsbDrive : Screen::kUsbDriveError;
+                    render_body();
                 }
             }
             break;
@@ -1370,6 +1410,22 @@ void ui_process_input() {
                 render_body();
             }
             break;
+
+        case Screen::kUsbDrive:
+            if (selEv == DisplayButtonEvent::kLong) {
+                usb_drive_request_exit(); // main.cpp's usb_drive_process() reboots
+            }
+            break;
+
+        case Screen::kUsbDriveError:
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kHome;
+                render_body();
+            }
+            break;
+
+        case Screen::kUsbDriveRestarting:
+            break; // about to reboot
 
         case Screen::kWifiSetup:
             break; // informational only - see ui.h's contract

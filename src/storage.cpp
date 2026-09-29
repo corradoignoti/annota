@@ -118,6 +118,27 @@ fs::FS &sd_fs() {
     return SD_FS;
 }
 
+uint32_t sd_sector_count() {
+    return (uint32_t)SD_MMC.numSectors();
+}
+
+// SDMMCFS only exposes single-sector readRAW()/writeRAW(), so multi-sector
+// requests are a loop (one card command per 512 bytes - slow next to a
+// real card reader, but fine for moving a few recordings around).
+bool sd_read_sectors(uint8_t *buf, uint32_t firstSector, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (!SD_MMC.readRAW(buf + i * SD_SECTOR_SIZE, firstSector + i)) return false;
+    }
+    return true;
+}
+
+bool sd_write_sectors(const uint8_t *buf, uint32_t firstSector, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (!SD_MMC.writeRAW(const_cast<uint8_t *>(buf) + i * SD_SECTOR_SIZE, firstSector + i)) return false;
+    }
+    return true;
+}
+
 bool get_sd_info(SdInfo &out) {
     bool sdOk = sd_begin();
     if (sdOk) {

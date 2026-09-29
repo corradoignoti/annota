@@ -114,9 +114,15 @@ void ui_show_transcribe_result(bool ok, const char *message);
 void ui_process_input();
 
 // True while a foreground operation that must not be interrupted by
-// sleep.h's idle deep-sleep is in progress (recording, playing back, or
-// transcribing). Checked by sleep_process_idle() every loop() iteration.
+// sleep.h's idle deep-sleep is in progress (recording, playing back,
+// transcribing, or USB drive mode). Checked by sleep_process_idle() every loop() iteration.
 bool ui_is_sleep_blocked();
+
+// Shows a "Restarting..." message (no buttons) and forces one repaint.
+// Called by usb_drive.cpp's usb_drive_process() right before it reboots
+// out of USB drive mode - same never-cleared contract as
+// ui_show_sleep_screen() below.
+void ui_show_usb_drive_restarting();
 
 // Shows a plain "Sleeping..." message (no buttons - the device is about to
 // deep-sleep) and forces one repaint. Called by sleep.cpp right before it

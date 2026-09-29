@@ -9,6 +9,7 @@
 #include "storage.h"
 #include "transcribe.h"
 #include "ui.h"
+#include "usb_drive.h"
 #include "web_server.h"
 #include "wifi_manager.h"
 
@@ -65,6 +66,15 @@ void loop() {
     // (transcribe_request()) those pumps pick up in this same loop()
     // iteration.
     ui_process_input();
+    // USB drive mode (usb_drive.h): the USB host owns the SD card, so none
+    // of the pumps below (web file manager, transcription) may touch it -
+    // WiFi was already taken offline on entry, this is belt-and-braces.
+    // usb_drive_process() reboots once the session ends.
+    if (usb_drive_active()) {
+        usb_drive_process();
+        delay(5);
+        return;
+    }
     // Must come after lv_timer_handler() has returned, never nested
     // inside it - see the comment on wifi_process_pending_reconnect().
     wifi_process_pending_reconnect();
