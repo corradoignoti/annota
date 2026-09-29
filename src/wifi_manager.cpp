@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "display.h"
+#include "reboot_combo.h"
 #include "ui.h"
 #include "web_server.h"
 
@@ -725,7 +726,7 @@ void wifi_forget_and_reboot() {
     prefs.end();
     Serial.println("WiFi: saved network erased by user - rebooting into setup portal");
     delay(200);
-    ESP.restart();
+    reboot_now();
 }
 
 bool wifi_is_connected() {

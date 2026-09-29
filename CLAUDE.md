@@ -83,6 +83,20 @@ has had a chance to reset its clock.
   `/api/settings/idle-timeout`), takes effect on the very next
   `sleep_process_idle()` call, no reboot needed.
 
+- **reboot_combo.cpp/h** — "hold both buttons 5s to reboot"
+  (`REBOOT_COMBO_HOLD_MS`). `reboot_combo_start()`, called in `setup()`
+  right after the battery latch and before anything that could hang,
+  configures the button GPIOs itself and starts a FreeRTOS task pinned to
+  core 0 (Arduino's `loop()` runs on core 1) that polls them directly, so
+  the combo works even when `loop()`/`setup()` is stuck. Only armed after
+  both buttons have been seen released since boot (no reboot loop while
+  still held). `reboot_now()` is the shared reboot path (also used by the
+  on-device Reboot menu item and `wifi_forget_and_reboot()`): it
+  `gpio_hold_en()`s `PWR_HOLD_PIN` (defined in `reboot_combo.h`) so the
+  battery latch doesn't glitch low during the reset, then `esp_restart()`;
+  `main.cpp`'s `keepBatteryPowerOn()` releases the hold after driving the
+  pin HIGH again. `ui_process_input()` still skips per-button polling while
+  both are held, so the gesture never fires a single-button long press.
 - **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
   e-paper panel driver (command/LUT sequence ported from Waveshare's own
   example repo, waveshareteam/ESP32-S3-ePaper-1.54) bridged into LVGL v9,

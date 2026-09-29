@@ -1,6 +1,6 @@
 #include "ui.h"
 
-#include <Arduino.h>  // ESP.restart() - kRebootConfirm
+#include <Arduino.h>
 #include <cstdio>
 #include <cstring>
 #include <lvgl.h>
@@ -8,6 +8,7 @@
 
 #include "display.h"
 #include "fonts_it.h"
+#include "reboot_combo.h"
 #include "sleep.h"
 #include "speaker.h"
 #include "storage.h"
@@ -927,22 +928,9 @@ void ui_process_input() {
         render_body();
     }
 
-    // Checked ahead of display_button_poll() below, and independent of it -
-    // see display.h's comment on why a two-button hold must never also
-    // reach that per-button state machine (it would fire its own,
-    // shorter-threshold kLong on one of them first). While both are held,
-    // skip the individual poll entirely for this iteration: nextEv/selEv
-    // both come back kNone below either way, since bothHeld's early return
-    // never even reaches the poll calls.
-    if (display_forget_wifi_combo_poll()) {
-        sleep_reset_activity();
-        if (state == Screen::kRecording) mic_stop_recording();
-        if (state == Screen::kPlaying) speaker_stop();
-        state = Screen::kWifiManage;
-        menu_index = 0;
-        render_body();
-        return;
-    }
+    // Both buttons held = the "hold both to reboot" gesture, handled
+    // entirely by reboot_combo.h's own task - skip the per-button poll
+    // while it's in progress, see display_button_raw_pressed()'s comment.
     if (display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect)) {
         return;
     }
@@ -1117,7 +1105,7 @@ void ui_process_input() {
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
                     // Never returns - no state/render needed after.
-                    ESP.restart();
+                    reboot_now();
                 }
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
