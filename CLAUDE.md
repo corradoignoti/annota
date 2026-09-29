@@ -123,7 +123,15 @@ has had a chance to reset its clock.
   every other screen's Next-cycles/Select-confirms convention, since here
   Select doubles as both the scroll-down and the long-press-to-go-back
   action — and a Select long-press closes straight back to `kList` (not the
-  action menu it was opened from) so the menu doesn't reappear on exit) —
+  action menu it was opened from) so the menu doesn't reappear on exit),
+  plus a Details item in both the audio and `.txt` action menus
+  (`Screen::kDetails` — name + size for both, then the `.txt` file's
+  `Mp3Entry::created` date or the audio file's playing time from
+  `storage.h`'s `get_audio_duration_seconds()`, which parses the WAV
+  chunk list or the MP3 Xing/Info/VBRI tag, falling back to a CBR
+  estimate; Select goes back to the action menu; the audio menu's 6 rows
+  make `render_option_menu()` switch to a compact layout to clear the
+  hint bar) —
   no on-screen Settings or WiFi credential entry, which stay on
   `web_server.cpp`'s existing web UI. A small explicit state machine
   (`Screen` enum) driven by `display.h`'s `display_button_poll()` via

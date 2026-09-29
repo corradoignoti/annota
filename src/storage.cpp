@@ -150,6 +150,134 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen) {
     return true;
 }
 
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint32_t read_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+// Walks the RIFF chunk list rather than assuming the canonical 44-byte
+// header speaker.cpp's write_wav_header() writes, so files from elsewhere
+// with extra chunks (LIST/INFO etc.) ahead of "data" still work.
+static bool wav_duration(File &f, uint32_t &secs) {
+    uint8_t hdr[12];
+    if (f.read(hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
+        return false;
+    }
+    uint32_t byteRate = 0;
+    while (true) {
+        uint8_t chunk[8];
+        if (f.read(chunk, 8) != 8) return false;
+        uint32_t chunkSize = read_le32(chunk + 4);
+        size_t chunkStart = f.position();
+        if (memcmp(chunk, "fmt ", 4) == 0) {
+            uint8_t fmt[16];
+            if (chunkSize < 16 || f.read(fmt, 16) != 16) return false;
+            byteRate = read_le32(fmt + 8);
+        } else if (memcmp(chunk, "data", 4) == 0) {
+            if (byteRate == 0) return false;
+            // A recording cut short before its header was last patched can
+            // understate (or zero) the data size - trust the file instead
+            // when it's clearly off.
+            size_t remaining = f.size() - chunkStart;
+            if (chunkSize == 0 || chunkSize > remaining) chunkSize = remaining;
+            secs = chunkSize / byteRate;
+            return true;
+        }
+        if (!f.seek(chunkStart + chunkSize + (chunkSize & 1))) return false;
+    }
+}
+
+// Layer III only - the only layer AudioGeneratorMP3 plays anyway.
+static bool mp3_duration(File &f, uint32_t &secs) {
+    static const uint16_t BITRATES_V1[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+    static const uint16_t BITRATES_V2[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+    static const uint32_t SAMPLE_RATES_V1[3] = {44100, 48000, 32000};
+
+    // Skip an ID3v2 tag (syncsafe size, plus a 10-byte footer if flagged).
+    uint8_t id3[10];
+    size_t audioStart = 0;
+    if (f.read(id3, 10) == 10 && memcmp(id3, "ID3", 3) == 0) {
+        audioStart = 10 + (((uint32_t)(id3[6] & 0x7F) << 21) | ((uint32_t)(id3[7] & 0x7F) << 14) |
+                           ((uint32_t)(id3[8] & 0x7F) << 7) | (uint32_t)(id3[9] & 0x7F));
+        if (id3[5] & 0x10) audioStart += 10;
+    }
+    if (!f.seek(audioStart)) return false;
+
+    // Find the first valid Layer III frame header within the next 64 KB.
+    const size_t SEARCH_LIMIT = 64 * 1024;
+    uint8_t h[4] = {0};
+    size_t frameStart = 0;
+    bool found = false;
+    for (size_t i = 0; i < SEARCH_LIMIT; i++) {
+        int c = f.read();
+        if (c < 0) return false;
+        h[0] = h[1];
+        h[1] = h[2];
+        h[2] = h[3];
+        h[3] = (uint8_t)c;
+        if (i < 3) continue;
+        if (h[0] != 0xFF || (h[1] & 0xE0) != 0xE0) continue;
+        uint8_t version = (h[1] >> 3) & 3; // 0 = 2.5, 1 = reserved, 2 = MPEG2, 3 = MPEG1
+        uint8_t layer = (h[1] >> 1) & 3;   // 1 = Layer III
+        uint8_t bitrateIdx = h[2] >> 4;
+        uint8_t srIdx = (h[2] >> 2) & 3;
+        if (version == 1 || layer != 1 || bitrateIdx == 0 || bitrateIdx == 15 || srIdx == 3) continue;
+        frameStart = f.position() - 4;
+        found = true;
+        break;
+    }
+    if (!found) return false;
+
+    uint8_t version = (h[1] >> 3) & 3;
+    bool mpeg1 = version == 3;
+    bool mono = (h[3] >> 6) == 3;
+    uint32_t bitrateKbps = (mpeg1 ? BITRATES_V1 : BITRATES_V2)[h[2] >> 4];
+    uint32_t sampleRate = SAMPLE_RATES_V1[(h[2] >> 2) & 3] >> (mpeg1 ? 0 : (version == 2 ? 1 : 2));
+    uint32_t samplesPerFrame = mpeg1 ? 1152 : 576;
+
+    // VBR files carry a total frame count in a Xing/Info tag (just past the
+    // first frame's side info) or a VBRI tag (fixed offset 36).
+    uint8_t frame[64];
+    if (f.seek(frameStart) && f.read(frame, sizeof(frame)) == sizeof(frame)) {
+        size_t xingOff = 4 + (mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+        uint32_t frames = 0;
+        if (memcmp(frame + xingOff, "Xing", 4) == 0 || memcmp(frame + xingOff, "Info", 4) == 0) {
+            if (read_be32(frame + xingOff + 4) & 1) frames = read_be32(frame + xingOff + 8);
+        } else if (memcmp(frame + 36, "VBRI", 4) == 0) {
+            frames = read_be32(frame + 36 + 14);
+        }
+        if (frames > 0) {
+            secs = (uint32_t)((uint64_t)frames * samplesPerFrame / sampleRate);
+            return true;
+        }
+    }
+
+    // No VBR tag: assume constant bitrate.
+    secs = (uint32_t)((uint64_t)(f.size() - frameStart) * 8 / (bitrateKbps * 1000));
+    return true;
+}
+
+bool get_audio_duration_seconds(const char *filename, uint32_t &secs) {
+    secs = 0;
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    File f = SD_FS.open(path, FILE_READ);
+    if (!f) {
+        sd_end();
+        return false;
+    }
+    bool ok = has_ext(filename, ".wav") ? wav_duration(f, secs) : mp3_duration(f, secs);
+    f.close();
+    sd_end();
+    return ok;
+}
+
 bool delete_file(const char *filename) {
     bool sdOk = sd_begin();
     if (!sdOk) return false;

@@ -80,6 +80,16 @@ bool get_sd_info(SdInfo &out);
 // web_server.cpp's SD handlers).
 bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 
+// Claims the SD card via sd_begin() just long enough to work out a
+// root-level audio file's playing time in whole seconds (for the on-device
+// Details screen), then releases it via sd_end(). .wav: data chunk size /
+// fmt chunk byte rate. .mp3: frame count from a Xing/Info or VBRI header
+// if present, otherwise a constant-bitrate estimate from the first frame's
+// bitrate. Returns false if the card or file can't be opened or the header
+// isn't recognized. Same caller responsibility as read_text_file_preview()
+// above.
+bool get_audio_duration_seconds(const char *filename, uint32_t &secs);
+
 // Claims the SD card via sd_begin(), deletes a root-level file, then
 // releases it via sd_end(). Returns false if the card can't be opened or
 // the file doesn't exist. Same caller responsibility as

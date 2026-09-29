@@ -62,6 +62,7 @@ enum class Screen {
     kWifiScanning,
     kWifiJoinList,
     kHome,
+    kDetails,
 };
 
 static const int16_t HEADER_H = 20;
@@ -98,10 +99,16 @@ static bool select_press_pending = false;
 static uint32_t select_press_pending_since = 0;
 static const uint32_t DOUBLE_PRESS_WINDOW_MS = 350;
 
-// kActionMenu / kDeleteConfirm - the file the menu/confirm was opened for,
-// and which option is currently highlighted.
+// kActionMenu / kDeleteConfirm / kDetails - the file the menu/confirm was
+// opened for, and which option is currently highlighted. active_file_index
+// indexes mp3Files directly (Details reads created/size straight off it).
 static char active_filename[64];
+static size_t active_file_index = 0;
 static int menu_index = 0;
+
+// kDetails - built once when Details is picked from kActionMenu (the audio
+// length needs an SD read), so repaints don't touch the card again.
+static char details_text[192];
 
 // kTextView - text_view_buffer holds the .txt file's content (read via
 // read_text_file_preview() when View is picked from kActionMenu), truncated
@@ -183,11 +190,45 @@ static bool has_record_option() {
 // select_press_pending's comment above.
 static void open_action_menu_for_selected() {
     size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
+    active_file_index = fileIndex;
     strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
     active_filename[sizeof(active_filename) - 1] = '\0';
     menu_index = 0;
     state = Screen::kActionMenu;
     render_body();
+}
+
+static void format_size(uint32_t bytes, char *out, size_t outLen) {
+    if (bytes < 1024) {
+        snprintf(out, outLen, "%lu B", (unsigned long)bytes);
+    } else if (bytes < 1024 * 1024) {
+        snprintf(out, outLen, "%lu KB", (unsigned long)((bytes + 1023) / 1024));
+    } else {
+        unsigned long tenths = (unsigned long)(((uint64_t)bytes * 10 + 512 * 1024) / (1024 * 1024));
+        snprintf(out, outLen, "%lu.%lu MB", tenths / 10, tenths % 10);
+    }
+}
+
+// Fills details_text for kDetails from mp3Files[active_file_index]: name +
+// size for both lists, then the creation date for .txt or the playing time
+// (read off the card - see storage.h's get_audio_duration_seconds()) for
+// audio.
+static void build_details_text() {
+    const Mp3Entry &entry = mp3Files[active_file_index];
+    char size[16];
+    format_size(entry.size, size, sizeof(size));
+    if (!showing_audio_files) {
+        snprintf(details_text, sizeof(details_text), "%s\n\nSize: %s\nCreated: %s", entry.filename, size, entry.created);
+        return;
+    }
+    uint32_t secs = 0;
+    char length[24];
+    if (get_audio_duration_seconds(entry.filename, secs)) {
+        snprintf(length, sizeof(length), "%lu min %lu s", (unsigned long)(secs / 60), (unsigned long)(secs % 60));
+    } else {
+        strncpy(length, "unknown", sizeof(length));
+    }
+    snprintf(details_text, sizeof(details_text), "%s\n\nSize: %s\nLength: %s", entry.filename, size, length);
 }
 
 static size_t list_item_count() {
@@ -483,11 +524,15 @@ static void add_hint(const char *text) {
 // title line plus a cycle-and-confirm option list, one icon+label card
 // per option (see add_row()).
 static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count) {
-    const int16_t pad = 6;
     const int16_t title_h = 20;
     const int16_t panel_w = SCREEN_W - 16;
+    // Tighten the padding and drop the top margin when the usual layout
+    // would run into the hint bar (the audio action menu's 6 rows).
+    const int16_t avail_h = SCREEN_H - HEADER_H - HINT_H;
+    const bool compact = 12 + 6 * 2 + title_h + count * ROW_H > avail_h;
+    const int16_t pad = compact ? 3 : 6;
     const int16_t panel_h = pad * 2 + title_h + count * ROW_H;
-    const int16_t panel_y = 12;
+    const int16_t panel_y = compact ? 0 : 12;
 
     lv_obj_t *panel = lv_obj_create(body);
     lv_obj_remove_style_all(panel);
@@ -606,18 +651,19 @@ static void render_body() {
 
         case Screen::kActionMenu: {
             // Play/Transcription only make sense for audio files, not the
-            // .txt transcripts this same list shows when toggled. File
-            // transfer (per-file download link + QR, see kFileTransfer)
-            // applies to both, placed right before Cancel in each.
+            // .txt transcripts this same list shows when toggled. Details
+            // (see kDetails) and File transfer (per-file download link +
+            // QR, see kFileTransfer) apply to both.
             if (showing_audio_files) {
-                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
-                                               LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Play", "Transcribe", "Delete", "File transfer", "Cancel"};
-                render_option_menu(active_filename, icons, options, 5);
+                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT,   LV_SYMBOL_LIST,
+                                               LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD, LV_SYMBOL_CLOSE};
+                static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "File transfer", "Cancel"};
+                render_option_menu(active_filename, icons, options, 6);
             } else {
-                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"View", "Delete", "File transfer", "Cancel"};
-                render_option_menu(active_filename, icons, options, 4);
+                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
+                                               LV_SYMBOL_CLOSE};
+                static const char *options[] = {"View", "Details", "Delete", "File transfer", "Cancel"};
+                render_option_menu(active_filename, icons, options, 5);
             }
             break;
         }
@@ -652,6 +698,11 @@ static void render_body() {
             add_hint("Select: down   Next: up, hold Sel: close");
             break;
         }
+
+        case Screen::kDetails:
+            add_info_card(LV_SYMBOL_LIST, details_text);
+            add_hint("Select: back");
+            break;
 
         case Screen::kDeleteConfirm: {
             char title[96];
@@ -1213,10 +1264,10 @@ void ui_process_input() {
 
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
-            // {Play, Transcribe, Delete, File transfer, Cancel} for audio,
-            // {View, Delete, File transfer, Cancel} for .txt (no
-            // Play/Transcribe there - see that comment).
-            int optionCount = showing_audio_files ? 5 : 4;
+            // {Play, Transcribe, Details, Delete, File transfer, Cancel} for
+            // audio, {View, Details, Delete, File transfer, Cancel} for .txt
+            // (no Play/Transcribe there - see that comment).
+            int optionCount = showing_audio_files ? 6 : 5;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -1243,10 +1294,14 @@ void ui_process_input() {
                     state = Screen::kTextView;
                     render_body();
                 } else if (menu_index == (showing_audio_files ? 2 : 1)) {
+                    build_details_text();
+                    state = Screen::kDetails;
+                    render_body();
+                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
-                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
+                } else if (menu_index == (showing_audio_files ? 4 : 3)) {
                     // Don't touch state/render here - wifi_manager.h's
                     // wifi_process_pending_file_link() (called right after
                     // this, same loop() iteration - see main.cpp) shows its
@@ -1260,6 +1315,14 @@ void ui_process_input() {
             }
             break;
         }
+
+        case Screen::kDetails:
+            // Back to the menu it was opened from, Details still highlighted.
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kActionMenu;
+                render_body();
+            }
+            break;
 
         case Screen::kDeleteConfirm:
             if (nextEv == DisplayButtonEvent::kShort) {
