@@ -88,11 +88,16 @@ static void base64_encode_group(const uint8_t *raw, int n, char *out) {
 // HTTPClient::sendRequest() without ever buffering the whole file (raw or
 // encoded) in RAM: the ESP32 doesn't have enough of it for anything but
 // the smallest clips. Mirrors transcribe_openai.cpp's MultipartStream,
-// just with a base64 encode step folded into the file-reading part.
+// just with a base64 encode step folded into the file-reading part
+// (and the same progress reporting through transcribe.h's hooks).
 class Base64JsonStream : public Stream {
    public:
     Base64JsonStream(const String &preamble, File &file, const String &trailer)
-        : preamble_(preamble), file_(file), trailer_(trailer), encodedLen_(base64_encoded_length(file.size())) {}
+        : preamble_(preamble), file_(file), trailer_(trailer), encodedLen_(base64_encoded_length(file.size())) {
+        total_ = preamble_.length() + encodedLen_ + trailer_.length();
+    }
+
+    size_t served() const { return served_; }
 
     int available() override {
         long remaining = (long)(preamble_.length() - preamblePos_) + (long)(encodedLen_ - encodedPos_) +
@@ -130,6 +135,12 @@ class Base64JsonStream : public Stream {
         while (total < length && trailerPos_ < trailer_.length()) {
             buffer[total++] = trailer_[trailerPos_++];
         }
+        served_ += total;
+        if (total > 0) transcribe_report_upload(served_, total_, 1, 1);
+        if (served_ >= total_ && !doneReported_) {
+            doneReported_ = true;
+            transcribe_report_phase(TranscribePhase::kWaiting);
+        }
         return total;
     }
 
@@ -147,6 +158,9 @@ class Base64JsonStream : public Stream {
     char group_[4];
     int groupPos_ = 0;
     int groupLen_ = 0;
+    size_t total_ = 0;
+    size_t served_ = 0;
+    bool doneReported_ = false;
 };
 
 // Gemini validates inline_data's mime_type against the actual audio
@@ -177,6 +191,7 @@ static void set_err(char *errOut, size_t errOutLen, const char *msg) {
 bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (WiFi.status() != WL_CONNECTED) {
         set_err(errOut, errOutLen, "WiFi not connected");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
@@ -184,11 +199,13 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     ai_provider_get_api_key(apiKey, sizeof(apiKey));
     if (apiKey[0] == '\0') {
         set_err(errOut, errOutLen, "No Gemini API key set (see Settings)");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
     if (!sd_begin()) {
         set_err(errOut, errOutLen, "SD card not available");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
@@ -198,8 +215,10 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (!src) {
         sd_end();
         set_err(errOut, errOutLen, "Could not open file");
+        transcribe_log("Error: %s (%s)", errOut, srcPath);
         return false;
     }
+    transcribe_log("Model: %s, file size: %u bytes", MODEL, (unsigned)src.size());
 
     String preamble;
     preamble += "{\"contents\":[{\"parts\":[{\"text\":\"";
@@ -228,17 +247,28 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         src.close();
         sd_end();
         set_err(errOut, errOutLen, "Could not reach generativelanguage.googleapis.com");
+        transcribe_log("Error: %s (http.begin() failed)", errOut);
         return false;
     }
     http.addHeader("Content-Type", "application/json");
 
-    Serial.printf("ai_transcribe_file: connecting, free heap %u bytes\n", (unsigned)ESP.getFreeHeap());
+    // Never log `url` - it carries the API key as a query parameter.
+    transcribe_log("Connecting, free heap %u bytes, RSSI %d dBm", (unsigned)ESP.getFreeHeap(), (int)WiFi.RSSI());
+    transcribe_report_upload(0, contentLength, 1, 1);
+    unsigned long startMs = millis();
     int code = http.sendRequest("POST", &body, contentLength);
     String response = http.getString();
     http.end();
     src.close();
+    transcribe_log("HTTP %d%s%s, sent %u/%u bytes, %lu ms, RSSI %d dBm", code, code < 0 ? " " : "",
+                   code < 0 ? HTTPClient::errorToString(code).c_str() : "", (unsigned)body.served(),
+                   (unsigned)contentLength, millis() - startMs, (int)WiFi.RSSI());
 
     if (code != 200) {
+        if (response.length() > 0) {
+            transcribe_log("Response body (first 1 KB):");
+            transcribe_log("%.1024s", response.c_str());
+        }
         JsonDocument doc;
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
@@ -262,15 +292,19 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         !doc["candidates"][0]["content"]["parts"][0]["text"].is<const char *>()) {
         sd_end();
         set_err(errOut, errOutLen, "Unexpected response from Gemini");
+        transcribe_log("Error: %s. Body (first 1 KB):", errOut);
+        transcribe_log("%.1024s", response.c_str());
         return false;
     }
 
+    transcribe_report_phase(TranscribePhase::kSaving);
     char dstPath[80];
     txt_sibling_path(filename, dstPath, sizeof(dstPath));
     File dst = sd_fs().open(dstPath, FILE_WRITE);
     if (!dst) {
         sd_end();
         set_err(errOut, errOutLen, "Could not write transcript file");
+        transcribe_log("Error: %s (%s)", errOut, dstPath);
         return false;
     }
     dst.print(doc["candidates"][0]["content"]["parts"][0]["text"].as<const char *>());

@@ -158,8 +158,11 @@ static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
+static char transcribe_phase[40];
+static int transcribe_percent = -1; // upload bar fill, -1 = no bar
+static char transcribe_detail[64];
 static bool transcribe_ok = false;
-static char transcribe_message[128];
+static char transcribe_message[192];
 
 static void render_body();
 
@@ -379,6 +382,77 @@ static void add_info_card(const char *icon, const char *text) {
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
     lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
+}
+
+// kTranscribeProgress's card: same frame as add_info_card(), holding the
+// filename, the current phase line, an upload bar (only while
+// transcribe_percent >= 0) and a small detail line. Bar is plain
+// black-on-white with no radius/animation so the 1bpp threshold on flush
+// stays crisp.
+static void add_transcribe_progress_card() {
+    const int16_t pad = 10;
+    const int16_t card_w = SCREEN_W - 24;
+    const int16_t inner_w = card_w - pad * 2;
+
+    lv_obj_t *card = lv_obj_create(body);
+    lv_obj_remove_style_all(card);
+    lv_obj_set_width(card, card_w);
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(card, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_color(card, lv_color_black(), 0);
+    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_pad_all(card, pad, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    // No big icon unlike add_info_card() - the bar and two-line phase/
+    // detail text need that vertical room between header and hint bar.
+    lv_obj_t *name = lv_label_create(card);
+    lv_label_set_text(name, transcribe_filename);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(name, inner_w);
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(name, &lv_font_it_12, 0);
+    lv_obj_set_style_text_color(name, lv_color_black(), 0);
+
+    lv_obj_t *phase = lv_label_create(card);
+    lv_label_set_text(phase, transcribe_phase);
+    lv_label_set_long_mode(phase, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(phase, inner_w);
+    lv_obj_set_style_text_align(phase, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(phase, &lv_font_it_14, 0);
+    lv_obj_set_style_text_color(phase, lv_color_black(), 0);
+
+    if (transcribe_percent >= 0) {
+        lv_obj_t *bar = lv_bar_create(card);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, inner_w, 14);
+        lv_obj_set_style_bg_color(bar, lv_color_white(), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(bar, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(bar, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_pad_all(bar, 3, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bar, lv_color_black(), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
+        lv_bar_set_range(bar, 0, 100);
+        lv_bar_set_value(bar, transcribe_percent, LV_ANIM_OFF);
+    }
+
+    if (transcribe_detail[0]) {
+        lv_obj_t *detail = lv_label_create(card);
+        lv_label_set_text(detail, transcribe_detail);
+        lv_label_set_long_mode(detail, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(detail, inner_w);
+        lv_obj_set_style_text_align(detail, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(detail, &lv_font_it_12, 0);
+        lv_obj_set_style_text_color(detail, lv_color_black(), 0);
+    }
+
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, -8);
 }
 
 // Wraps onto up to two lines instead of running off the 200px panel edge -
@@ -663,7 +737,8 @@ static void render_body() {
                 add_row(body, 4, y, SCREEN_W - 8, LV_SYMBOL_WIFI, ssid, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move   Select: join, hold: back");
+            add_hint(transcribe_is_waiting_for_wifi() ? "Next: move   Select: join, hold: cancel"
+                                                     : "Next: move   Select: join, hold: back");
             break;
         }
 
@@ -696,12 +771,10 @@ static void render_body() {
             break;
         }
 
-        case Screen::kTranscribeProgress: {
-            char msg[96];
-            snprintf(msg, sizeof(msg), "Transcribing %s...", transcribe_filename);
-            add_info_card(LV_SYMBOL_REFRESH, msg);
+        case Screen::kTranscribeProgress:
+            add_transcribe_progress_card();
+            add_hint("Please wait...");
             break;
-        }
 
         case Screen::kTranscribeResult:
             add_info_card(transcribe_ok ? LV_SYMBOL_OK : LV_SYMBOL_WARNING, transcribe_message);
@@ -873,9 +946,35 @@ void ui_show_wifi_manage_screen() {
 void ui_show_transcribe_progress(const char *filename) {
     strncpy(transcribe_filename, filename, sizeof(transcribe_filename) - 1);
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
+    strcpy(transcribe_phase, "Starting...");
+    transcribe_percent = -1;
+    transcribe_detail[0] = '\0';
     state = Screen::kTranscribeProgress;
     render_body();
     lv_timer_handler();
+}
+
+void ui_show_wifi_join_for_transcribe() {
+    // Straight to the scan rather than kWifiManage's Join/Create menu - a
+    // standalone AP has no internet, so it's no use for transcribing.
+    wifi_start_scan();
+    state = Screen::kWifiScanning;
+    render_body();
+    lv_timer_handler();
+}
+
+void ui_update_transcribe_progress(const char *phaseLabel, int percent, const char *detail) {
+    strncpy(transcribe_phase, phaseLabel, sizeof(transcribe_phase) - 1);
+    transcribe_phase[sizeof(transcribe_phase) - 1] = '\0';
+    transcribe_percent = percent;
+    strncpy(transcribe_detail, detail, sizeof(transcribe_detail) - 1);
+    transcribe_detail[sizeof(transcribe_detail) - 1] = '\0';
+    state = Screen::kTranscribeProgress;
+    render_body();
+    // Called repeatedly mid-upload, often well inside LVGL's refresh
+    // period since the last repaint - lv_timer_handler() alone would skip
+    // the redraw then, so force it.
+    lv_refr_now(NULL);
 }
 
 void ui_show_transcribe_result(bool ok, const char *message) {
@@ -1275,10 +1374,19 @@ void ui_process_input() {
 
         case Screen::kWifiJoinList: {
             int count = wifi_scan_in_range_count();
+            // Opened for a parked transcription (ui_show_wifi_join_for_transcribe())
+            // rather than from kWifiManage - backing out abandons the
+            // transcription and returns to the file list instead.
+            bool forTranscribe = transcribe_is_waiting_for_wifi();
             if (count == 0) {
                 if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
-                    state = Screen::kWifiManage;
-                    menu_index = 0;
+                    if (forTranscribe) {
+                        transcribe_cancel_wifi_wait();
+                        state = sd_present ? Screen::kList : Screen::kNoCard;
+                    } else {
+                        state = Screen::kWifiManage;
+                        menu_index = 0;
+                    }
                     render_body();
                 }
                 break;
@@ -1289,8 +1397,13 @@ void ui_process_input() {
             } else if (selEv == DisplayButtonEvent::kLong) {
                 // "Previous screen" = the menu this list was opened from,
                 // same one-level-back convention as every other screen here.
-                state = Screen::kWifiManage;
-                menu_index = 0;
+                if (forTranscribe) {
+                    transcribe_cancel_wifi_wait();
+                    state = sd_present ? Screen::kList : Screen::kNoCard;
+                } else {
+                    state = Screen::kWifiManage;
+                    menu_index = 0;
+                }
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 char ssid[WIFI_SSID_MAX_LEN + 1];

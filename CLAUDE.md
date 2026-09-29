@@ -250,9 +250,19 @@ has had a chance to reset its clock.
   manually Online, browsing the web file manager) it leaves WiFi exactly as
   found and never turns it off afterward — only when it was false does it
   call `wifi_manager.h`'s `wifi_ensure_connected()` for one blocking retry
-  against the saved network (giving up with "No WiFi connection." if that
-  fails — `wifi_ensure_connected()` itself already powers the radio back
-  off on failure, so there's nothing to clean up on that branch), call the
+  against the saved network. If that fails (no saved network reachable)
+  it's not treated as a transcription failure — no `_error.txt` is
+  written: the request is parked (`transcribe_is_waiting_for_wifi()`) and
+  `ui.h`'s `ui_show_wifi_join_for_transcribe()` jumps straight to the
+  on-device scan-and-join list (`kWifiScanning` -> `kWifiJoinList`,
+  skipping `kWifiManage`'s Join/Create menu since a standalone AP has no
+  internet). Picking a network lets `wifi_process_pending_join()` call
+  `transcribe_resume_after_join()`, which re-queues the transcription
+  (runs later that same `loop()` pass, and still powers WiFi off after,
+  since it was turned on for it) instead of showing the web QR screen, or
+  shows "Could not join the WiFi network." if the join fails; backing out
+  of the list calls `transcribe_cancel_wifi_wait()` and returns to
+  `kList`. Otherwise it goes on to call the
   now-idempotent `web_server_start()` (this may be the first WiFi
   connection since boot, since boot no longer auto-connects), and then,
   once `ai_transcribe_file()` returns either way, call
@@ -265,7 +275,24 @@ has had a chance to reset its clock.
   without it, a transcription slow enough to outlast `sleep.cpp`'s idle
   timeout on its own would deep-sleep the device the instant
   `ui_is_sleep_blocked()` stops seeing `kTranscribeProgress`, before the
-  user ever got to read "Transcription saved." Exactly one
+  user ever got to read "Transcription saved." Progress feedback and
+  diagnostics go through three provider-facing hooks in `transcribe.h`
+  (implemented in `transcribe.cpp`, so providers never include `ui.h`):
+  `transcribe_report_phase()` (`TranscribePhase` — Connecting WiFi /
+  Uploading / Waiting for transcription / Saving, shown step-numbered on
+  `kTranscribeProgress`), `transcribe_report_upload()` (drives that
+  screen's upload bar via `ui.h`'s `ui_update_transcribe_progress()`,
+  throttled to one e-paper repaint per 10% step or retry-attempt change;
+  each provider's body `Stream` calls it from `readBytes()` and flips to
+  the Waiting phase once its last byte is served), and `transcribe_log()`
+  (appends to a ≤4 KB in-RAM log, echoed to Serial: header, per-attempt
+  HTTP code/bytes sent/duration/RSSI, the first 1 KB of any error
+  response body — never the API key, and never Gemini's request URL,
+  which carries it). On failure `transcribe_process_pending()` saves that
+  log as `<basename>_error.txt` next to the audio file (`storage.h`'s
+  `write_text_file()`, after the provider's own `sd_end()` — SD claims
+  aren't ref-counted) and appends "Details: <name>" to the result message;
+  a later successful run deletes the stale log. Exactly one
   `transcribe_<provider>.cpp` implements the rest (`ai_provider_name()`
   and `ai_transcribe_file()`) — each file's entire body is wrapped in
   `#ifdef AI_PROVIDER_<NAME>`, so every provider file can sit in `src/`

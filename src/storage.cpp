@@ -161,6 +161,23 @@ bool delete_file(const char *filename) {
     return ok;
 }
 
+bool write_text_file(const char *filename, const char *text) {
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    File f = SD_FS.open(path, FILE_WRITE);
+    if (!f) {
+        sd_end();
+        return false;
+    }
+    f.print(text);
+    f.close();
+    sd_end();
+    return true;
+}
+
 bool next_recording_filename(char *out, size_t outLen) {
     for (int n = 1; n <= 9999; n++) {
         char candidate[32];

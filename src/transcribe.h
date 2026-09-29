@@ -58,6 +58,47 @@ void transcribe_request(const char *filename);
 // dance web_server.cpp's handlers do for their own SD access.
 void transcribe_process_pending();
 
+// When transcribe_process_pending() can't reach any saved network, it
+// doesn't fail (and writes no error log) - it parks the request and sends
+// the user to the on-device scan-and-join list (ui.h's
+// ui_show_wifi_join_for_transcribe()) so they can pick an access point.
+// These let wifi_manager.cpp/ui_epaper.cpp finish or abandon that parked
+// request:
+//
+// True while a transcription is parked waiting for the user to join a
+// network.
+bool transcribe_is_waiting_for_wifi();
+// Called by wifi_manager.cpp's wifi_process_pending_join() once its
+// blocking connect finishes, only while transcribe_is_waiting_for_wifi().
+// joined: re-queues the parked transcription (runs later in this same
+// loop() pass, and powers WiFi back off afterwards since it was turned on
+// for it); not joined: powers the radio off and shows a plain "could not
+// join" result, no error log. Either way the request is no longer parked.
+void transcribe_resume_after_join(bool joined);
+// Drops the parked request (user backed out of the join list) and powers
+// the radio back off. No-op if nothing is parked.
+void transcribe_cancel_wifi_wait();
+
+// Progress/diagnostics hooks, implemented in transcribe.cpp and called by
+// the provider's ai_transcribe_file() while it runs - so providers can
+// drive the progress screen and the failure log without knowing about
+// ui.h. Only valid during a transcribe_process_pending() call.
+enum class TranscribePhase { kConnecting, kUploading, kWaiting, kSaving };
+
+// Repaints the progress screen's phase line (and hides the upload bar for
+// any phase but kUploading).
+void transcribe_report_phase(TranscribePhase phase);
+
+// Reports upload progress for the current attempt (1-based) - repaints
+// only when the percentage crosses the next 10% step or the attempt
+// changes, since every e-paper refresh blocks for a noticeable while.
+void transcribe_report_upload(size_t sent, size_t total, int attempt, int maxAttempts);
+
+// Appends one printf-formatted line to the diagnostics log (and echoes it
+// to Serial). On failure transcribe_process_pending() saves the log as
+// <basename>_error.txt next to the audio file. Never pass the API key.
+void transcribe_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 // The actual worker transcribe_process_pending() calls, implemented by
 // whichever provider file is compiled in: uploads /`filename` to the
 // provider's transcription API and writes the returned text to a
@@ -70,5 +111,7 @@ void transcribe_process_pending();
 // sd_begin()/sd_end()) for the duration of the upload, so callers
 // running after boot (i.e. always, here) must pause/resume touch around
 // it themselves - see storage.h's shared-SPI comment. Blocks for the
-// duration of the SD read plus the request/response.
+// duration of the SD read plus the request/response. Reports progress and
+// logs diagnostics through the transcribe_report_*()/transcribe_log()
+// hooks above.
 bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen);
