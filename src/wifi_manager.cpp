@@ -9,6 +9,7 @@
 
 #include "display.h"
 #include "reboot_combo.h"
+#include "transcribe.h"
 #include "ui.h"
 #include "web_server.h"
 
@@ -644,7 +645,10 @@ void wifi_process_pending_join() {
             break;
         }
     }
-    if (!found) return;  // removed from the saved list between selection and now
+    if (!found) {  // removed from the saved list between selection and now
+        transcribe_resume_after_join(false);  // no-op unless a transcription is parked
+        return;
+    }
 
     WiFi.mode(WIFI_STA);
     ui_set_wifi_status("Connecting to WiFi...");
@@ -660,10 +664,18 @@ void wifi_process_pending_join() {
         sync_clock_via_ntp();
         save_preferred_ssid(pendingJoinSsid);
         web_server_start();
-        ui_show_wifi_joined_screen(WiFi.localIP().toString().c_str());
+        if (transcribe_is_waiting_for_wifi()) {
+            // Joined on behalf of a parked transcription - resume that
+            // (transcribe_process_pending(), later this same loop() pass)
+            // instead of showing the web file manager's QR screen.
+            transcribe_resume_after_join(true);
+        } else {
+            ui_show_wifi_joined_screen(WiFi.localIP().toString().c_str());
+        }
     } else {
         ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
         Serial.printf("WiFi: join \"%s\" failed - continuing offline\n", pendingJoinSsid);
+        transcribe_resume_after_join(false);
     }
     ui_refresh_wifi_retry_button();
 }

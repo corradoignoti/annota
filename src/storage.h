@@ -87,6 +87,12 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // the caller re-scans (load_file_catalog()) to refresh the on-screen list.
 bool delete_file(const char *filename);
 
+// Claims the SD card via sd_begin(), writes `text` to a root-level file
+// (overwriting any existing one), then releases it via sd_end(). Returns
+// false if the card or file can't be opened. Same claim/release pattern
+// as delete_file() above.
+bool write_text_file(const char *filename, const char *text);
+
 // Finds an unused "RECnnnn.wav" name in the SD root (nnnn zero-padded,
 // starting at 0001) for a new mic recording (speaker.cpp's
 // mic_start_recording()), writing it (NUL-terminated) into `out`. Unlike

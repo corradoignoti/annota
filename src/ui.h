@@ -74,13 +74,30 @@ void ui_show_file_transfer_screen(const char *ip, const char *filename);
 // the attempt failed).
 void ui_show_wifi_manage_screen();
 
-// Shows a modal "Transcribing <filename>..." status, floated above
-// whatever's on screen (no buttons), and forces one LVGL repaint. Call
+// Shows the transcription progress screen for <filename> (no buttons)
+// and forces one LVGL repaint. Call
 // only from loop() (via transcribe.h's transcribe_process_pending()),
 // never from inside an LVGL event/timer callback - same reentrant-
 // lv_timer_handler() reason as ui_show_wifi_setup_dialog(). Call
 // ui_show_transcribe_result() once the attempt finishes.
 void ui_show_transcribe_progress(const char *filename);
+
+// Starts a WiFi scan and shows the on-device scan-and-join list (same
+// kWifiScanning -> kWifiJoinList flow as the WiFi menu's "Join an access
+// point"), for a transcription parked by transcribe_process_pending()
+// because no saved network was reachable. Backing out of the list
+// abandons the transcription (transcribe.h's transcribe_cancel_wifi_wait())
+// and returns to the file list; picking a network resumes it once joined.
+// Same calling constraints as ui_show_transcribe_progress().
+void ui_show_wifi_join_for_transcribe();
+
+// Updates the progress screen shown by ui_show_transcribe_progress():
+// phaseLabel is the current phase line, percent (0-100) fills the upload
+// bar (negative hides it), detail is a small line below it (may be empty
+// or contain one '\n'). Forces one repaint. Same calling constraints as
+// ui_show_transcribe_progress() - called via transcribe.cpp's
+// transcribe_report_*() hooks while the provider's upload is running.
+void ui_update_transcribe_progress(const char *phaseLabel, int percent, const char *detail);
 
 // Replaces the progress dialog with a result dialog (message plus a
 // Close button) and forces one repaint. Same calling constraints as

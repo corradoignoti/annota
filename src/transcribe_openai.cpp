@@ -65,11 +65,20 @@ void ai_provider_set_api_key(const char *key) {
 // Streams a multipart/form-data body - a literal preamble, then an SD
 // file's bytes, then a literal trailer - to HTTPClient::sendRequest()
 // without ever buffering the whole file in RAM: the ESP32 doesn't have
-// enough of it for anything but the smallest clips.
+// enough of it for anything but the smallest clips. Also reports upload
+// progress through transcribe.h's hooks as HTTPClient pulls bytes out of
+// it, switching to the "waiting" phase once the last byte has gone.
 class MultipartStream : public Stream {
    public:
-    MultipartStream(const String &preamble, File &file, const String &trailer)
-        : preamble_(preamble), file_(file), trailer_(trailer) {}
+    MultipartStream(const String &preamble, File &file, const String &trailer, int attempt, int maxAttempts)
+        : preamble_(preamble),
+          file_(file),
+          trailer_(trailer),
+          total_(preamble.length() + file.size() + trailer.length()),
+          attempt_(attempt),
+          maxAttempts_(maxAttempts) {}
+
+    size_t served() const { return served_; }
 
     int available() override {
         long remaining = (long)(preamble_.length() - preamblePos_) + (long)file_.available() +
@@ -98,6 +107,12 @@ class MultipartStream : public Stream {
         while (total < length && trailerPos_ < trailer_.length()) {
             buffer[total++] = trailer_[trailerPos_++];
         }
+        served_ += total;
+        if (total > 0) transcribe_report_upload(served_, total_, attempt_, maxAttempts_);
+        if (served_ >= total_ && !doneReported_) {
+            doneReported_ = true;
+            transcribe_report_phase(TranscribePhase::kWaiting);
+        }
         return total;
     }
 
@@ -110,6 +125,11 @@ class MultipartStream : public Stream {
     String trailer_;
     size_t preamblePos_ = 0;
     size_t trailerPos_ = 0;
+    size_t total_;
+    size_t served_ = 0;
+    int attempt_;
+    int maxAttempts_;
+    bool doneReported_ = false;
 };
 
 // Swaps `filename`'s extension for ".txt" and adds the leading '/'
@@ -131,6 +151,7 @@ static void set_err(char *errOut, size_t errOutLen, const char *msg) {
 bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (WiFi.status() != WL_CONNECTED) {
         set_err(errOut, errOutLen, "WiFi not connected");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
@@ -138,11 +159,13 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     ai_provider_get_api_key(apiKey, sizeof(apiKey));
     if (apiKey[0] == '\0') {
         set_err(errOut, errOutLen, "No OpenAI API key set (see Settings)");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
     if (!sd_begin()) {
         set_err(errOut, errOutLen, "SD card not available");
+        transcribe_log("Error: %s", errOut);
         return false;
     }
 
@@ -152,8 +175,10 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (!src) {
         sd_end();
         set_err(errOut, errOutLen, "Could not open file");
+        transcribe_log("Error: %s (%s)", errOut, srcPath);
         return false;
     }
+    transcribe_log("Model: %s, file size: %u bytes", MODEL, (unsigned)src.size());
 
     String preamble;
     preamble += "--";
@@ -195,6 +220,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         if (attempt > 0) {
             if (WiFi.status() != WL_CONNECTED) {
                 code = HTTPC_ERROR_CONNECTION_LOST;
+                transcribe_log("WiFi lost before attempt %d/%d, giving up", attempt + 1, kMaxAttempts);
                 break;
             }
             src.seek(0);
@@ -224,24 +250,33 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         http.setConnectTimeout(60000);
         if (!http.begin(client, TRANSCRIBE_URL)) {
             code = HTTPC_ERROR_CONNECTION_REFUSED;
+            transcribe_log("Attempt %d/%d: http.begin() failed", attempt + 1, kMaxAttempts);
             continue;
         }
         http.addHeader("Authorization", String("Bearer ") + apiKey);
         http.addHeader("Content-Type", String("multipart/form-data; boundary=") + BOUNDARY);
 
-        MultipartStream body(preamble, src, trailer);
-        Serial.printf("ai_transcribe_file: connecting (attempt %d/%d), free heap %u bytes, RSSI %d dBm\n", attempt + 1,
-                       kMaxAttempts, (unsigned)ESP.getFreeHeap(), (int)WiFi.RSSI());
+        MultipartStream body(preamble, src, trailer, attempt + 1, kMaxAttempts);
+        transcribe_log("Attempt %d/%d: connecting, free heap %u bytes, RSSI %d dBm", attempt + 1, kMaxAttempts,
+                       (unsigned)ESP.getFreeHeap(), (int)WiFi.RSSI());
+        transcribe_report_upload(0, contentLength, attempt + 1, kMaxAttempts);
+        unsigned long startMs = millis();
         code = http.sendRequest("POST", &body, contentLength);
         response = http.getString();
         http.end();
 
+        transcribe_log("Attempt %d/%d: HTTP %d%s%s, sent %u/%u bytes, %lu ms, RSSI %d dBm", attempt + 1, kMaxAttempts,
+                       code, code < 0 ? " " : "", code < 0 ? HTTPClient::errorToString(code).c_str() : "",
+                       (unsigned)body.served(), (unsigned)contentLength, millis() - startMs, (int)WiFi.RSSI());
         if (code != HTTPC_ERROR_SEND_PAYLOAD_FAILED) break;
-        Serial.printf("ai_transcribe_file: send payload failed (attempt %d/%d), retrying\n", attempt + 1, kMaxAttempts);
     }
     src.close();
 
     if (code != 200) {
+        if (response.length() > 0) {
+            transcribe_log("Response body (first 1 KB):");
+            transcribe_log("%.1024s", response.c_str());
+        }
         JsonDocument doc;
         String message;
         if (deserializeJson(doc, response) == DeserializationError::Ok && doc["error"]["message"].is<const char *>()) {
@@ -272,15 +307,19 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (deserializeJson(doc, response) != DeserializationError::Ok || !doc["text"].is<const char *>()) {
         sd_end();
         set_err(errOut, errOutLen, "Unexpected response from OpenAI");
+        transcribe_log("Error: %s. Body (first 1 KB):", errOut);
+        transcribe_log("%.1024s", response.c_str());
         return false;
     }
 
+    transcribe_report_phase(TranscribePhase::kSaving);
     char dstPath[80];
     txt_sibling_path(filename, dstPath, sizeof(dstPath));
     File dst = sd_fs().open(dstPath, FILE_WRITE);
     if (!dst) {
         sd_end();
         set_err(errOut, errOutLen, "Could not write transcript file");
+        transcribe_log("Error: %s (%s)", errOut, dstPath);
         return false;
     }
     dst.print(doc["text"].as<const char *>());
