@@ -57,6 +57,17 @@ void sd_end();
 // `SD_MMC` directly. Only valid between sd_begin() and sd_end().
 fs::FS &sd_fs();
 
+// Raw sector access for usb_drive.cpp's USB mass-storage mode, which
+// hands the whole card to a USB host block by block rather than going
+// through fs::FS. Only valid between sd_begin() and sd_end(), and only
+// while nothing else touches the filesystem (the FATFS mount stays up
+// underneath but must not be used - its cached view goes stale as soon as
+// the host writes). Sector size is always 512 bytes (SD_SECTOR_SIZE).
+constexpr uint16_t SD_SECTOR_SIZE = 512;
+uint32_t sd_sector_count();
+bool sd_read_sectors(uint8_t *buf, uint32_t firstSector, uint32_t count);
+bool sd_write_sectors(const uint8_t *buf, uint32_t firstSector, uint32_t count);
+
 struct SdInfo {
     uint64_t cardBytes;    // raw card capacity (SD.cardSize())
     uint64_t totalBytes;   // usable filesystem capacity (SD.totalBytes())

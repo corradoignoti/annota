@@ -43,6 +43,10 @@ trigger directly — `wifi_process_pending_reconnect()` and
 `web_server_handle()`, then `sleep_process_idle()` (see `sleep.cpp/h`
 below) last, once everything else that could count as activity this pass
 has had a chance to reset its clock.
+While `usb_drive.h`'s `usb_drive_active()` is true, `loop()` stops right
+after `ui_process_input()` and only pumps `usb_drive_process()` (see
+`usb_drive.cpp/h` below) — the USB host owns the SD card, so no other pump
+may touch it.
 
 - **sleep.cpp/h** — idle-timeout deep sleep, ported from the pala_note
   sibling project's `enterUltraSleep()`/`resetActivity()` (same board
@@ -83,6 +87,29 @@ has had a chance to reset its clock.
   `/api/settings/idle-timeout`), takes effect on the very next
   `sleep_process_idle()` call, no reboot needed.
 
+- **usb_drive.cpp/h** — USB drive mode: the whole SD card exposed to a
+  computer as a USB mass-storage device (arduino-esp32's `USBMSC`, i.e.
+  TinyUSB MSC), entered from the Home carousel's 4th card ("USB drive",
+  `ui_epaper.cpp`'s `kHome` -> `Screen::kUsbDrive`; WiFi is taken offline
+  first so the web file manager can't touch the card). No build-config
+  change: the board runs `ARDUINO_USB_MODE=1` (Serial on the
+  USB-Serial-JTAG peripheral), but that peripheral and USB-OTG share one
+  internal PHY on GPIO19/20, and `usb_drive_start()`'s `USB.begin()`
+  switches it to OTG at runtime — Serial goes silent while the mode is
+  active. There's no `USB.end()` to switch back, so every exit reboots via
+  `reboot_now()` (which also brings the JTAG serial port back and re-scans
+  a card the host may have changed — the PHY selection lives in an RTC
+  register a software reset doesn't clear, so `usb_drive_start()` registers
+  an `esp_restart()` shutdown handler that switches it back to JTAG and
+  forces a host re-enumeration first, covering the both-buttons reboot
+  too): the host ejecting the drive (SCSI
+  START STOP UNIT with eject), a Select long-press on `kUsbDrive`
+  (`usb_drive_request_exit()`), or the host connection staying
+  unmounted/suspended for 2 s after having been seen (cable pulled on
+  battery). Sector I/O goes through `storage.h`'s `sd_read_sectors()`/
+  `sd_write_sectors()` (single-sector `SD_MMC.readRAW()`/`writeRAW()`
+  loops, so throughput is modest) with the card claimed via `sd_begin()`
+  for the whole session. `ui_is_sleep_blocked()` covers `kUsbDrive`.
 - **reboot_combo.cpp/h** — "hold both buttons 5s to reboot"
   (`REBOOT_COMBO_HOLD_MS`). `reboot_combo_start()`, called in `setup()`
   right after the battery latch and before anything that could hang,
@@ -149,7 +176,8 @@ has had a chance to reset its clock.
   hands off to `wifi_manager.h`'s `wifi_request_file_link()` the same way
   Transcribe hands off to `transcribe_request()` — on success this shows
   `Screen::kFileTransfer`, a per-file counterpart to the Home screen's own
-  generic File-transfer/QR screen (`kWifiJoined`, whole-SD-root URL) with
+  generic File-transfer/QR screen (`kWifiJoined`, whole-SD-root URL; the
+  Home carousel's 4th card is USB drive mode — see `usb_drive.cpp/h`) with
   that one file's `/api/download` URL as text plus a QR code
   (`ui_show_file_transfer_screen()`, sharing `add_qr_screen()`'s canvas and
   `url_encode_component()` for any filename characters that need
