@@ -130,3 +130,10 @@ void ui_show_usb_drive_restarting();
 // screen since the device never returns to loop() afterwards - waking is a
 // full MCU reset that rebuilds the screen from scratch.
 void ui_show_sleep_screen();
+
+// Asks for the current screen to be rebuilt on the next
+// ui_process_input() pass - used after i18n.h's language changes (from
+// web_server.cpp's Settings handler) so the e-paper UI switches language
+// without a reboot. Only flags it, same request/process split as the
+// other cross-module UI triggers.
+void ui_request_rerender();

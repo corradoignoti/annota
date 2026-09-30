@@ -87,6 +87,17 @@ may touch it.
   `/api/settings/idle-timeout`), takes effect on the very next
   `sleep_process_idle()` call, no reboot needed.
 
+- **i18n.cpp/h + i18n_strings.def** — translations (English, Italian,
+  French) for everything user-visible, one device-wide language picked on
+  the web Settings page (`POST /api/settings/language`, `"en"/"it"/"fr"`)
+  and persisted in NVS (namespace `"annota"`, key `"lang"`, lazily loaded
+  like `sleep.cpp`'s timeout). `i18n_strings.def` is an X-macro table:
+  `TR(ID, en, it, fr)` rows are e-paper strings, looked up with
+  `tr(Str::ID)` (also used as printf formats); `TRW(key, en, it, fr)` rows
+  are web strings, served as `GET /i18n.js` (`i18n_write_web_js()`:
+  `window.I18N`, `window.I18N_LANG`, and the `t(key, ...args)`/
+  `applyI18n()` helpers). A language change repaints the e-paper UI via
+  `ui.h`'s `ui_request_rerender()`, no reboot. See "Translations" below.
 - **usb_drive.cpp/h** — USB drive mode: the whole SD card exposed to a
   computer as a USB mass-storage device (arduino-esp32's `USBMSC`, i.e.
   TinyUSB MSC), entered from the Home carousel's 4th card ("USB drive",
@@ -378,7 +389,12 @@ may touch it.
   dynamically from `aiProviderName` in the JSON below), backed by
   `/api/settings` (GET, a status snapshot) and `/api/settings/reconnect`,
   `/api/settings/forget`, `/api/settings/ai-key`,
-  `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above).
+  `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above),
+  `/api/settings/language` (POST, see `i18n.cpp/h` above). Both pages load
+  `/i18n.js` synchronously in `<head>`; static markup carries
+  `data-i18n`/`data-i18n-ph`/`data-i18n-title` keys (filled by
+  `applyI18n()` at the top of each page's main script), and every JS
+  string goes through `t("key", ...)`.
   `web_server_start()` is idempotent (a file-scoped `static bool` guard —
   a no-op past the first call), since WiFi is off by default and can newly
   become connected from several places, each of which calls it
@@ -426,6 +442,28 @@ may touch it.
   POST, self-clearing on a timeout otherwise) purely so `sleep.cpp` knows
   not to deep-sleep mid-flight — no request lands here while the browser
   is talking to the AI provider directly.
+
+### Translations
+
+Every user-visible string — e-paper UI, error messages that reach the
+screen, both web pages — lives in `src/i18n_strings.def`, never as a
+literal at the call site. When adding or changing one:
+- Add/edit the row with **all three** languages (EN, IT, FR). A missing
+  column is a compile error by design; don't paper over it with a copy of
+  the English text.
+- `TR` (device) strings: keep printf specifiers identical across columns,
+  use only ASCII + Latin-1 letters (U+00C0–U+00FF — what `lv_font_it_*`
+  carry: no œ, « », ’, …), and keep hints short (two lines at 200 px).
+- `TRW` (web) strings: `{0}`, `{1}` placeholders, any Unicode. Use
+  `t("key")` with a literal key (write `c ? t("a") : t("b")`, not
+  `t(c ? "a" : "b")`) so the checker can see it.
+- Run `python3 tools/check_i18n.py` (also run in CI by
+  `.github/workflows/i18n.yml`): placeholder/specifier mismatches, font
+  coverage, undefined/unused keys, and literals passed straight to the UI
+  text helpers.
+Not translated: `transcribe_log()`/`_error.txt` diagnostics, Serial output,
+server plain-text error bodies, AI prompts, and tzapu/WiFiManager's
+captive-portal pages (third-party).
 
 ### LVGL configuration
 

@@ -1,0 +1,16 @@
+name: i18n
+on:
+  push:
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      # See tools/check_i18n.py's docstring for what this catches beyond
+      # the compile-time column check in src/i18n_strings.def.
+      - name: Check translations
+        run: python3 tools/check_i18n.py

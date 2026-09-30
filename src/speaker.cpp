@@ -13,6 +13,7 @@
 #include <esp_heap_caps.h>
 
 #include "es8311.h"
+#include "i18n.h"
 #include "storage.h"
 
 // -----------------------------------------------------------------------
@@ -526,7 +527,7 @@ bool recording = false;
 char recordFilename[64];
 uint32_t recordedDataBytes = 0; // PCM bytes written so far - patch_wav_header() needs the final count
 uint32_t lastHeaderPatchMs = 0; // mic_process()'s periodic re-patch - see its comment
-char micErrorMessage[96] = ""; // see mic_last_error()
+char micErrorMessage[160] = ""; // see mic_last_error()
 
 // Logs `msg` to Serial (as every failure path here already did) and also
 // stashes it for mic_last_error() - ui_epaper.cpp shows that on screen,
@@ -587,7 +588,7 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
     speaker_stop(); // mutual exclusion - see this file's top comment
 
     if (!speaker_begin()) {
-        set_mic_error("Couldn't start recording: codec not responding (I2C error)");
+        set_mic_error(tr(Str::MIC_ERR_CODEC));
         return false;
     }
     // Mute DAC before recording, unconditionally - cleanup() (see its
@@ -601,17 +602,17 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
     // noise that was never actually in the room.
     es8311_set_mute(true);
     if (!i2s_configure(MIC_SAMPLE_RATE) || rxChan == nullptr) {
-        set_mic_error("Couldn't start recording: I2S setup failed");
+        set_mic_error(tr(Str::MIC_ERR_I2S_SETUP));
         return false;
     }
     if (!sd_begin()) {
-        set_mic_error("Couldn't start recording: SD card not available");
+        set_mic_error(tr(Str::MIC_ERR_SD));
         return false;
     }
 
     char name[64];
     if (!next_recording_filename(name, sizeof(name))) {
-        set_mic_error("Couldn't start recording: no free RECnnnn.wav name");
+        set_mic_error(tr(Str::MIC_ERR_NO_NAME));
         sd_end();
         return false;
     }
@@ -619,8 +620,8 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
     snprintf(path, sizeof(path), "/%s", name);
     recordFile = sd_fs().open(path, FILE_WRITE);
     if (!recordFile) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Couldn't start recording: couldn't create %s", path);
+        char msg[160];
+        snprintf(msg, sizeof(msg), tr(Str::MIC_ERR_CREATE), path);
         set_mic_error(msg);
         sd_end();
         return false;
@@ -633,7 +634,7 @@ bool mic_start_recording(char *filenameOut, size_t filenameOutLen) {
     es8311_set_mic_gain(MIC_GAIN_CODE);
     es8311_set_mic_enabled(true);
     if (i2s_channel_enable(rxChan) != ESP_OK) {
-        set_mic_error("Couldn't start recording: I2S mic channel enable failed");
+        set_mic_error(tr(Str::MIC_ERR_ENABLE));
         es8311_set_mic_enabled(false);
         recordFile.close();
         sd_end();
@@ -682,8 +683,8 @@ void mic_process() {
     size_t bytesRead = 0;
     esp_err_t err = i2s_channel_read(rxChan, stereoBuf, sizeof(stereoBuf), &bytesRead, 0);
     if (err != ESP_OK && err != ESP_ERR_TIMEOUT) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Recording stopped: I2S read failed (%d)", (int)err);
+        char msg[128];
+        snprintf(msg, sizeof(msg), tr(Str::MIC_ERR_READ), (int)err);
         set_mic_error(msg);
         mic_stop_recording();
         return;
@@ -707,8 +708,8 @@ void mic_process() {
         // on disk, or the header patched below/at stop would overstate
         // the data chunk and leave garbage past the real audio at
         // playback. Nothing more can be salvaged past this point either.
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Recording stopped: SD write failed (%u/%u bytes)", (unsigned)wroteBytes, (unsigned)wantBytes);
+        char msg[128];
+        snprintf(msg, sizeof(msg), tr(Str::MIC_ERR_WRITE), (unsigned)wroteBytes, (unsigned)wantBytes);
         set_mic_error(msg);
         recordedDataBytes += (uint32_t)wroteBytes;
         mic_stop_recording();

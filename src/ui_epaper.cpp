@@ -8,6 +8,7 @@
 
 #include "display.h"
 #include "fonts_it.h"
+#include "i18n.h"
 #include "reboot_combo.h"
 #include "sleep.h"
 #include "speaker.h"
@@ -127,19 +128,19 @@ static const int16_t TEXT_VIEW_SCROLL_STEP = 60; // ~3-4 lines at 14pt
 static char wifi_setup_ssid[64];
 
 // kWifiApActive
-static char wifi_ap_message[96];
+static char wifi_ap_ip[16];
 
-// kWifiJoined
-static char wifi_joined_message[96];
-static char wifi_joined_url[64];  // just the URL, separately from the sentence above - encoded into the QR code
+// kWifiJoined - just the URL; the sentence around it is formatted at
+// render time (render_body()), so a language change repaints it too.
+static char wifi_joined_url[64];
 
 // kFileTransfer - the per-file counterpart to kWifiJoined above. url is
 // sized for the worst case (a fully percent-encoded active_filename, see
 // url_encode_component()) even though the QR code itself can't hold that
 // much - add_qr_screen() degrades to text-only in that case (see its
 // comment), and the message label below shows the plain filename either
-// way, word-wrapped.
-static char file_transfer_message[128];
+// way, word-wrapped (formatted at render time, like kWifiJoined's).
+static char file_transfer_name[64];
 static char file_transfer_url[256];
 
 // kWifiApActive - STANDALONE_AP_SSID (wifi_manager.cpp) is a fixed literal
@@ -169,13 +170,16 @@ static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
-static char transcribe_phase[40];
+static char transcribe_phase[64];
 static int transcribe_percent = -1; // upload bar fill, -1 = no bar
 static char transcribe_detail[64];
 static bool transcribe_ok = false;
 static char transcribe_message[192];
 
 static void render_body();
+
+// Set by ui_request_rerender(), consumed by ui_process_input().
+static bool rerender_requested = false;
 
 // kList shows a synthetic "Record new" row pinned above the real files -
 // but only while showing_audio_files (a recording is itself an audio
@@ -222,17 +226,18 @@ static void build_details_text() {
     char size[16];
     format_size(entry.size, size, sizeof(size));
     if (!showing_audio_files) {
-        snprintf(details_text, sizeof(details_text), "%s\n\nSize: %s\nCreated: %s", entry.filename, size, entry.created);
+        snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_TEXT), entry.filename, size, entry.created);
         return;
     }
     uint32_t secs = 0;
-    char length[24];
+    char length[32];
     if (get_audio_duration_seconds(entry.filename, secs)) {
-        snprintf(length, sizeof(length), "%lu min %lu s", (unsigned long)(secs / 60), (unsigned long)(secs % 60));
+        snprintf(length, sizeof(length), tr(Str::DURATION_MIN_SEC), (unsigned long)(secs / 60), (unsigned long)(secs % 60));
     } else {
-        strncpy(length, "unknown", sizeof(length));
+        strncpy(length, tr(Str::UNKNOWN), sizeof(length) - 1);
+        length[sizeof(length) - 1] = '\0';
     }
-    snprintf(details_text, sizeof(details_text), "%s\n\nSize: %s\nLength: %s", entry.filename, size, length);
+    snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_AUDIO), entry.filename, size, length);
 }
 
 static size_t list_item_count() {
@@ -571,7 +576,7 @@ static void render_option_menu(const char *title, const char *const *icons, cons
         y += ROW_H;
     }
 
-    add_hint("Next: cycle   Select: choose, hold: back");
+    add_hint(tr(Str::HINT_MENU));
 }
 
 static void render_body() {
@@ -579,32 +584,33 @@ static void render_body() {
 
     switch (state) {
         case Screen::kNoCard:
-            add_info_card(LV_SYMBOL_SD_CARD, "Insert an SD card to see your audio files");
+            add_info_card(LV_SYMBOL_SD_CARD, tr(Str::NO_CARD));
             break;
 
         case Screen::kList: {
             size_t count = list_item_count();
-            char header_label[24];
-            snprintf(header_label, sizeof(header_label), "%s (%u)", showing_audio_files ? "Audio Files" : "Text Files",
+            char header_label[48];
+            snprintf(header_label, sizeof(header_label), "%s (%u)",
+                     tr(showing_audio_files ? Str::LIST_AUDIO_FILES : Str::LIST_TEXT_FILES),
                      (unsigned)mp3FileCount);
             render_list_header(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE, header_label,
                                 count > (size_t)VISIBLE_ROWS);
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
-                               showing_audio_files ? "No audio files on the SD card" : "No text files on the SD card");
-                add_hint("Sel(hold): menu   Next(hold): home");
+                               tr(showing_audio_files ? Str::LIST_NO_AUDIO : Str::LIST_NO_TEXT));
+                add_hint(tr(Str::HINT_LIST_EMPTY));
                 break;
             }
             clamp_selection();
             bool recordOption = has_record_option();
             int16_t y = ROW_H;
             for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
-                const char *label = (recordOption && i == 0) ? "Record new" : mp3Files[recordOption ? i - 1 : i].filename;
+                const char *label = (recordOption && i == 0) ? tr(Str::LIST_RECORD_NEW) : mp3Files[recordOption ? i - 1 : i].filename;
                 const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
                 add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
                 y += ROW_H;
             }
-            add_hint("Next: move, hold: home   Sel: open, hold: menu");
+            add_hint(tr(Str::HINT_LIST));
             break;
         }
 
@@ -623,11 +629,12 @@ static void render_body() {
         // USB host (usb_drive.h) and shows kUsbDrive.
         case Screen::kHome: {
             static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB};
-            static const char *labels[] = {"Audio", "Text", "File transfer", "USB drive"};
-            render_list_header(LV_SYMBOL_HOME, "Home", false);
+            const char *labels[] = {tr(Str::HOME_AUDIO), tr(Str::HOME_TEXT), tr(Str::FILE_TRANSFER),
+                                    tr(Str::USB_DRIVE)};
+            render_list_header(LV_SYMBOL_HOME, tr(Str::HOME_TITLE), false);
             add_info_card(icons[menu_index], labels[menu_index]);
-            char hint[48];
-            snprintf(hint, sizeof(hint), "Next: cycle (%d/4)   Select: choose, hold: back", (int)menu_index + 1);
+            char hint[96];
+            snprintf(hint, sizeof(hint), tr(Str::HINT_HOME), (int)menu_index + 1);
             add_hint(hint);
             break;
         }
@@ -642,15 +649,16 @@ static void render_body() {
         case Screen::kMainMenu: {
             bool online = wifi_is_connected();
             const char *icons[] = {LV_SYMBOL_REFRESH, LV_SYMBOL_WIFI, LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
-            const char *options[] = {"Refresh", online ? "Offline" : "Online", "Reboot", "Close"};
-            render_option_menu("Menu", icons, options, 4);
+            const char *options[] = {tr(Str::MENU_REFRESH), tr(online ? Str::MENU_OFFLINE : Str::MENU_ONLINE),
+                                     tr(Str::MENU_REBOOT), tr(Str::MENU_CLOSE)};
+            render_option_menu(tr(Str::MENU_TITLE), icons, options, 4);
             break;
         }
 
         case Screen::kRebootConfirm: {
             static const char *icons[] = {LV_SYMBOL_POWER, LV_SYMBOL_CLOSE};
-            static const char *options[] = {"Confirm reboot", "Cancel"};
-            render_option_menu("Reboot device?", icons, options, 2);
+            const char *options[] = {tr(Str::REBOOT_CONFIRM), tr(Str::CANCEL)};
+            render_option_menu(tr(Str::REBOOT_TITLE), icons, options, 2);
             break;
         }
 
@@ -662,12 +670,14 @@ static void render_body() {
             if (showing_audio_files) {
                 static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT,   LV_SYMBOL_LIST,
                                                LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD, LV_SYMBOL_CLOSE};
-                static const char *options[] = {"Play", "Transcribe", "Details", "Delete", "File transfer", "Cancel"};
+                const char *options[] = {tr(Str::ACTION_PLAY),   tr(Str::ACTION_TRANSCRIBE), tr(Str::ACTION_DETAILS),
+                                         tr(Str::ACTION_DELETE), tr(Str::FILE_TRANSFER),     tr(Str::CANCEL)};
                 render_option_menu(active_filename, icons, options, 6);
             } else {
                 static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
                                                LV_SYMBOL_CLOSE};
-                static const char *options[] = {"View", "Details", "Delete", "File transfer", "Cancel"};
+                const char *options[] = {tr(Str::ACTION_VIEW), tr(Str::ACTION_DETAILS), tr(Str::ACTION_DELETE),
+                                         tr(Str::FILE_TRANSFER), tr(Str::CANCEL)};
                 render_option_menu(active_filename, icons, options, 5);
             }
             break;
@@ -700,20 +710,20 @@ static void render_body() {
             if (text_view_scroll_px > max_scroll) text_view_scroll_px = max_scroll;
             lv_obj_set_y(label, -text_view_scroll_px);
 
-            add_hint("Select: down   Next: up, hold Sel: close");
+            add_hint(tr(Str::HINT_TEXT_VIEW));
             break;
         }
 
         case Screen::kDetails:
             add_info_card(LV_SYMBOL_LIST, details_text);
-            add_hint("Select: back");
+            add_hint(tr(Str::HINT_SELECT_BACK));
             break;
 
         case Screen::kDeleteConfirm: {
-            char title[96];
-            snprintf(title, sizeof(title), "Delete %s?", active_filename);
+            char title[128];
+            snprintf(title, sizeof(title), tr(Str::DELETE_TITLE), active_filename);
             static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-            static const char *options[] = {"Confirm delete", "Cancel"};
+            const char *options[] = {tr(Str::DELETE_CONFIRM), tr(Str::CANCEL)};
             render_option_menu(title, icons, options, 2);
             break;
         }
@@ -734,46 +744,55 @@ static void render_body() {
             lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *hdr_label = lv_label_create(hdr);
-            lv_label_set_text(hdr_label, LV_SYMBOL_WIFI "  WiFi");
+            lv_label_set_text_fmt(hdr_label, LV_SYMBOL_WIFI "  %s", tr(Str::WIFI_TITLE));
             lv_obj_set_style_text_font(hdr_label, &lv_font_it_14, 0);
             lv_obj_set_style_text_color(hdr_label, lv_color_black(), 0);
             lv_obj_align(hdr_label, LV_ALIGN_LEFT_MID, 6, -1);
 
             static const char *icons[] = {LV_SYMBOL_WIFI, LV_SYMBOL_UPLOAD};
-            static const char *options[] = {"Join an access point", "Create an AP"};
+            const char *options[] = {tr(Str::WIFI_JOIN_AP), tr(Str::WIFI_CREATE_AP)};
             int16_t y = ROW_H;
             for (int i = 0; i < 2; i++) {
                 add_row(body, 4, y, SCREEN_W - 8, icons[i], options[i], i == menu_index);
                 y += ROW_H;
             }
-            add_hint("Next: cycle   Select: choose, hold: back");
+            add_hint(tr(Str::HINT_MENU));
             break;
         }
 
-        case Screen::kWifiApActive:
-            add_qr_screen(WIFI_AP_QR_DATA, wifi_ap_message);
-            add_hint("Select: stop AP");
+        case Screen::kWifiApActive: {
+            char msg[160];
+            snprintf(msg, sizeof(msg), tr(Str::WIFI_AP_MSG), wifi_ap_ip);
+            add_qr_screen(WIFI_AP_QR_DATA, msg);
+            add_hint(tr(Str::HINT_STOP_AP));
             break;
+        }
 
-        case Screen::kWifiJoined:
-            add_qr_screen(wifi_joined_url, wifi_joined_message);
-            add_hint("Select: close, WiFi off");
+        case Screen::kWifiJoined: {
+            char msg[192];
+            snprintf(msg, sizeof(msg), tr(Str::WIFI_JOINED_MSG), wifi_joined_url);
+            add_qr_screen(wifi_joined_url, msg);
+            add_hint(tr(Str::HINT_CLOSE_WIFI_OFF));
             break;
+        }
 
-        case Screen::kFileTransfer:
-            add_qr_screen(file_transfer_url, file_transfer_message);
-            add_hint("Select: close, WiFi off");
+        case Screen::kFileTransfer: {
+            char msg[192];
+            snprintf(msg, sizeof(msg), tr(Str::FILE_TRANSFER_MSG), file_transfer_name);
+            add_qr_screen(file_transfer_url, msg);
+            add_hint(tr(Str::HINT_CLOSE_WIFI_OFF));
             break;
+        }
 
         case Screen::kWifiScanning:
-            add_info_card(LV_SYMBOL_WIFI, "Scanning for networks...");
+            add_info_card(LV_SYMBOL_WIFI, tr(Str::WIFI_SCANNING));
             break;
 
         case Screen::kWifiJoinList: {
             int count = wifi_scan_in_range_count();
             if (count == 0) {
-                add_info_card(LV_SYMBOL_WARNING, "No known networks in range.");
-                add_hint("Select: close");
+                add_info_card(LV_SYMBOL_WARNING, tr(Str::WIFI_NO_KNOWN));
+                add_hint(tr(Str::HINT_SELECT_CLOSE));
                 break;
             }
             // Shares selected_index/top_index with kList - the two screens
@@ -783,8 +802,8 @@ static void render_body() {
             if (selected_index < top_index) top_index = selected_index;
             if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
 
-            char header_label[24];
-            snprintf(header_label, sizeof(header_label), "Networks (%u)", (unsigned)count);
+            char header_label[48];
+            snprintf(header_label, sizeof(header_label), tr(Str::WIFI_NETWORKS), (unsigned)count);
             render_list_header(LV_SYMBOL_WIFI, header_label, count > VISIBLE_ROWS);
             int16_t y = ROW_H;
             for (size_t i = top_index; i < (size_t)count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
@@ -793,30 +812,29 @@ static void render_body() {
                 add_row(body, 4, y, SCREEN_W - 8, LV_SYMBOL_WIFI, ssid, i == selected_index);
                 y += ROW_H;
             }
-            add_hint(transcribe_is_waiting_for_wifi() ? "Next: move   Select: join, hold: cancel"
-                                                     : "Next: move   Select: join, hold: back");
+            add_hint(tr(transcribe_is_waiting_for_wifi() ? Str::HINT_JOIN_CANCEL : Str::HINT_JOIN_BACK));
             break;
         }
 
         case Screen::kPlaying: {
-            char msg[96];
-            snprintf(msg, sizeof(msg), "Playing %s...", active_filename);
+            char msg[128];
+            snprintf(msg, sizeof(msg), tr(Str::PLAYING), active_filename);
             add_info_card(LV_SYMBOL_PLAY, msg);
-            add_hint("Select: stop");
+            add_hint(tr(Str::HINT_SELECT_STOP));
             break;
         }
 
         case Screen::kRecording: {
-            char msg[96];
-            snprintf(msg, sizeof(msg), "Recording %s...", active_filename);
+            char msg[128];
+            snprintf(msg, sizeof(msg), tr(Str::RECORDING), active_filename);
             add_info_card(LV_SYMBOL_AUDIO, msg);
-            add_hint("Select: stop");
+            add_hint(tr(Str::HINT_SELECT_STOP));
             break;
         }
 
         case Screen::kMicError:
             add_info_card(LV_SYMBOL_WARNING, mic_last_error());
-            add_hint("Select: close");
+            add_hint(tr(Str::HINT_SELECT_CLOSE));
             break;
 
         // USB drive mode (usb_drive.h) - the SD card belongs to the USB
@@ -824,40 +842,40 @@ static void render_body() {
         // user cancels; every one of those ends in a reboot
         // (kUsbDriveRestarting is the last thing painted before it).
         case Screen::kUsbDrive:
-            render_list_header(LV_SYMBOL_USB, "USB drive", false);
-            add_info_card(LV_SYMBOL_USB, "Connected as a USB drive. Eject it on the computer to finish.");
-            add_hint("Hold Select: cancel (eject first!)");
+            render_list_header(LV_SYMBOL_USB, tr(Str::USB_DRIVE), false);
+            add_info_card(LV_SYMBOL_USB, tr(Str::USB_CONNECTED));
+            add_hint(tr(Str::HINT_USB));
             break;
 
         case Screen::kUsbDriveError:
-            add_info_card(LV_SYMBOL_WARNING, "Could not open the SD card for USB drive mode.");
-            add_hint("Select: close");
+            add_info_card(LV_SYMBOL_WARNING, tr(Str::USB_ERROR));
+            add_hint(tr(Str::HINT_SELECT_CLOSE));
             break;
 
         case Screen::kUsbDriveRestarting:
-            add_info_card(LV_SYMBOL_REFRESH, "USB drive closed. Restarting...");
+            add_info_card(LV_SYMBOL_REFRESH, tr(Str::USB_RESTARTING));
             break;
 
         case Screen::kWifiSetup: {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", wifi_setup_ssid);
+            char msg[192];
+            snprintf(msg, sizeof(msg), tr(Str::WIFI_SETUP_MSG), wifi_setup_ssid);
             add_info_card(LV_SYMBOL_WIFI, msg);
-            add_hint("Hold Select: work offline");
+            add_hint(tr(Str::HINT_WORK_OFFLINE));
             break;
         }
 
         case Screen::kTranscribeProgress:
             add_transcribe_progress_card();
-            add_hint("Please wait...");
+            add_hint(tr(Str::HINT_PLEASE_WAIT));
             break;
 
         case Screen::kTranscribeResult:
             add_info_card(transcribe_ok ? LV_SYMBOL_OK : LV_SYMBOL_WARNING, transcribe_message);
-            add_hint("Select: close");
+            add_hint(tr(Str::HINT_SELECT_CLOSE));
             break;
 
         case Screen::kSleeping:
-            add_info_card(LV_SYMBOL_POWER, "Sleeping...\nHold Select to wake");
+            add_info_card(LV_SYMBOL_POWER, tr(Str::SLEEPING));
             break;
     }
 }
@@ -982,8 +1000,6 @@ void ui_show_wifi_joined_screen(const char *ip) {
     char status[64];
     snprintf(status, sizeof(status), LV_SYMBOL_WIFI " %s", ip);
     ui_set_wifi_status(status);
-    snprintf(wifi_joined_message, sizeof(wifi_joined_message),
-             "Connected. Open http://%s in a browser for settings or file transfer.", ip);
     snprintf(wifi_joined_url, sizeof(wifi_joined_url), "http://%s", ip);
     state = Screen::kWifiJoined;
     render_body();
@@ -1004,8 +1020,8 @@ void ui_show_file_transfer_screen(const char *ip, const char *filename) {
     char encoded[190];
     url_encode_component(filename, encoded, sizeof(encoded));
     snprintf(file_transfer_url, sizeof(file_transfer_url), "http://%s/api/download?name=%s", ip, encoded);
-    snprintf(file_transfer_message, sizeof(file_transfer_message), "Open this link (or scan) to download:\n%s",
-             filename);
+    strncpy(file_transfer_name, filename, sizeof(file_transfer_name) - 1);
+    file_transfer_name[sizeof(file_transfer_name) - 1] = '\0';
     state = Screen::kFileTransfer;
     render_body();
     lv_timer_handler();
@@ -1021,7 +1037,8 @@ void ui_show_wifi_manage_screen() {
 void ui_show_transcribe_progress(const char *filename) {
     strncpy(transcribe_filename, filename, sizeof(transcribe_filename) - 1);
     transcribe_filename[sizeof(transcribe_filename) - 1] = '\0';
-    strcpy(transcribe_phase, "Starting...");
+    strncpy(transcribe_phase, tr(Str::TRANSCRIBE_STARTING), sizeof(transcribe_phase) - 1);
+    transcribe_phase[sizeof(transcribe_phase) - 1] = '\0';
     transcribe_percent = -1;
     transcribe_detail[0] = '\0';
     state = Screen::kTranscribeProgress;
@@ -1073,6 +1090,10 @@ void ui_show_usb_drive_restarting() {
     lv_timer_handler();
 }
 
+void ui_request_rerender() {
+    rerender_requested = true;
+}
+
 void ui_show_sleep_screen() {
     state = Screen::kSleeping;
     render_body();
@@ -1085,6 +1106,10 @@ void ui_process_input() {
     // loop() iteration, not just on a button edge like everything below.
     speaker_process();
     mic_process();
+    if (rerender_requested) {
+        rerender_requested = false;
+        render_body();
+    }
     if (state == Screen::kWifiScanning && wifi_scan_status() != WifiScanStatus::kRunning) {
         // Same unconditional-pump idiom as speaker_process()/mic_process()
         // above - wifi_scan_status() is a cheap, non-blocking check, safe
@@ -1323,8 +1348,7 @@ void ui_process_input() {
                            mp3Files[active_file_index].size > TRANSCRIBE_MAX_FILE_BYTES) {
                     // Too big for the ESP32's own upload - never even
                     // queue it (see TRANSCRIBE_MAX_FILE_BYTES).
-                    ui_show_transcribe_result(false, "File too large to transcribe on the device (max 1 MB).\n"
-                                                     "Use the web interface's Transcribe button instead.");
+                    ui_show_transcribe_result(false, tr(Str::TRANSCRIBE_TOO_LARGE));
                 } else if (showing_audio_files && menu_index == 1) {
                     // Don't touch state/render here - transcribe.h's
                     // transcribe_process_pending() (called right after
@@ -1484,10 +1508,7 @@ void ui_process_input() {
                     // Non-blocking, safe to call directly here - shows
                     // the AP's IP on kWifiApActive instead of falling
                     // back to kList.
-                    char ip[16];
-                    wifi_start_standalone_ap(ip, sizeof(ip));
-                    snprintf(wifi_ap_message, sizeof(wifi_ap_message),
-                             "Connect to WiFi \"Annota-AP\", then open http://%s in a browser.", ip);
+                    wifi_start_standalone_ap(wifi_ap_ip, sizeof(wifi_ap_ip));
                     state = Screen::kWifiApActive;
                 }
                 render_body();
