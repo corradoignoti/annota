@@ -27,6 +27,17 @@ static const char *BOUNDARY = "----AnnotaBoundary7MA4YWxkTrZu0gW";
 // good default until there's a Settings UI for picking a different one.
 static const char *MODEL = "whisper-1";
 
+// Second request, after a successful transcription: a chat completion that
+// turns the transcript into a title and a short abstract, written on top
+// of the .txt file. Cheap model with JSON mode - keep in sync with
+// web_server.cpp's browser-side summarize().
+static const char *SUMMARY_URL = "https://api.openai.com/v1/chat/completions";
+static const char *SUMMARY_MODEL = "gpt-4o-mini";
+static const char *SUMMARY_PROMPT =
+    "Given a transcript, reply with a JSON object {\"title\": string, \"abstract\": string}. "
+    "Title: short, at most 10 words. Abstract: 2 to 4 sentences summarizing the content. "
+    "Write both in the same language as the transcript.";
+
 // NVS key namespaced by provider (not just "apiKey") so switching which
 // AI_PROVIDER_* is compiled in doesn't silently feed a stale key saved
 // for a different provider into this one, or vice versa.
@@ -249,6 +260,89 @@ static void set_err(char *errOut, size_t errOutLen, const char *msg) {
     errOut[errOutLen - 1] = '\0';
 }
 
+// Asks SUMMARY_MODEL for a title and abstract of `transcript`. Any failure
+// is only logged - the caller falls back to saving the plain transcript,
+// since the transcription itself (the slow, expensive part) already
+// succeeded.
+static bool summarize_transcript(const char *apiKey, const String &transcript, String &title, String &abstract) {
+    String body;
+    {
+        JsonDocument req;
+        req["model"] = SUMMARY_MODEL;
+        req["response_format"]["type"] = "json_object";
+        JsonArray messages = req["messages"].to<JsonArray>();
+        JsonObject sys = messages.add<JsonObject>();
+        sys["role"] = "system";
+        sys["content"] = SUMMARY_PROMPT;
+        JsonObject user = messages.add<JsonObject>();
+        user["role"] = "user";
+        user["content"] = transcript;
+        serializeJson(req, body);
+    }
+
+    static const int kMaxAttempts = 2;
+    int code = 0;
+    String response;
+    for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
+        if (attempt > 0) {
+            if (WiFi.status() != WL_CONNECTED) break;
+            delay(1000);
+        }
+        WiFiClientSecure client;
+        client.setInsecure(); // same as the transcription request above
+        HTTPClient http;
+        // Both timeouts for the same reason as ai_transcribe_file()'s
+        // setConnectTimeout() comment.
+        http.setTimeout(60000);
+        http.setConnectTimeout(60000);
+        if (!http.begin(client, SUMMARY_URL)) {
+            code = HTTPC_ERROR_CONNECTION_REFUSED;
+            transcribe_log("Summary attempt %d/%d: http.begin() failed", attempt + 1, kMaxAttempts);
+            continue;
+        }
+        http.addHeader("Authorization", String("Bearer ") + apiKey);
+        http.addHeader("Content-Type", "application/json");
+        unsigned long startMs = millis();
+        code = http.POST(body);
+        response = http.getString();
+        http.end();
+        transcribe_log("Summary attempt %d/%d: HTTP %d%s%s, %lu ms", attempt + 1, kMaxAttempts, code,
+                       code < 0 ? " " : "", code < 0 ? HTTPClient::errorToString(code).c_str() : "",
+                       millis() - startMs);
+        if (code >= 0) break;
+    }
+    body = String(); // free before parsing the response
+
+    if (code != 200) {
+        if (response.length() > 0) {
+            transcribe_log("Summary response body (first 1 KB):");
+            transcribe_log("%.1024s", response.c_str());
+        }
+        return false;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, response) != DeserializationError::Ok ||
+        !doc["choices"][0]["message"]["content"].is<const char *>()) {
+        transcribe_log("Summary: unexpected response. Body (first 1 KB):");
+        transcribe_log("%.1024s", response.c_str());
+        return false;
+    }
+    // The model's answer is itself a JSON string (response_format json_object).
+    JsonDocument content;
+    if (deserializeJson(content, doc["choices"][0]["message"]["content"].as<const char *>()) !=
+            DeserializationError::Ok ||
+        !content["title"].is<const char *>() || !content["abstract"].is<const char *>()) {
+        transcribe_log("Summary: model reply is not the expected JSON");
+        return false;
+    }
+    title = content["title"].as<const char *>();
+    abstract = content["abstract"].as<const char *>();
+    title.trim();
+    abstract.trim();
+    return title.length() > 0 && abstract.length() > 0;
+}
+
 bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (WiFi.status() != WL_CONNECTED) {
         set_err(errOut, errOutLen, "WiFi not connected");
@@ -421,6 +515,16 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         return false;
     }
 
+    // Free the Whisper response before opening a second TLS session.
+    String transcript = doc["text"].as<const char *>();
+    doc.clear();
+    response = String();
+
+    transcribe_report_phase(TranscribePhase::kSummarizing);
+    String title, abstract;
+    bool summarized = summarize_transcript(apiKey, transcript, title, abstract);
+    if (!summarized) transcribe_log("Summary skipped, saving plain transcript");
+
     transcribe_report_phase(TranscribePhase::kSaving);
     char dstPath[80];
     txt_sibling_path(filename, dstPath, sizeof(dstPath));
@@ -431,7 +535,13 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         transcribe_log("Error: %s (%s)", errOut, dstPath);
         return false;
     }
-    dst.print(doc["text"].as<const char *>());
+    if (summarized) {
+        dst.print(title);
+        dst.print("\n\n");
+        dst.print(abstract);
+        dst.print("\n\n");
+    }
+    dst.print(transcript);
     dst.close();
     sd_end();
     return true;
