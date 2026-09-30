@@ -1,3 +1,10 @@
+## [1.9.1](https://github.com/corradoignoti/annota/compare/v1.9.0...v1.9.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* transcription upload failing with HTTP -3 on long recordings ([36b87ba](https://github.com/corradoignoti/annota/commit/36b87ba6edaab23ee6e12b484e90773fd7f60b0b))
+
 # [1.9.0](https://github.com/corradoignoti/annota/compare/v1.8.0...v1.9.0) (2026-09-29)
 
 
