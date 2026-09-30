@@ -15,6 +15,8 @@
 
 #include <SD_MMC.h>
 
+#include "i18n.h"
+
 #define SDMMC_CLK_PIN 39
 #define SDMMC_CMD_PIN 41
 #define SDMMC_D0_PIN  40
@@ -41,7 +43,7 @@ static bool has_ext(const char *name, const char *extList) {
 
 static void format_timestamp(time_t t, char *out, size_t outLen) {
     if (t <= 0) {
-        strncpy(out, "Unknown date", outLen - 1);
+        strncpy(out, tr(Str::UNKNOWN_DATE), outLen - 1);
         out[outLen - 1] = '\0';
         return;
     }

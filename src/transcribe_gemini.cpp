@@ -14,6 +14,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "i18n.h"
 #include "storage.h"
 
 // -----------------------------------------------------------------------
@@ -184,7 +185,7 @@ static void set_err(char *errOut, size_t errOutLen, const char *msg) {
 
 bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (WiFi.status() != WL_CONNECTED) {
-        set_err(errOut, errOutLen, "WiFi not connected");
+        set_err(errOut, errOutLen, tr(Str::ERR_WIFI_NOT_CONNECTED));
         transcribe_log("Error: %s", errOut);
         return false;
     }
@@ -192,13 +193,13 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     char apiKey[AI_API_KEY_MAX];
     ai_provider_get_api_key(apiKey, sizeof(apiKey));
     if (apiKey[0] == '\0') {
-        set_err(errOut, errOutLen, "No Gemini API key set (see Settings)");
+        snprintf(errOut, errOutLen, tr(Str::ERR_NO_API_KEY), ai_provider_name());
         transcribe_log("Error: %s", errOut);
         return false;
     }
 
     if (!sd_begin()) {
-        set_err(errOut, errOutLen, "SD card not available");
+        set_err(errOut, errOutLen, tr(Str::ERR_SD_UNAVAILABLE));
         transcribe_log("Error: %s", errOut);
         return false;
     }
@@ -208,7 +209,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     File src = sd_fs().open(srcPath, FILE_READ);
     if (!src) {
         sd_end();
-        set_err(errOut, errOutLen, "Could not open file");
+        set_err(errOut, errOutLen, tr(Str::ERR_OPEN_FILE));
         transcribe_log("Error: %s (%s)", errOut, srcPath);
         return false;
     }
@@ -240,7 +241,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (!http.begin(client, url)) {
         src.close();
         sd_end();
-        set_err(errOut, errOutLen, "Could not reach generativelanguage.googleapis.com");
+        snprintf(errOut, errOutLen, tr(Str::ERR_REACH_HOST), "generativelanguage.googleapis.com");
         transcribe_log("Error: %s (http.begin() failed)", errOut);
         return false;
     }
@@ -284,7 +285,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     if (deserializeJson(doc, response) != DeserializationError::Ok ||
         !doc["candidates"][0]["content"]["parts"][0]["text"].is<const char *>()) {
         sd_end();
-        set_err(errOut, errOutLen, "Unexpected response from Gemini");
+        snprintf(errOut, errOutLen, tr(Str::ERR_UNEXPECTED_RESPONSE), ai_provider_name());
         transcribe_log("Error: %s. Body (first 1 KB):", errOut);
         transcribe_log("%.1024s", response.c_str());
         return false;
@@ -296,7 +297,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     File dst = sd_fs().open(dstPath, FILE_WRITE);
     if (!dst) {
         sd_end();
-        set_err(errOut, errOutLen, "Could not write transcript file");
+        set_err(errOut, errOutLen, tr(Str::ERR_WRITE_TRANSCRIPT));
         transcribe_log("Error: %s (%s)", errOut, dstPath);
         return false;
     }

@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "display.h"
+#include "i18n.h"
 #include "reboot_combo.h"
 #include "transcribe.h"
 #include "ui.h"
@@ -20,6 +21,14 @@
 static const char *PORTAL_SSID = "Annota-Setup";
 static const char *STANDALONE_AP_SSID = "Annota-AP";
 static bool clockSynced = false;
+
+// Header status line after a failed connect - warning icon + the
+// current language's "working offline".
+static const char *offline_status_text() {
+    static char text[48];
+    snprintf(text, sizeof(text), LV_SYMBOL_WARNING " %s", tr(Str::WIFI_WORKING_OFFLINE));
+    return text;
+}
 
 // Budget for reconnecting to the network already saved in NVS before
 // giving up and asking the user to hit Retry (in the timeout dialog or
@@ -363,7 +372,7 @@ static bool reconnect_saved_networks() {
     if (load_preferred_ssid(preferred, sizeof(preferred))) {
         for (int i = 0; i < count; i++) {
             if (strcmp(list[i].ssid, preferred) != 0) continue;
-            ui_set_wifi_status("Connecting to WiFi...");
+            ui_set_wifi_status(tr(Str::WIFI_CONNECTING));
             WiFi.begin(list[i].ssid, list[i].pass[0] ? list[i].pass : nullptr);
             unsigned long deadline = millis() + WIFI_PREFERRED_TIMEOUT_SECONDS * 1000UL;
             while (WiFi.status() != WL_CONNECTED && millis() < deadline) delay(100);
@@ -376,7 +385,7 @@ static bool reconnect_saved_networks() {
     for (int i = 0; i < count; i++) {
         wifiMulti.addAP(list[i].ssid, list[i].pass[0] ? list[i].pass : nullptr);
     }
-    ui_set_wifi_status("Connecting to WiFi...");
+    ui_set_wifi_status(tr(Str::WIFI_CONNECTING));
     wifiMulti.run(WIFI_RECONNECT_TIMEOUT_SECONDS * 1000UL);
     return WiFi.status() == WL_CONNECTED;
 }
@@ -407,7 +416,7 @@ static bool try_connect() {
     // never does.
     bool hasSavedNetwork = wifi_saved_network_count() > 0;
 
-    ui_set_wifi_status("Connecting to WiFi...");
+    ui_set_wifi_status(tr(Str::WIFI_CONNECTING));
     bool connected = hasSavedNetwork ? reconnect_saved_networks() : false;
 
     if (!connected && !hasSavedNetwork) {
@@ -423,7 +432,7 @@ static bool try_connect() {
         Serial.println(msg);
         sync_clock_via_ntp();
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        ui_set_wifi_status(offline_status_text());
         Serial.println(hasSavedNetwork
                             ? "WiFi: saved network unreachable - continuing offline (Reconnect WiFi to retry)"
                             : "WiFi: setup portal exited without a connection - continuing offline");
@@ -651,7 +660,7 @@ void wifi_process_pending_join() {
     }
 
     WiFi.mode(WIFI_STA);
-    ui_set_wifi_status("Connecting to WiFi...");
+    ui_set_wifi_status(tr(Str::WIFI_CONNECTING));
     WiFi.begin(pendingJoinSsid, pass);
     unsigned long deadline = millis() + WIFI_RECONNECT_TIMEOUT_SECONDS * 1000UL;
     while (WiFi.status() != WL_CONNECTED && millis() < deadline) delay(100);
@@ -673,7 +682,7 @@ void wifi_process_pending_join() {
             ui_show_wifi_joined_screen(WiFi.localIP().toString().c_str());
         }
     } else {
-        ui_set_wifi_status(LV_SYMBOL_WARNING " working offline");
+        ui_set_wifi_status(offline_status_text());
         Serial.printf("WiFi: join \"%s\" failed - continuing offline\n", pendingJoinSsid);
         transcribe_resume_after_join(false);
     }
@@ -709,7 +718,7 @@ bool wifi_ensure_connected() {
         return false;
     }
 
-    ui_set_wifi_status("Connecting to WiFi...");
+    ui_set_wifi_status(tr(Str::WIFI_CONNECTING));
     bool connected = reconnect_saved_networks();
     if (connected) {
         char msg[64];

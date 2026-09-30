@@ -5,9 +5,11 @@
 #include <WiFi.h>
 
 #include "display.h"
+#include "i18n.h"
 #include "sleep.h"
 #include "storage.h"
 #include "transcribe.h"
+#include "ui.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -70,7 +72,8 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Annota - SD files</title>
+<title data-i18n="title_files"></title>
+<script src="/i18n.js"></script>
 <style>
   /* Visual language borrowed straight from the device's own e-paper screen
      (ui_epaper.cpp): a black status bar pinned across the top, bordered
@@ -276,55 +279,55 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <div class="appbar">
   <div class="row">
     <h1>Annota</h1>
-    <nav><a class="active" href="/">Files</a><a href="/settings">Settings</a></nav>
+    <nav><a class="active" href="/" data-i18n="nav_files"></a><a href="/settings" data-i18n="nav_settings"></a></nav>
   </div>
-  <div class="sub">SD card files</div>
+  <div class="sub" data-i18n="sub_files"></div>
 </div>
 
 <div id="sd-widget" class="card" hidden>
-  <span>Used <b id="sdUsed">-</b></span>
-  <span>Free <b id="sdFree">-</b></span>
+  <span><span data-i18n="sd_used"></span> <b id="sdUsed">-</b></span>
+  <span><span data-i18n="sd_free"></span> <b id="sdFree">-</b></span>
 </div>
 
 <div id="player" class="card" hidden>
   <div id="playerName"></div>
   <audio id="playerAudio" controls></audio>
-  <button id="playerClose" class="btn">✕ Stop</button>
+  <button id="playerClose" class="btn">✕ <span data-i18n="stop"></span></button>
 </div>
 
 <div id="textViewer" class="card" hidden>
   <div id="textViewerName"></div>
   <div id="textViewerBody"></div>
-  <button id="textViewerClose" class="btn">✕ Close</button>
+  <button id="textViewerClose" class="btn">✕ <span data-i18n="close"></span></button>
 </div>
 
 <div id="batchBar" class="card" hidden>
   <span id="batchCount"></span>
   <div class="actions">
-    <button id="batchDownload">⬇ Download</button>
-    <button id="batchTranscribe">✎ Transcribe</button>
-    <button id="batchDelete" class="danger">✕ Delete</button>
-    <button id="batchClear" class="btn">Clear</button>
+    <button id="batchDownload">⬇ <span data-i18n="download"></span></button>
+    <button id="batchTranscribe">✎ <span data-i18n="transcribe"></span></button>
+    <button id="batchDelete" class="danger">✕ <span data-i18n="delete"></span></button>
+    <button id="batchClear" class="btn" data-i18n="clear_selection"></button>
   </div>
 </div>
 
 <div class="card" id="files-card">
   <table id="files">
     <thead><tr>
-      <th class="check"><input type="checkbox" id="selectAll" title="Select all"></th>
-      <th class="sortable" data-sort="name">Name<span class="arrow"></span></th>
-      <th class="sortable date" data-sort="mtime">Date<span class="arrow"></span></th>
-      <th class="size">Size</th>
+      <th class="check"><input type="checkbox" id="selectAll" data-i18n-title="select_all"></th>
+      <th class="sortable" data-sort="name"><span data-i18n="col_name"></span><span class="arrow"></span></th>
+      <th class="sortable date" data-sort="mtime"><span data-i18n="col_date"></span><span class="arrow"></span></th>
+      <th class="size" data-i18n="col_size"></th>
       <th class="actions"></th>
     </tr></thead>
     <tbody></tbody>
   </table>
 </div>
-<div id="empty" class="card" hidden>No files on the card.</div>
+<div id="empty" class="card" hidden data-i18n="no_files"></div>
 
 <div id="drop">
-  Drop a file here, or
-  <label class="btn">choose one<input id="picker" type="file" style="display:none"></label>
+  <span data-i18n="drop_here"></span>
+  <label class="btn"><span data-i18n="choose_one"></span><input id="picker" type="file" style="display:none"></label>
   <progress id="progress" max="100" value="0"></progress>
   <div id="status"></div>
 </div>
@@ -410,7 +413,7 @@ async function callProvider(key, blob, filename) {
     return { text: s.title + "\n\n" + s.abstract + "\n\n" + json.text };
   } catch (e) {
     console.warn("Title/abstract skipped:", e);
-    return { text: json.text, note: "no title/abstract: " + e.message };
+    return { text: json.text, note: t("note_no_summary", e.message) };
   }
 }
 </script>
@@ -450,7 +453,7 @@ async function callProvider(key, blob, filename) {
   const json = res.json || {};
   const parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
   const text = parts && parts[0] && parts[0].text;
-  if (!res.ok || typeof text !== "string") throw new Error((json.error && json.error.message) || "Unexpected response from Gemini");
+  if (!res.ok || typeof text !== "string") throw new Error((json.error && json.error.message) || t("err_unexpected_response", "Gemini"));
   return { text };
 }
 </script>
@@ -459,6 +462,8 @@ async function callProvider(key, blob, filename) {
 
 static const char INDEX_HTML_TAIL[] PROGMEM = R"rawliteral(
 <script>
+applyI18n(); // /i18n.js, loaded in <head> - see i18n.h
+
 function fmtSize(n) {
   if (n < 1024) return n + " B";
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
@@ -466,9 +471,9 @@ function fmtSize(n) {
 }
 
 function fmtDate(mtime) {
-  if (!mtime) return "Unknown date";
+  if (!mtime) return t("unknown_date");
   const d = new Date(mtime * 1000);
-  return d.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(window.I18N_LANG, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 let currentFiles = [];
@@ -503,7 +508,7 @@ async function viewFile(name) {
     viewer.hidden = false;
     viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (e) {
-    status.textContent = "View failed: " + e.message;
+    status.textContent = t("view_failed", e.message);
   }
 }
 
@@ -534,7 +539,7 @@ document.getElementById("playerClose").onclick = () => {
 // state in sync with `selected` - called at the end of render() (so sort
 // clicks keep it in sync) and after every checkbox toggle.
 function updateBatchBar() {
-  document.getElementById("batchCount").textContent = selected.size + " selected";
+  document.getElementById("batchCount").textContent = t("n_selected", selected.size);
   document.getElementById("batchBar").hidden = selected.size === 0;
   const selectAll = document.getElementById("selectAll");
   const total = currentFiles.length;
@@ -554,7 +559,7 @@ function render() {
   const sorted = currentFiles.slice().sort((a, b) => {
     let cmp;
     if (sortKey === "name") {
-      cmp = a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      cmp = a.name.localeCompare(b.name, window.I18N_LANG, { sensitivity: "base" });
     } else {
       cmp = a.mtime - b.mtime;
     }
@@ -612,13 +617,13 @@ function render() {
     if (isAudio(f.name)) {
       const play = document.createElement("button");
       play.textContent = "▶";
-      play.title = "Play";
+      play.title = t("play");
       play.onclick = () => playFile(f.name);
       actions.appendChild(play);
 
       const transcribe = document.createElement("button");
       transcribe.textContent = "✎";
-      transcribe.title = "Transcribe";
+      transcribe.title = t("transcribe");
       transcribe.onclick = () => transcribeFile(f.name, transcribe);
       actions.appendChild(transcribe);
     }
@@ -626,7 +631,7 @@ function render() {
     if (isText(f.name)) {
       const view = document.createElement("button");
       view.textContent = "👁";
-      view.title = "View";
+      view.title = t("view");
       view.onclick = () => viewFile(f.name);
       actions.appendChild(view);
     }
@@ -635,13 +640,13 @@ function render() {
     dl.className = "btn";
     dl.href = "/api/download?name=" + encodeURIComponent(f.name);
     dl.textContent = "⬇";
-    dl.title = "Download";
+    dl.title = t("download");
     actions.appendChild(dl);
 
     const del = document.createElement("button");
     del.className = "danger";
     del.textContent = "✕";
-    del.title = "Delete";
+    del.title = t("delete");
     del.onclick = () => removeFile(f.name);
     actions.appendChild(del);
 
@@ -697,11 +702,11 @@ document.querySelectorAll("th.sortable").forEach((th) => {
 // provider). PROVIDER_PHASES (TRANSCRIBE_PROVIDER_JS) picks which of these
 // the compiled-in provider goes through, for the "n/total" numbering.
 const PHASE_LABELS = {
-  download: "Downloading from device",
-  upload: "Uploading to AI provider",
-  wait: "Waiting for transcription",
-  summarize: "Writing title & abstract",
-  save: "Saving",
+  download: t("phase_download"),
+  upload: t("phase_upload"),
+  wait: t("phase_wait"),
+  summarize: t("phase_summarize"),
+  save: t("phase_save"),
 };
 let phaseTarget = ""; // file name (with a batch "[i/n] " prefix) shown after the phase
 
@@ -732,8 +737,8 @@ function downloadWithProgress(url) {
     xhr.open("GET", url);
     xhr.responseType = "blob";
     xhr.onprogress = (e) => { if (e.lengthComputable) reportPhase("download", (e.loaded / e.total) * 100); };
-    xhr.onload = () => xhr.status === 200 ? resolve(xhr.response) : reject(new Error("download failed: HTTP " + xhr.status));
-    xhr.onerror = () => reject(new Error("download failed"));
+    xhr.onload = () => xhr.status === 200 ? resolve(xhr.response) : reject(new Error(t("err_download_http", xhr.status)));
+    xhr.onerror = () => reject(new Error(t("err_download")));
     xhr.send();
   });
 }
@@ -754,7 +759,7 @@ function xhrWithUploadProgress(method, url, headers, body) {
       try { json = JSON.parse(xhr.responseText); } catch (e) {}
       resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json });
     };
-    xhr.onerror = () => reject(new Error("network error talking to the AI provider"));
+    xhr.onerror = () => reject(new Error(t("err_ai_network")));
     reportPhase("upload", 0);
     xhr.send(body);
   });
@@ -797,7 +802,7 @@ async function saveTranscript(name, text) {
     headers: { "Content-Type": "text/plain" },
     body: text,
   });
-  if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
+  if (!saveRes.ok) throw new Error(t("err_save_transcript", await saveRes.text()));
 }
 
 async function transcribeFile(name, btn) {
@@ -807,17 +812,17 @@ async function transcribeFile(name, btn) {
   try {
     const { key, providerName } = await fetchTranscribeKey();
     if (!key) {
-      alert("No " + providerName + " API key set. Add one on the Settings page first.");
+      alert(t("no_api_key", providerName));
       return;
     }
 
     btn.textContent = "…";
     const note = await transcribeOne(name, key);
 
-    status.textContent = "Transcribed " + name + (note ? " (" + note + ")" : "");
+    status.textContent = note ? t("transcribed_note", name, note) : t("transcribed", name);
     refresh();
   } catch (e) {
-    status.textContent = "Transcribe failed: " + e.message;
+    status.textContent = t("transcribe_failed", e.message);
   } finally {
     btn.disabled = false;
     btn.textContent = icon;
@@ -825,10 +830,10 @@ async function transcribeFile(name, btn) {
 }
 
 async function removeFile(name) {
-  if (!confirm("Delete " + name + "? This can't be undone.")) return;
+  if (!confirm(t("confirm_delete", name))) return;
   const res = await fetch("/api/delete?name=" + encodeURIComponent(name), { method: "POST" });
   if (!res.ok) {
-    alert("Delete failed: " + (await res.text()));
+    alert(t("delete_failed", await res.text()));
   }
   refresh();
 }
@@ -860,12 +865,12 @@ async function batchDownload() {
 async function batchTranscribe() {
   const names = Array.from(selected).filter(isAudio);
   if (names.length === 0) {
-    alert("No audio files selected.");
+    alert(t("no_audio_selected"));
     return;
   }
   const { key, providerName } = await fetchTranscribeKey();
   if (!key) {
-    alert("No " + providerName + " API key set. Add one on the Settings page first.");
+    alert(t("no_api_key", providerName));
     return;
   }
 
@@ -879,12 +884,12 @@ async function batchTranscribe() {
       if (await transcribeOne(name, key, "[" + (i + 1) + "/" + names.length + "] ")) noSummary++;
     } catch (e) {
       failed++;
-      status.textContent = "Transcribe failed for " + name + ": " + e.message;
+      status.textContent = t("transcribe_failed_for", name, e.message);
     }
   }
-  status.textContent = failed === 0 ? "Transcribed " + names.length + " file(s)."
-    : "Transcribed " + (names.length - failed) + "/" + names.length + " file(s), " + failed + " failed.";
-  if (noSummary > 0) status.textContent += " " + noSummary + " saved without title/abstract (see browser console).";
+  status.textContent = failed === 0 ? t("transcribed_n", names.length)
+    : t("transcribed_partial", names.length - failed, names.length, failed);
+  if (noSummary > 0) status.textContent += " " + t("saved_no_summary", noSummary);
   btn.disabled = false;
   refresh();
 }
@@ -892,25 +897,25 @@ async function batchTranscribe() {
 async function batchDelete() {
   const names = Array.from(selected);
   if (names.length === 0) return;
-  if (!confirm("Delete " + names.length + " file(s)? This can't be undone.")) return;
+  if (!confirm(t("confirm_delete_n", names.length))) return;
 
   const status = document.getElementById("status");
   const btn = document.getElementById("batchDelete");
   btn.disabled = true;
   let failed = 0;
   for (const name of names) {
-    status.textContent = "Deleting " + name + "...";
+    status.textContent = t("deleting", name);
     try {
       const res = await fetch("/api/delete?name=" + encodeURIComponent(name), { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
       selected.delete(name);
     } catch (e) {
       failed++;
-      status.textContent = "Delete failed for " + name + ": " + e.message;
+      status.textContent = t("delete_failed_for", name, e.message);
     }
   }
-  status.textContent = failed === 0 ? "Deleted " + names.length + " file(s)."
-    : "Deleted " + (names.length - failed) + "/" + names.length + " file(s), " + failed + " failed.";
+  status.textContent = failed === 0 ? t("deleted_n", names.length)
+    : t("deleted_partial", names.length - failed, names.length, failed);
   btn.disabled = false;
   refresh();
 }
@@ -943,14 +948,14 @@ function uploadFile(file) {
   };
   xhr.onload = () => {
     progress.style.display = "none";
-    status.textContent = xhr.status === 200 ? "Uploaded " + file.name : "Upload failed: " + xhr.responseText;
+    status.textContent = xhr.status === 200 ? t("uploaded", file.name) : t("upload_failed_msg", xhr.responseText);
     refresh();
   };
   xhr.onerror = () => {
     progress.style.display = "none";
-    status.textContent = "Upload failed";
+    status.textContent = t("upload_failed");
   };
-  status.textContent = "Uploading " + file.name + "...";
+  status.textContent = t("uploading", file.name);
   xhr.send(form);
 }
 
@@ -982,7 +987,8 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Annota - Settings</title>
+<title data-i18n="title_settings"></title>
+<script src="/i18n.js"></script>
 <style>
   /* Same paper/ink language as INDEX_HTML - see its <style> comment. */
   :root {
@@ -1105,61 +1111,74 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 <div class="appbar">
   <div class="row">
     <h1>Annota</h1>
-    <nav><a href="/">Files</a><a class="active" href="/settings">Settings</a></nav>
+    <nav><a href="/" data-i18n="nav_files"></a><a class="active" href="/settings" data-i18n="nav_settings"></a></nav>
   </div>
-  <div class="sub">Device settings</div>
+  <div class="sub" data-i18n="sub_settings"></div>
 </div>
 
 <div class="card">
-  <h2>Status</h2>
-  <div class="row-item"><span class="label">WiFi</span><span class="value" id="wifiValue">-</span></div>
-  <div class="row-item"><span class="label">Clock</span><span class="value" id="clockValue">-</span></div>
+  <h2 data-i18n="language"></h2>
+  <!-- Native names, deliberately not translated. -->
+  <select id="langSelect"
+    style="width:100%;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
+    <option value="en">English</option>
+    <option value="it">Italiano</option>
+    <option value="fr">Français</option>
+  </select>
 </div>
 
 <div class="card">
-  <h2>SD card</h2>
-  <div class="row-item"><span class="label">Capacity</span><span class="value" id="cardValue">-</span></div>
-  <div class="row-item"><span class="label">Space used</span><span class="value" id="usedValue">-</span></div>
+  <h2 data-i18n="status"></h2>
+  <div class="row-item"><span class="label" data-i18n="wifi"></span><span class="value" id="wifiValue">-</span></div>
+  <div class="row-item"><span class="label" data-i18n="clock"></span><span class="value" id="clockValue">-</span></div>
+</div>
+
+<div class="card">
+  <h2 data-i18n="sd_card"></h2>
+  <div class="row-item"><span class="label" data-i18n="capacity"></span><span class="value" id="cardValue">-</span></div>
+  <div class="row-item"><span class="label" data-i18n="space_used"></span><span class="value" id="usedValue">-</span></div>
   <div class="bar"><div class="fill" id="usedBar" style="width:0%"></div></div>
-  <div class="row-item" style="margin-top:0.4rem"><span class="label">Audio files</span><span class="value" id="audioValue">-</span></div>
-  <div class="row-item"><span class="label">Text files</span><span class="value" id="textValue">-</span></div>
+  <div class="row-item" style="margin-top:0.4rem"><span class="label" data-i18n="audio_files"></span><span class="value" id="audioValue">-</span></div>
+  <div class="row-item"><span class="label" data-i18n="text_files"></span><span class="value" id="textValue">-</span></div>
 </div>
 
 <div class="card">
-  <h2>WiFi Networks</h2>
+  <h2 data-i18n="wifi_networks"></h2>
   <div id="networkList"></div>
   <div class="row-item" style="display:block;margin-top:0.6rem;padding-top:0.8rem;border-top:1px solid rgba(20,20,15,0.12);">
-    <input id="newSsid" type="text" placeholder="Network name (SSID)"
+    <input id="newSsid" type="text" data-i18n-ph="ph_ssid"
       style="width:100%;margin-bottom:0.5rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
     <div class="pwd-wrap" style="margin-bottom:0.5rem;">
-      <input id="newPass" type="password" placeholder="Password (blank = open network)"
+      <input id="newPass" type="password" data-i18n-ph="ph_password"
         style="width:100%;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
-      <button type="button" class="pwd-toggle" id="newPassToggle" aria-label="Show password">👁</button>
+      <button type="button" class="pwd-toggle" id="newPassToggle" data-i18n-title="show_password">👁</button>
     </div>
-    <button class="accent" id="addNetBtn">+ Add network</button>
+    <button class="accent" id="addNetBtn">+ <span data-i18n="add_network"></span></button>
   </div>
-  <button class="accent" id="reconnectBtn" style="margin-top:0.6rem;">↻ Reconnect WiFi</button>
+  <button class="accent" id="reconnectBtn" style="margin-top:0.6rem;">↻ <span data-i18n="reconnect_wifi"></span></button>
 </div>
 
 <div class="card">
-  <h2>Power</h2>
-  <div class="row-item"><span class="label">Sleep after idle</span><span class="value" id="idleTimeoutValue">-</span></div>
+  <h2 data-i18n="power"></h2>
+  <div class="row-item"><span class="label" data-i18n="sleep_after_idle"></span><span class="value" id="idleTimeoutValue">-</span></div>
   <input id="idleTimeoutSlider" type="range" min="1" max="180" step="1"
     style="width:100%;margin-top:0.6rem;">
 </div>
 
 <div class="card">
-  <h2 id="keyTitle">AI API Key</h2>
-  <div class="row-item"><span class="label">Status</span><span class="value" id="keyValue">-</span></div>
-  <input id="keyInput" type="password" placeholder="sk-... (leave blank to keep current)"
+  <h2 id="keyTitle" data-i18n="ai_api_key"></h2>
+  <div class="row-item"><span class="label" data-i18n="status"></span><span class="value" id="keyValue">-</span></div>
+  <input id="keyInput" type="password" data-i18n-ph="ph_api_key"
     style="width:100%;margin-top:0.6rem;padding:0.6rem 0.7rem;border-radius:4px;border:1.5px solid var(--border);background:var(--surface);color:var(--ink);font:inherit;box-sizing:border-box;">
-  <button class="accent" id="keySaveBtn" style="margin-top:0.6rem;">Save API Key</button>
-  <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">✕ Clear API Key</button>
+  <button class="accent" id="keySaveBtn" style="margin-top:0.6rem;" data-i18n="save_api_key"></button>
+  <button class="danger" id="keyClearBtn" style="margin-top:0.6rem;">✕ <span data-i18n="clear_api_key"></span></button>
 </div>
 
 <div id="status"></div>
 
 <script>
+applyI18n(); // /i18n.js, loaded in <head> - see i18n.h
+
 function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
 
 async function refresh() {
@@ -1168,7 +1187,7 @@ async function refresh() {
     const res = await fetch("/api/settings");
     info = await res.json();
   } catch (e) {
-    document.getElementById("status").textContent = "Lost connection to device";
+    document.getElementById("status").textContent = t("lost_connection");
     return;
   }
 
@@ -1177,22 +1196,24 @@ async function refresh() {
     wifiValue.textContent = info.ip;
     wifiValue.className = "value ok";
   } else {
-    wifiValue.textContent = "WiFi off";
+    wifiValue.textContent = t("wifi_off");
     wifiValue.className = "value";
   }
   document.getElementById("reconnectBtn").disabled = info.wifiConnected;
 
   const clockValue = document.getElementById("clockValue");
-  clockValue.textContent = info.clockSynced ? "synced" : "not synced";
+  clockValue.textContent = info.clockSynced ? t("clock_synced") : t("clock_not_synced");
   clockValue.className = "value " + (info.clockSynced ? "ok" : "warn");
 
   const idleSlider = document.getElementById("idleTimeoutSlider");
   if (!idleSlider.matches(":active")) idleSlider.value = info.idleTimeoutMinutes; // don't yank it mid-drag
-  document.getElementById("idleTimeoutValue").textContent = info.idleTimeoutMinutes + " min";
+  document.getElementById("idleTimeoutValue").textContent = t("minutes", info.idleTimeoutMinutes);
 
-  document.getElementById("keyTitle").textContent = info.aiProviderName + " API Key";
+  document.getElementById("keyTitle").textContent = t("provider_api_key", info.aiProviderName);
+  const langSelect = document.getElementById("langSelect");
+  if (document.activeElement !== langSelect) langSelect.value = info.language;
   const keyValue = document.getElementById("keyValue");
-  keyValue.textContent = info.aiKeyConfigured ? "set" : "not set";
+  keyValue.textContent = info.aiKeyConfigured ? t("key_set") : t("key_not_set");
   keyValue.className = "value " + (info.aiKeyConfigured ? "ok" : "warn");
 
   if (info.sdOk) {
@@ -1203,7 +1224,7 @@ async function refresh() {
     document.getElementById("audioValue").textContent = info.audioFileCount;
     document.getElementById("textValue").textContent = info.textFileCount;
   } else {
-    document.getElementById("cardValue").textContent = "unavailable";
+    document.getElementById("cardValue").textContent = t("unavailable");
     document.getElementById("usedValue").textContent = "-";
     document.getElementById("audioValue").textContent = "-";
     document.getElementById("textValue").textContent = "-";
@@ -1214,7 +1235,8 @@ function renderNetworks(ssids) {
   const container = document.getElementById("networkList");
   container.innerHTML = "";
   if (ssids.length === 0) {
-    container.innerHTML = '<div class="row-item"><span class="label">No networks saved</span></div>';
+    container.innerHTML = '<div class="row-item"><span class="label"></span></div>';
+    container.querySelector(".label").textContent = t("no_networks");
     return;
   }
   ssids.forEach((ssid) => {
@@ -1225,12 +1247,12 @@ function renderNetworks(ssids) {
     label.textContent = ssid;
     const actions = document.createElement("span");
     const editBtn = document.createElement("button");
-    editBtn.textContent = "Edit";
+    editBtn.textContent = t("edit");
     editBtn.style.cssText = "width:auto;padding:0.3rem 0.6rem;";
     editBtn.onclick = () => startEditNetwork(row, ssid);
     const removeBtn = document.createElement("button");
     removeBtn.className = "danger";
-    removeBtn.textContent = "Remove";
+    removeBtn.textContent = t("remove");
     removeBtn.style.cssText = "width:auto;padding:0.3rem 0.6rem;margin-left:0.4rem;";
     removeBtn.onclick = () => removeNetwork(ssid);
     actions.appendChild(editBtn);
@@ -1245,7 +1267,8 @@ function togglePwd(input, btn) {
   const show = input.type === "password";
   input.type = show ? "text" : "password";
   btn.textContent = show ? "🙈" : "👁";
-  btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  btn.title = show ? t("hide_password") : t("show_password");
+  btn.setAttribute("aria-label", btn.title);
 }
 
 function startEditNetwork(row, ssid) {
@@ -1255,18 +1278,19 @@ function startEditNetwork(row, ssid) {
   wrap.style.cssText = "flex:1;margin-right:0.5rem;";
   const input = document.createElement("input");
   input.type = "password";
-  input.placeholder = "New password";
+  input.placeholder = t("ph_new_password");
   input.style.cssText = "width:100%;";
   const toggleBtn = document.createElement("button");
   toggleBtn.type = "button";
   toggleBtn.className = "pwd-toggle";
   toggleBtn.textContent = "👁";
-  toggleBtn.setAttribute("aria-label", "Show password");
+  toggleBtn.title = t("show_password");
+  toggleBtn.setAttribute("aria-label", toggleBtn.title);
   toggleBtn.onclick = () => togglePwd(input, toggleBtn);
   wrap.appendChild(input);
   wrap.appendChild(toggleBtn);
   const saveBtn = document.createElement("button");
-  saveBtn.textContent = "Save";
+  saveBtn.textContent = t("save");
   saveBtn.style.cssText = "width:auto;";
   saveBtn.onclick = async () => {
     if (!input.value) return; // blank = no-op, same guard as keySaveBtn
@@ -1274,11 +1298,11 @@ function startEditNetwork(row, ssid) {
     form.set("ssid", ssid);
     form.set("password", input.value);
     const res = await fetch("/api/wifi/networks/update", { method: "POST", body: form });
-    document.getElementById("status").textContent = res.ok ? "Network updated." : "Update failed: " + (await res.text());
+    document.getElementById("status").textContent = res.ok ? t("network_updated") : t("update_failed", await res.text());
     loadNetworks();
   };
   const cancelBtn = document.createElement("button");
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("cancel");
   cancelBtn.style.cssText = "width:auto;margin-left:0.4rem;";
   cancelBtn.onclick = loadNetworks;
   row.appendChild(wrap);
@@ -1287,11 +1311,11 @@ function startEditNetwork(row, ssid) {
 }
 
 async function removeNetwork(ssid) {
-  if (!confirm(`Remove "${ssid}" from saved networks?`)) return;
+  if (!confirm(t("confirm_remove_network", ssid))) return;
   const form = new URLSearchParams();
   form.set("ssid", ssid);
   const res = await fetch("/api/wifi/networks/remove", { method: "POST", body: form });
-  document.getElementById("status").textContent = res.ok ? "Network removed." : "Remove failed: " + (await res.text());
+  document.getElementById("status").textContent = res.ok ? t("network_removed") : t("remove_failed", await res.text());
   loadNetworks();
 }
 
@@ -1312,7 +1336,7 @@ document.getElementById("addNetBtn").onclick = async () => {
   form.set("ssid", ssidInput.value);
   form.set("password", passInput.value);
   const res = await fetch("/api/wifi/networks", { method: "POST", body: form });
-  document.getElementById("status").textContent = res.ok ? "Network added." : "Add failed: " + (await res.text());
+  document.getElementById("status").textContent = res.ok ? t("network_added") : t("add_failed", await res.text());
   ssidInput.value = "";
   passInput.value = "";
   loadNetworks();
@@ -1324,7 +1348,7 @@ document.getElementById("reconnectBtn").onclick = async () => {
   const btn = document.getElementById("reconnectBtn");
   const status = document.getElementById("status");
   btn.disabled = true;
-  status.textContent = "Reconnecting... this can take up to 30 seconds, and the page will briefly stop responding.";
+  status.textContent = t("reconnecting");
   try {
     await fetch("/api/settings/reconnect", { method: "POST" });
   } catch (e) {
@@ -1348,14 +1372,14 @@ document.getElementById("reconnectBtn").onclick = async () => {
 // "change" fires once on release, which is when it's actually saved -
 // a slider's own natural "Save" moment, no separate button needed.
 document.getElementById("idleTimeoutSlider").oninput = (e) => {
-  document.getElementById("idleTimeoutValue").textContent = e.target.value + " min";
+  document.getElementById("idleTimeoutValue").textContent = t("minutes", e.target.value);
 };
 document.getElementById("idleTimeoutSlider").onchange = async (e) => {
   const status = document.getElementById("status");
   const form = new URLSearchParams();
   form.set("minutes", e.target.value);
   const res = await fetch("/api/settings/idle-timeout", { method: "POST", body: form });
-  status.textContent = res.ok ? "Sleep timeout updated." : "Update failed: " + (await res.text());
+  status.textContent = res.ok ? t("sleep_timeout_updated") : t("update_failed", await res.text());
 };
 
 // The field never gets prefilled with the real saved key (see
@@ -1369,18 +1393,32 @@ document.getElementById("keySaveBtn").onclick = async () => {
   form.set("key", input.value);
   const res = await fetch("/api/settings/ai-key", { method: "POST", body: form });
   input.value = "";
-  status.textContent = res.ok ? "API key saved." : "Save failed: " + (await res.text());
+  status.textContent = res.ok ? t("api_key_saved") : t("save_failed", await res.text());
   refresh();
 };
 
 document.getElementById("keyClearBtn").onclick = async () => {
-  if (!confirm("Clear the saved API key?")) return;
+  if (!confirm(t("confirm_clear_key"))) return;
   const status = document.getElementById("status");
   const form = new URLSearchParams();
   form.set("key", "");
   const res = await fetch("/api/settings/ai-key", { method: "POST", body: form });
-  status.textContent = res.ok ? "API key cleared." : "Clear failed: " + (await res.text());
+  status.textContent = res.ok ? t("api_key_cleared") : t("clear_failed", await res.text());
   refresh();
+};
+
+// Saved server-side, then a reload picks up the new /i18n.js - simpler
+// than re-rendering every string in place, and the page has no state
+// worth keeping across it.
+document.getElementById("langSelect").onchange = async (e) => {
+  const form = new URLSearchParams();
+  form.set("lang", e.target.value);
+  const res = await fetch("/api/settings/language", { method: "POST", body: form });
+  if (res.ok) {
+    location.reload();
+  } else {
+    document.getElementById("status").textContent = t("update_failed", await res.text());
+  }
 };
 
 refresh();
@@ -1405,6 +1443,17 @@ static void handle_settings_page() {
     server.send_P(200, "text/html", SETTINGS_HTML);
 }
 
+// GET /i18n.js - the current language's web strings plus the t()/
+// applyI18n() helpers (i18n.h's i18n_write_web_js()), loaded
+// synchronously from both pages' <head>. no-store so a language change
+// shows up on the very next page load.
+static void handle_i18n_js() {
+    String out;
+    i18n_write_web_js(out);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/javascript; charset=utf-8", out);
+}
+
 // GET /api/settings - snapshot for the settings page: live WiFi status
 // (not cached - a plain WiFi.status() check), NTP sync state, and SD
 // capacity/usage. SD access goes through the same
@@ -1427,6 +1476,7 @@ static void handle_settings_info() {
     doc["aiProviderName"] = ai_provider_name();
     doc["aiKeyConfigured"] = ai_provider_has_api_key();
     doc["idleTimeoutMinutes"] = sleep_get_idle_timeout_minutes();
+    doc["language"] = i18n_lang_code(i18n_get_language());
 
     display_suspend_touch();
     SdInfo info;
@@ -1478,6 +1528,25 @@ static void handle_settings_set_idle_timeout() {
         return;
     }
     sleep_set_idle_timeout_minutes((uint16_t)minutes);
+    server.send(200, "text/plain", "OK");
+}
+
+// POST /api/settings/language - saves the Settings page's language picker
+// (i18n.h's i18n_set_language(): "en"/"it"/"fr"). Applies to both the web
+// pages (on their next load) and the e-paper UI, which repaints on the
+// next loop() pass via ui_request_rerender() - no reboot needed.
+static void handle_settings_set_language() {
+    if (!server.hasArg("lang")) {
+        server.send(400, "text/plain", "Missing lang");
+        return;
+    }
+    Lang lang;
+    if (!i18n_parse_lang(server.arg("lang").c_str(), lang)) {
+        server.send(400, "text/plain", "Unsupported lang");
+        return;
+    }
+    i18n_set_language(lang);
+    ui_request_rerender();
     server.send(200, "text/plain", "OK");
 }
 
@@ -1869,6 +1938,8 @@ void web_server_start() {
     server.on("/api/settings/reconnect", HTTP_POST, with_activity(handle_settings_reconnect));
     server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
     server.on("/api/settings/idle-timeout", HTTP_POST, with_activity(handle_settings_set_idle_timeout));
+    server.on("/api/settings/language", HTTP_POST, with_activity(handle_settings_set_language));
+    server.on("/i18n.js", HTTP_GET, with_activity(handle_i18n_js));
     server.on("/api/wifi/networks", HTTP_GET, with_activity(handle_wifi_list));
     server.on("/api/wifi/networks", HTTP_POST, with_activity(handle_wifi_add));
     server.on("/api/wifi/networks/update", HTTP_POST, with_activity(handle_wifi_update));

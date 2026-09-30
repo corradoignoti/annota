@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "display.h"
+#include "i18n.h"
 #include "sleep.h"
 #include "storage.h"
 #include "ui.h"
@@ -58,11 +59,11 @@ static int lastReportedAttempt = 0;
 
 static const char *phase_label(TranscribePhase phase) {
     switch (phase) {
-        case TranscribePhase::kConnecting: return "1/5 Connecting WiFi";
-        case TranscribePhase::kUploading: return "2/5 Uploading";
-        case TranscribePhase::kWaiting: return "3/5 Waiting for transcription";
-        case TranscribePhase::kSummarizing: return "4/5 Writing title & abstract";
-        case TranscribePhase::kSaving: return "5/5 Saving";
+        case TranscribePhase::kConnecting: return tr(Str::PHASE_CONNECTING);
+        case TranscribePhase::kUploading: return tr(Str::PHASE_UPLOADING);
+        case TranscribePhase::kWaiting: return tr(Str::PHASE_WAITING);
+        case TranscribePhase::kSummarizing: return tr(Str::PHASE_SUMMARIZING);
+        case TranscribePhase::kSaving: return tr(Str::PHASE_SAVING);
     }
     return "";
 }
@@ -122,7 +123,7 @@ void transcribe_report_upload(size_t sent, size_t total, int attempt, int maxAtt
     char detail[64];
     int n = snprintf(detail, sizeof(detail), "%d%%  %.1f/%.1f MB", percent, sent / 1048576.0, total / 1048576.0);
     if (attempt > 1 && n > 0 && (size_t)n < sizeof(detail)) {
-        snprintf(detail + n, sizeof(detail) - n, "\nretry %d/%d", attempt, maxAttempts);
+        snprintf(detail + n, sizeof(detail) - n, tr(Str::TRANSCRIBE_RETRY), attempt, maxAttempts);
     }
     ui_update_transcribe_progress(phase_label(TranscribePhase::kUploading), percent, detail);
 }
@@ -175,7 +176,7 @@ static void finish_log(bool ok, const char *filename, char *message, size_t mess
         transcribe_log("Result: %s", message);
         if (write_text_file(logName, logText.c_str())) {
             size_t len = strlen(message);
-            snprintf(message + len, messageLen - len, "\nDetails: %s", logName);
+            snprintf(message + len, messageLen - len, tr(Str::TRANSCRIBE_DETAILS_SUFFIX), logName);
         }
     }
     logText = ""; // free the buffer until the next run
@@ -200,7 +201,7 @@ void transcribe_resume_after_join(bool joined) {
     }
     wifi_go_offline();
     sleep_reset_activity();
-    ui_show_transcribe_result(false, "Could not join the WiFi network.");
+    ui_show_transcribe_result(false, tr(Str::ERR_WIFI_JOIN_FAILED));
 }
 
 void transcribe_cancel_wifi_wait() {
@@ -260,7 +261,7 @@ void transcribe_process_pending() {
     // across every screen, including kTranscribeResult.
     if (weTurnedWifiOn) wifi_go_offline();
 
-    strncpy(message, ok ? "Transcription saved." : err, sizeof(message) - 1);
+    strncpy(message, ok ? tr(Str::TRANSCRIBE_SAVED) : err, sizeof(message) - 1);
     message[sizeof(message) - 1] = '\0';
     finish_log(ok, transcribeTargetFilename, message, sizeof(message));
 
