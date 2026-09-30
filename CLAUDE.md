@@ -171,7 +171,8 @@ may touch it.
   directly rather than through a confirm dialog — safe here since
   `ui_process_input()` runs at `loop()`'s top level, not nested inside
   `lv_timer_handler()` — unless the file's `Mp3Entry::size` exceeds
-  `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (1 MB), in which case it
+  `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (2 MB, set via
+  `platformio.ini`'s build_flags), in which case it
   goes straight to `kTranscribeResult` with a "use the web interface"
   message and nothing is queued; selecting Delete calls `storage.h`'s
   `delete_file()` directly, same reasoning. Both the audio and `.txt`

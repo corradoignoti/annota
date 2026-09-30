@@ -45,7 +45,10 @@ void ai_provider_set_api_key(const char *key);
 // into the provider's request-body timeout, so ui_epaper.cpp refuses
 // them up front and points the user at the web file manager's Transcribe
 // button instead (that path uploads from the browser, not the ESP32).
-static const uint32_t TRANSCRIBE_MAX_FILE_BYTES = 1024UL * 1024UL;
+// Set via platformio.ini's build_flags; 1 MB if that flag is absent.
+#ifndef TRANSCRIBE_MAX_FILE_BYTES
+#define TRANSCRIBE_MAX_FILE_BYTES (1024UL * 1024UL)
+#endif
 
 // Requests that transcribe_process_pending() transcribe `filename` (an
 // audio file on the SD root) the next time it's called from loop() -
