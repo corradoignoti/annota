@@ -337,6 +337,12 @@ may touch it.
   namespaced per provider (e.g. `openaiKey`) so switching the compiled-in
   provider doesn't feed it a stale key saved for a different one.
   `transcribe_openai.cpp` (`whisper-1`, `/v1/audio/transcriptions`)
+  then, on success, a second `gpt-4o-mini` `/v1/chat/completions` call
+  (JSON mode, `summarize_transcript()`) that writes an AI title and
+  abstract on top of the `.txt` — title, blank line, abstract, blank line,
+  transcript, same language as the transcript; if that second call fails
+  it only logs and saves the plain transcript (reported as the optional
+  `TranscribePhase::kSummarizing`, "4/5" on the progress screen). It
   streams the upload straight off the SD card through a custom `Stream`
   subclass wrapping the multipart preamble/file/trailer — the ESP32
   doesn't have enough RAM to buffer a whole audio file first — and skips
@@ -397,7 +403,10 @@ may touch it.
   ESP32's own flaky TLS stack, see `transcribe_openai.cpp`'s retry-loop
   comment), downloads the audio via the existing `/api/download`, then
   `POST /api/transcript?name=...` writes the resulting text to `name`'s
-  sibling `.txt` file, the same output `ai_transcribe_file()` produces.
+  sibling `.txt` file, the same output `ai_transcribe_file()` produces
+  (the OpenAI `callProvider()` makes the same title/abstract
+  chat-completions call via its `summarize()`, with the same
+  plain-transcript fallback).
   Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
   only happens on reboot. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final

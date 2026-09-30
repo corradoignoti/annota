@@ -58,10 +58,11 @@ static int lastReportedAttempt = 0;
 
 static const char *phase_label(TranscribePhase phase) {
     switch (phase) {
-        case TranscribePhase::kConnecting: return "1/4 Connecting WiFi";
-        case TranscribePhase::kUploading: return "2/4 Uploading";
-        case TranscribePhase::kWaiting: return "3/4 Waiting for transcription";
-        case TranscribePhase::kSaving: return "4/4 Saving";
+        case TranscribePhase::kConnecting: return "1/5 Connecting WiFi";
+        case TranscribePhase::kUploading: return "2/5 Uploading";
+        case TranscribePhase::kWaiting: return "3/5 Waiting for transcription";
+        case TranscribePhase::kSummarizing: return "4/5 Writing title & abstract";
+        case TranscribePhase::kSaving: return "5/5 Saving";
     }
     return "";
 }

@@ -342,9 +342,33 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 #if defined(AI_PROVIDER_OPENAI)
 static const char TRANSCRIBE_PROVIDER_JS[] PROGMEM = R"rawliteral(
 <script>
-// Mirrors transcribe_openai.cpp's request (whisper-1, multipart file
-// upload) - talks to OpenAI directly from the browser instead of routing
-// through the device.
+// Mirrors transcribe_openai.cpp's requests (whisper-1 multipart file
+// upload, then a gpt-4o-mini chat completion for the title/abstract header)
+// - talks to OpenAI directly from the browser instead of routing through
+// the device.
+async function summarize(key, text) {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "Given a transcript, reply with a JSON object {\"title\": string, \"abstract\": string}. " +
+          "Title: short, at most 10 words. Abstract: 2 to 4 sentences summarizing the content. " +
+          "Write both in the same language as the transcript." },
+        { role: "user", content: text },
+      ],
+    }),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error((json.error && json.error.message) || ("HTTP " + res.status));
+  const out = JSON.parse(json.choices[0].message.content);
+  const title = (out.title || "").trim();
+  const abstract = (out.abstract || "").trim();
+  if (!title || !abstract) throw new Error("empty title/abstract");
+  return { title, abstract };
+}
 async function callProvider(key, blob, filename) {
   const form = new FormData();
   form.append("model", "whisper-1");
@@ -356,7 +380,15 @@ async function callProvider(key, blob, filename) {
   });
   const json = await res.json();
   if (!res.ok) throw new Error((json.error && json.error.message) || ("HTTP " + res.status));
-  return json.text;
+  // Same fallback as the device: a failed summary still saves the plain
+  // transcript rather than losing the transcription.
+  try {
+    const s = await summarize(key, json.text);
+    return s.title + "\n\n" + s.abstract + "\n\n" + json.text;
+  } catch (e) {
+    console.warn("Title/abstract skipped:", e);
+    return json.text;
+  }
 }
 </script>
 )rawliteral";

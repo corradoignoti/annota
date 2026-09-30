@@ -83,7 +83,9 @@ void transcribe_cancel_wifi_wait();
 // the provider's ai_transcribe_file() while it runs - so providers can
 // drive the progress screen and the failure log without knowing about
 // ui.h. Only valid during a transcribe_process_pending() call.
-enum class TranscribePhase { kConnecting, kUploading, kWaiting, kSaving };
+// kSummarizing is optional - only providers that generate a title/abstract
+// header for the transcript (see ai_transcribe_file() below) report it.
+enum class TranscribePhase { kConnecting, kUploading, kWaiting, kSummarizing, kSaving };
 
 // Repaints the progress screen's phase line (and hides the upload bar for
 // any phase but kUploading).
@@ -103,7 +105,9 @@ void transcribe_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // whichever provider file is compiled in: uploads /`filename` to the
 // provider's transcription API and writes the returned text to a
 // sibling <basename>.txt file on the SD root, overwriting any existing
-// one there. Requires WiFi already connected and an API key already
+// one there. Providers that support it (currently OpenAI) prepend an
+// AI-generated title and abstract, each followed by a blank line, falling
+// back to the plain transcript if that extra request fails. Requires WiFi already connected and an API key already
 // saved - both are checked internally, and a short reason is copied
 // into errOut/errOutLen on any failure (e.g. "WiFi not connected", "No
 // <provider> API key set (see Settings)", an SD error, or the
