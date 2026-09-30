@@ -405,8 +405,10 @@ may touch it.
   `POST /api/transcript?name=...` writes the resulting text to `name`'s
   sibling `.txt` file, the same output `ai_transcribe_file()` produces
   (the OpenAI `callProvider()` makes the same title/abstract
-  chat-completions call via its `summarize()`, with the same
-  plain-transcript fallback).
+  chat-completions call via its `summarize()`, with the same two attempts
+  and plain-transcript fallback; `callProvider()` returns `{ text, note }`
+  and a skipped header is reported in the page's status line, not only
+  the browser console).
   Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
   only happens on reboot. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final

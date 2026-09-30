@@ -331,7 +331,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 )rawliteral";
 
 // The browser-side Transcribe button's provider call (callProvider(key,
-// blob, filename), returning the transcript text or throwing) - the one
+// blob, filename), returning { text, note? } or throwing) - the one
 // piece of INDEX_HTML that has to match whichever transcribe_<provider>.cpp
 // is compiled in, so it's picked by the same AI_PROVIDER_* flag instead of
 // a runtime branch. Each variant mirrors its C++ counterpart's request
@@ -346,7 +346,7 @@ static const char TRANSCRIBE_PROVIDER_JS[] PROGMEM = R"rawliteral(
 // upload, then a gpt-4o-mini chat completion for the title/abstract header)
 // - talks to OpenAI directly from the browser instead of routing through
 // the device.
-async function summarize(key, text) {
+async function summarizeOnce(key, text) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: { "Authorization": "Bearer " + key, "Content-Type": "application/json" },
@@ -363,12 +363,32 @@ async function summarize(key, text) {
   });
   const json = await res.json();
   if (!res.ok) throw new Error((json.error && json.error.message) || ("HTTP " + res.status));
-  const out = JSON.parse(json.choices[0].message.content);
-  const title = (out.title || "").trim();
-  const abstract = (out.abstract || "").trim();
+  const content = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+  if (typeof content !== "string") throw new Error("unexpected response");
+  let out;
+  try {
+    out = JSON.parse(content);
+  } catch (e) {
+    throw new Error("model reply is not the expected JSON");
+  }
+  const title = typeof out.title === "string" ? out.title.trim() : "";
+  const abstract = typeof out.abstract === "string" ? out.abstract.trim() : "";
   if (!title || !abstract) throw new Error("empty title/abstract");
   return { title, abstract };
 }
+// Two attempts, same as summarize_transcript()'s kMaxAttempts.
+async function summarize(key, text) {
+  try {
+    return await summarizeOnce(key, text);
+  } catch (e) {
+    console.warn("Title/abstract attempt 1/2 failed:", e);
+    await new Promise((r) => setTimeout(r, 1000));
+    return summarizeOnce(key, text);
+  }
+}
+// Returns { text, note } - note is set when the title/abstract header had
+// to be skipped, so the caller can say so instead of silently saving a
+// plain transcript.
 async function callProvider(key, blob, filename) {
   const form = new FormData();
   form.append("model", "whisper-1");
@@ -384,10 +404,10 @@ async function callProvider(key, blob, filename) {
   // transcript rather than losing the transcription.
   try {
     const s = await summarize(key, json.text);
-    return s.title + "\n\n" + s.abstract + "\n\n" + json.text;
+    return { text: s.title + "\n\n" + s.abstract + "\n\n" + json.text };
   } catch (e) {
     console.warn("Title/abstract skipped:", e);
-    return json.text;
+    return { text: json.text, note: "no title/abstract: " + e.message };
   }
 }
 </script>
@@ -428,7 +448,7 @@ async function callProvider(key, blob, filename) {
   const parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
   const text = parts && parts[0] && parts[0].text;
   if (!res.ok || typeof text !== "string") throw new Error((json.error && json.error.message) || "Unexpected response from Gemini");
-  return text;
+  return { text };
 }
 </script>
 )rawliteral";
@@ -686,13 +706,14 @@ async function fetchTranscribeKey() {
 // re-fetch it per file.
 async function transcribeOne(name, key) {
   const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
-  const text = await callProvider(key, audioBlob, name);
+  const { text, note } = await callProvider(key, audioBlob, name);
   const saveRes = await fetch("/api/transcript?name=" + encodeURIComponent(name), {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: text,
   });
   if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
+  return note; // undefined unless the title/abstract header was skipped
 }
 
 async function transcribeFile(name, btn) {
@@ -708,9 +729,9 @@ async function transcribeFile(name, btn) {
 
     btn.textContent = "…";
     status.textContent = "Transcribing " + name + "...";
-    await transcribeOne(name, key);
+    const note = await transcribeOne(name, key);
 
-    status.textContent = "Transcribed " + name;
+    status.textContent = "Transcribed " + name + (note ? " (" + note + ")" : "");
     refresh();
   } catch (e) {
     status.textContent = "Transcribe failed: " + e.message;
@@ -769,10 +790,11 @@ async function batchTranscribe() {
   const btn = document.getElementById("batchTranscribe");
   btn.disabled = true;
   let failed = 0;
+  let noSummary = 0;
   for (const name of names) {
     status.textContent = "Transcribing " + name + "...";
     try {
-      await transcribeOne(name, key);
+      if (await transcribeOne(name, key)) noSummary++;
     } catch (e) {
       failed++;
       status.textContent = "Transcribe failed for " + name + ": " + e.message;
@@ -780,6 +802,7 @@ async function batchTranscribe() {
   }
   status.textContent = failed === 0 ? "Transcribed " + names.length + " file(s)."
     : "Transcribed " + (names.length - failed) + "/" + names.length + " file(s), " + failed + " failed.";
+  if (noSummary > 0) status.textContent += " " + noSummary + " saved without title/abstract (see browser console).";
   btn.disabled = false;
   refresh();
 }
