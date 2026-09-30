@@ -170,7 +170,10 @@ may touch it.
   Selecting Transcribe calls `transcribe.h`'s `transcribe_request()`
   directly rather than through a confirm dialog — safe here since
   `ui_process_input()` runs at `loop()`'s top level, not nested inside
-  `lv_timer_handler()`; selecting Delete calls `storage.h`'s
+  `lv_timer_handler()` — unless the file's `Mp3Entry::size` exceeds
+  `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (1 MB), in which case it
+  goes straight to `kTranscribeResult` with a "use the web interface"
+  message and nothing is queued; selecting Delete calls `storage.h`'s
   `delete_file()` directly, same reasoning. Both the audio and `.txt`
   action menus also carry a File transfer item (right before Cancel) that
   hands off to `wifi_manager.h`'s `wifi_request_file_link()` the same way
