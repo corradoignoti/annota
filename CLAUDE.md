@@ -408,7 +408,15 @@ may touch it.
   chat-completions call via its `summarize()`, with the same two attempts
   and plain-transcript fallback; `callProvider()` returns `{ text, note }`
   and a skipped header is reported in the page's status line, not only
-  the browser console).
+  the browser console). While it runs, the page shows the same
+  step-numbered phases as the device's `kTranscribeProgress` screen
+  (`reportPhase()` in `INDEX_HTML_TAIL`: Downloading from device /
+  Uploading to AI provider / Waiting for transcription / Writing title &
+  abstract / Saving — each provider's `PROVIDER_PHASES` picks its subset
+  for the "n/total" numbering) in `#status`, with `#progress` showing
+  download and upload percentages; the download and provider upload go
+  through XHR (`downloadWithProgress()`/`xhrWithUploadProgress()`) since
+  `fetch()` has no progress events.
   Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
   only happens on reboot. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final

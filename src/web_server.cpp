@@ -386,6 +386,10 @@ async function summarize(key, text) {
     return summarizeOnce(key, text);
   }
 }
+// Phase keys (see PHASE_LABELS in INDEX_HTML_TAIL) this provider walks
+// through, in order - numbers the "n/total" prefix like the device's
+// progress screen does.
+const PROVIDER_PHASES = ["download", "upload", "wait", "summarize", "save"];
 // Returns { text, note } - note is set when the title/abstract header had
 // to be skipped, so the caller can say so instead of silently saving a
 // plain transcript.
@@ -393,15 +397,14 @@ async function callProvider(key, blob, filename) {
   const form = new FormData();
   form.append("model", "whisper-1");
   form.append("file", blob, filename);
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { "Authorization": "Bearer " + key },
-    body: form,
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error((json.error && json.error.message) || ("HTTP " + res.status));
+  // XHR rather than fetch() - fetch has no upload progress events.
+  const res = await xhrWithUploadProgress("POST", "https://api.openai.com/v1/audio/transcriptions",
+    { "Authorization": "Bearer " + key }, form);
+  const json = res.json;
+  if (!res.ok) throw new Error((json && json.error && json.error.message) || ("HTTP " + res.status));
   // Same fallback as the device: a failed summary still saves the plain
   // transcript rather than losing the transcription.
+  reportPhase("summarize");
   try {
     const s = await summarize(key, json.text);
     return { text: s.title + "\n\n" + s.abstract + "\n\n" + json.text };
@@ -426,8 +429,12 @@ function blobToBase64(blob) {
     reader.readAsDataURL(blob);
   });
 }
+// Phase keys (see PHASE_LABELS in INDEX_HTML_TAIL) this provider walks
+// through, in order - no title/abstract step for Gemini.
+const PROVIDER_PHASES = ["download", "upload", "wait", "save"];
 async function callProvider(key, blob, filename) {
   const mimeType = /\.m4a$/i.test(filename) ? "audio/mp4" : "audio/mpeg";
+  reportPhase("upload");
   const data = await blobToBase64(blob);
   const body = {
     contents: [{
@@ -439,12 +446,8 @@ async function callProvider(key, blob, filename) {
   };
   const url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=" +
     encodeURIComponent(key);
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
+  const res = await xhrWithUploadProgress("POST", url, { "Content-Type": "application/json" }, JSON.stringify(body));
+  const json = res.json || {};
   const parts = json.candidates && json.candidates[0] && json.candidates[0].content && json.candidates[0].content.parts;
   const text = parts && parts[0] && parts[0].text;
   if (!res.ok || typeof text !== "string") throw new Error((json.error && json.error.message) || "Unexpected response from Gemini");
@@ -687,6 +690,76 @@ document.querySelectorAll("th.sortable").forEach((th) => {
   };
 });
 
+// Transcription phase feedback - the web counterpart of the device's
+// kTranscribeProgress screen (transcribe.cpp's phase_label()): a
+// step-numbered phase line in #status, plus the #progress bar for the two
+// phases that move bytes (download from the device, upload to the AI
+// provider). PROVIDER_PHASES (TRANSCRIBE_PROVIDER_JS) picks which of these
+// the compiled-in provider goes through, for the "n/total" numbering.
+const PHASE_LABELS = {
+  download: "Downloading from device",
+  upload: "Uploading to AI provider",
+  wait: "Waiting for transcription",
+  summarize: "Writing title & abstract",
+  save: "Saving",
+};
+let phaseTarget = ""; // file name (with a batch "[i/n] " prefix) shown after the phase
+
+function reportPhase(phase, percent) {
+  const idx = PROVIDER_PHASES.indexOf(phase);
+  const step = idx >= 0 ? (idx + 1) + "/" + PROVIDER_PHASES.length + " " : "";
+  let line = step + PHASE_LABELS[phase];
+  if (percent !== undefined) line += " " + Math.round(percent) + "%";
+  document.getElementById("status").textContent = line + " - " + phaseTarget;
+  const bar = document.getElementById("progress");
+  if (percent === undefined) {
+    bar.style.display = "none";
+  } else {
+    bar.style.display = "block";
+    bar.value = percent;
+  }
+}
+
+function hidePhaseBar() {
+  document.getElementById("progress").style.display = "none";
+}
+
+// GET via XHR (fetch has no portable download progress), reporting the
+// "download" phase's percentage from /api/download's Content-Length.
+function downloadWithProgress(url) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("GET", url);
+    xhr.responseType = "blob";
+    xhr.onprogress = (e) => { if (e.lengthComputable) reportPhase("download", (e.loaded / e.total) * 100); };
+    xhr.onload = () => xhr.status === 200 ? resolve(xhr.response) : reject(new Error("download failed: HTTP " + xhr.status));
+    xhr.onerror = () => reject(new Error("download failed"));
+    xhr.send();
+  });
+}
+
+// Provider request helper for callProvider(): reports the "upload" phase's
+// percentage while the body goes out, then flips to "wait" once the last
+// byte is sent - same hand-off as the device's upload Stream. Resolves
+// { ok, status, json } (json null if the reply isn't JSON).
+function xhrWithUploadProgress(method, url, headers, body) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    for (const h in headers) xhr.setRequestHeader(h, headers[h]);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) reportPhase("upload", (e.loaded / e.total) * 100); };
+    xhr.upload.onload = () => reportPhase("wait");
+    xhr.onload = () => {
+      let json = null;
+      try { json = JSON.parse(xhr.responseText); } catch (e) {}
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json });
+    };
+    xhr.onerror = () => reject(new Error("network error talking to the AI provider"));
+    reportPhase("upload", 0);
+    xhr.send(body);
+  });
+}
+
 // GET /api/transcript-key, split out of transcribeFile() so batchTranscribe()
 // below can fetch it once for the whole selection instead of once per file.
 async function fetchTranscribeKey() {
@@ -704,16 +777,27 @@ async function fetchTranscribeKey() {
 // in it. `key` is fetched once by the caller (transcribeFile() or
 // batchTranscribe() below) rather than in here, so a batch run doesn't
 // re-fetch it per file.
-async function transcribeOne(name, key) {
-  const audioBlob = await (await fetch("/api/download?name=" + encodeURIComponent(name))).blob();
-  const { text, note } = await callProvider(key, audioBlob, name);
+async function transcribeOne(name, key, batchPrefix) {
+  phaseTarget = (batchPrefix || "") + name;
+  try {
+    reportPhase("download");
+    const audioBlob = await downloadWithProgress("/api/download?name=" + encodeURIComponent(name));
+    const { text, note } = await callProvider(key, audioBlob, name);
+    reportPhase("save");
+    await saveTranscript(name, text);
+    return note; // undefined unless the title/abstract header was skipped
+  } finally {
+    hidePhaseBar();
+  }
+}
+
+async function saveTranscript(name, text) {
   const saveRes = await fetch("/api/transcript?name=" + encodeURIComponent(name), {
     method: "POST",
     headers: { "Content-Type": "text/plain" },
     body: text,
   });
   if (!saveRes.ok) throw new Error("saving transcript failed: " + (await saveRes.text()));
-  return note; // undefined unless the title/abstract header was skipped
 }
 
 async function transcribeFile(name, btn) {
@@ -728,7 +812,6 @@ async function transcribeFile(name, btn) {
     }
 
     btn.textContent = "…";
-    status.textContent = "Transcribing " + name + "...";
     const note = await transcribeOne(name, key);
 
     status.textContent = "Transcribed " + name + (note ? " (" + note + ")" : "");
@@ -791,10 +874,9 @@ async function batchTranscribe() {
   btn.disabled = true;
   let failed = 0;
   let noSummary = 0;
-  for (const name of names) {
-    status.textContent = "Transcribing " + name + "...";
+  for (const [i, name] of names.entries()) {
     try {
-      if (await transcribeOne(name, key)) noSummary++;
+      if (await transcribeOne(name, key, "[" + (i + 1) + "/" + names.length + "] ")) noSummary++;
     } catch (e) {
       failed++;
       status.textContent = "Transcribe failed for " + name + ": " + e.message;
