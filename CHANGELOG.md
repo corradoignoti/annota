@@ -1,3 +1,10 @@
+## [1.10.1](https://github.com/corradoignoti/annota/compare/v1.10.0...v1.10.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* make on-device transcription size cap a build flag, raise to 2 MB ([0e6d4ce](https://github.com/corradoignoti/annota/commit/0e6d4ce2ebd16221852ab3367a87c7b55cedb316))
+
 # [1.10.0](https://github.com/corradoignoti/annota/compare/v1.9.1...v1.10.0) (2026-09-30)
 
 
