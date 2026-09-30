@@ -69,7 +69,7 @@ static const char *phase_label(TranscribePhase phase) {
 void transcribe_log(const char *fmt, ...) {
     // Small lines format on the stack; longer ones (e.g. a provider's
     // error body) spill to the heap rather than growing this frame - this
-    // can run deep inside HTTPClient's/wolfSSL's own call stack.
+    // can run deep inside HTTPClient's/mbedTLS's own call stack.
     char stackLine[160];
     char *line = stackLine;
     va_list args;

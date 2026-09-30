@@ -12,13 +12,7 @@
 #include <HTTPClient.h>
 #include <Preferences.h>
 #include <WiFi.h>
-// See scripts/patch_wolfssl.py's top comment: only one translation unit in
-// this project may define wolfSSL_Arduino_Serial_Print() to avoid a
-// multiple-definition link error, and ESP32-EasyWolfSSL's own
-// WolfSSLClient.cpp (a downloaded lib_deps package this project can't
-// patch) is it.
-#define ANNOTA_WOLFSSL_SKIP_SERIAL_PRINT_DEFINITION
-#include <WolfSSLClient.h> // wolfSSL-backed drop-in for WiFiClientSecure (see platformio.ini)
+#include <WiFiClientSecure.h>
 
 #include "storage.h"
 
@@ -132,6 +126,113 @@ class MultipartStream : public Stream {
     bool doneReported_ = false;
 };
 
+// WiFiClientSecure tuned for the multi-MB upload, fixing two ways
+// HTTPClient::sendRequest(Stream*, size) throttles or kills it:
+//
+// - Record size. HTTPClient writes the body in HTTP_TCP_TX_BUFFER_SIZE
+//   (1460-byte) chunks, and each write() becomes its own TLS record: 1460 +
+//   TLS overhead, just over lwIP's 1436-byte MSS, so every record went out
+//   as one full segment plus a tiny runt, several thousand times per file.
+//   api.openai.com resets a request whose body is still arriving after
+//   ~100-120 s, so upload throughput decides how long a recording can be
+//   transcribed at all. Writes are coalesced here into kRecordBytes (TLS's
+//   max record size) before being handed to the TLS layer.
+// - Stalls. HTTPClient gives a short write exactly one retry, 1ms later,
+//   before returning HTTPC_ERROR_SEND_PAYLOAD_FAILED (-3). write_all()
+//   keeps retrying a short or zero write until the socket closes or
+//   nothing has moved for kStallMs.
+//
+// A write() shorter than HTTP_TCP_TX_BUFFER_SIZE (the headers, or the
+// body's last chunk) is sent right away, so a failure there still surfaces
+// as -3 from sendRequest() and gets the upload loop's retry. Anything still
+// buffered is sent before the first read of the response.
+class UploadClient : public WiFiClientSecure {
+   public:
+    ~UploadClient() { free(buf_); }
+
+    size_t write(const uint8_t *data, size_t size) override {
+        if (failed_) return 0;
+        if (!buf_) buf_ = (uint8_t *)malloc(kRecordBytes);
+        if (!buf_) return write_all(data, size);
+        size_t done = 0;
+        while (done < size) {
+            size_t n = min(size - done, kRecordBytes - len_);
+            memcpy(buf_ + len_, data + done, n);
+            len_ += n;
+            done += n;
+            if (len_ == kRecordBytes && !send_pending()) return 0;
+        }
+        if (size < HTTP_TCP_TX_BUFFER_SIZE && !send_pending()) return 0;
+        return size;
+    }
+    size_t write(uint8_t data) override { return write(&data, 1); }
+
+    int available() override {
+        send_pending();
+        return WiFiClientSecure::available();
+    }
+    int read() override {
+        send_pending();
+        return WiFiClientSecure::read();
+    }
+    int read(uint8_t *data, size_t size) override {
+        send_pending();
+        return WiFiClientSecure::read(data, size);
+    }
+    void stop() override {
+        len_ = 0;
+        WiFiClientSecure::stop();
+    }
+
+   private:
+    static const size_t kRecordBytes = 16384;
+    static const unsigned long kStallMs = 60000;
+
+    bool send_pending() {
+        if (len_ == 0 || failed_) return !failed_;
+        size_t sent = write_all(buf_, len_);
+        failed_ = sent != len_;
+        len_ = 0;
+        return !failed_;
+    }
+
+    size_t write_all(const uint8_t *data, size_t size) {
+        size_t done = 0;
+        unsigned long lastProgressMs = millis();
+        while (done < size) {
+            size_t n = WiFiClientSecure::write(data + done, size - done);
+            if (n > 0) {
+                done += n;
+                lastProgressMs = millis();
+                continue;
+            }
+            if (!connected() || millis() - lastProgressMs > kStallMs) break;
+            delay(10);
+        }
+        return done;
+    }
+
+    uint8_t *buf_ = nullptr;
+    size_t len_ = 0;
+    bool failed_ = false;
+};
+
+// ", TLS: <mbedTLS reason>" for the attempt log when the connection failed
+// inside the TLS layer (e.g. the handshake), empty otherwise.
+static String tls_error_suffix(WiFiClientSecure &client) {
+    char buf[96];
+    if (client.lastError(buf, sizeof(buf)) == 0 || buf[0] == '\0') return String();
+    return String(", TLS: ") + buf;
+}
+
+// Multipart part Content-Type for the uploaded file, from its extension.
+static const char *mime_type_for(const char *filename) {
+    const char *dot = strrchr(filename, '.');
+    if (dot && strcasecmp(dot, ".wav") == 0) return "audio/wav";
+    if (dot && strcasecmp(dot, ".m4a") == 0) return "audio/mp4";
+    return "audio/mpeg";
+}
+
 // Swaps `filename`'s extension for ".txt" and adds the leading '/'
 // SD.open() needs (e.g. "song.mp3" -> "/song.txt").
 static void txt_sibling_path(const char *filename, char *out, size_t outLen) {
@@ -189,7 +290,9 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     preamble += BOUNDARY;
     preamble += "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"";
     preamble += filename;
-    preamble += "\"\r\nContent-Type: audio/mpeg\r\n\r\n";
+    preamble += "\"\r\nContent-Type: ";
+    preamble += mime_type_for(filename);
+    preamble += "\r\n\r\n";
 
     String trailer;
     trailer += "\r\n--";
@@ -216,6 +319,14 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
     static const int kBackoffMs[kMaxAttempts] = {0, 300, 900, 2000, 4000, 8000};
     int code = 0;
     String response;
+    // WiFi modem sleep (arduino-esp32's default) parks the radio between AP
+    // beacons, so ACKs for the upload trickle in once per beacon interval -
+    // with lwIP's small send buffer (CONFIG_LWIP_TCP_SND_BUF_DEFAULT, ~5.7KB)
+    // that capped a multi-MB upload at ~15 KB/s, long enough for the
+    // connection to drop partway through. Keep the radio awake for the
+    // upload only, then restore whatever was set before.
+    bool wasSleepEnabled = WiFi.getSleep();
+    WiFi.setSleep(false);
     for (int attempt = 0; attempt < kMaxAttempts; attempt++) {
         if (attempt > 0) {
             if (WiFi.status() != WL_CONNECTED) {
@@ -227,7 +338,7 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
             delay(kBackoffMs[attempt]);
         }
 
-        WiFiClientSecure client;
+        UploadClient client;
         // No certificate pinning / root-CA bundle exists in this project
         // yet - accept whatever cert the server presents. Traffic is
         // still TLS-encrypted in transit; this just means no protection
@@ -238,15 +349,13 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         http.setTimeout(60000);
         // HTTPClient::connect() passes its OWN separate _connectTimeout
         // (5000ms default, HTTPCLIENT_DEFAULT_TCP_TIMEOUT) to the client's
-        // connect(host, port, timeout) - which WolfSSLClient::connect()
-        // (WolfSSLClient.cpp) latches into both its underlying WiFiClient's
-        // own setTimeout() and _timeout_ms, the no-progress budget its recv
-        // callback uses for the rest of this connection's life. setTimeout()
-        // above never touches it. Left at its 5s default, any single >5s
-        // stall on the socket during the upload (peer backpressure, weak
-        // RSSI) kills the write with HTTPC_ERROR_SEND_PAYLOAD_FAILED -
-        // reliably, not just under flaky conditions. Match it to the same
-        // 60s budget.
+        // connect(host, port, timeout) - which WiFiClientSecure latches in
+        // as the mbedTLS socket timeout for the rest of this connection's
+        // life (ssl_client.cpp's send_ssl_data() gives up on a write stalled
+        // longer than that). setTimeout() above never touches it. Left at
+        // its 5s default, any single >5s stall on the socket during the
+        // upload (peer backpressure, weak RSSI) kills the write with
+        // HTTPC_ERROR_SEND_PAYLOAD_FAILED. Match it to the same 60s budget.
         http.setConnectTimeout(60000);
         if (!http.begin(client, TRANSCRIBE_URL)) {
             code = HTTPC_ERROR_CONNECTION_REFUSED;
@@ -263,13 +372,16 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         unsigned long startMs = millis();
         code = http.sendRequest("POST", &body, contentLength);
         response = http.getString();
+        String tlsError = code < 0 ? tls_error_suffix(client) : String();
         http.end();
 
-        transcribe_log("Attempt %d/%d: HTTP %d%s%s, sent %u/%u bytes, %lu ms, RSSI %d dBm", attempt + 1, kMaxAttempts,
-                       code, code < 0 ? " " : "", code < 0 ? HTTPClient::errorToString(code).c_str() : "",
-                       (unsigned)body.served(), (unsigned)contentLength, millis() - startMs, (int)WiFi.RSSI());
+        transcribe_log("Attempt %d/%d: HTTP %d%s%s%s, sent %u/%u bytes, %lu ms, RSSI %d dBm", attempt + 1,
+                       kMaxAttempts, code, code < 0 ? " " : "", code < 0 ? HTTPClient::errorToString(code).c_str() : "",
+                       tlsError.c_str(), (unsigned)body.served(), (unsigned)contentLength, millis() - startMs,
+                       (int)WiFi.RSSI());
         if (code != HTTPC_ERROR_SEND_PAYLOAD_FAILED) break;
     }
+    WiFi.setSleep(wasSleepEnabled);
     src.close();
 
     if (code != 200) {
@@ -289,11 +401,8 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
             // to blame instead) - the request never got past
             // client.connect() inside sendRequest(). errorToString() names
             // which stage failed (DNS, socket connect, read timeout, ...).
-            // Unlike mbedTLS's WiFiClientSecure, WolfSSLClient exposes no
-            // lastError()-equivalent to add a TLS-specific reason on top
-            // when the failed stage was the handshake itself -
-            // WolfSSLClient::setDebug(true) would surface wolfSSL's own
-            // error string to Serial instead, but only that, not here.
+            // The last attempt's TLS error, if any, is in the log (see
+            // tls_error_suffix()).
             message = "HTTP " + String(code) + " (" + HTTPClient::errorToString(code) + ")";
         } else {
             message = "HTTP " + String(code);
