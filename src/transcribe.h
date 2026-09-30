@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 // -----------------------------------------------------------------------
 // AI transcription: saves/reads a provider API key (web_server.cpp's
@@ -38,6 +39,13 @@ void ai_provider_get_api_key(char *out, size_t outLen);
 // Saves the provider API key to NVS. An empty string clears it. Called by
 // web_server.cpp's /api/settings/ai-key handler.
 void ai_provider_set_api_key(const char *key);
+
+// Largest audio file the on-device Transcribe action will upload. The
+// ESP32's own TLS upload is slow enough that bigger files risk running
+// into the provider's request-body timeout, so ui_epaper.cpp refuses
+// them up front and points the user at the web file manager's Transcribe
+// button instead (that path uploads from the browser, not the ESP32).
+static const uint32_t TRANSCRIBE_MAX_FILE_BYTES = 1024UL * 1024UL;
 
 // Requests that transcribe_process_pending() transcribe `filename` (an
 // audio file on the SD root) the next time it's called from loop() -
