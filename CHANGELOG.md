@@ -1,3 +1,17 @@
+# [1.10.0](https://github.com/corradoignoti/annota/compare/v1.9.1...v1.10.0) (2026-09-30)
+
+
+### Bug Fixes
+
+* web Transcribe button reports skipped title/abstract ([25fa9b6](https://github.com/corradoignoti/annota/commit/25fa9b62e1d7dca38cf0abe5b9732aa9ae252f70)), closes [#26](https://github.com/corradoignoti/annota/issues/26)
+
+
+### Features
+
+* add AI title and abstract on top of transcripts ([84a0169](https://github.com/corradoignoti/annota/commit/84a016983cc56d7d4b5277bd60b58364b5951461))
+* cap on-device transcription at 1 MB ([6af12c0](https://github.com/corradoignoti/annota/commit/6af12c0059ee7dac6bb1e89a3b2efe772e4990b0))
+* show transcription phases in the web Transcribe flow ([fd2d737](https://github.com/corradoignoti/annota/commit/fd2d737f13db3683d3f0904c1c48a90d6bdb54d5))
+
 ## [1.9.1](https://github.com/corradoignoti/annota/compare/v1.9.0...v1.9.1) (2026-09-30)
 
 
