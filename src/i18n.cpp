@@ -133,7 +133,11 @@ void i18n_write_web_js(String &out) {
     out += "window.I18N_LANG=\"";
     out += kLangCodes[lang];
     out += "\";\nwindow.I18N=";
-    serializeJson(doc, out);
+    // Into its own String: ArduinoJson 7's serializeJson() replaces a
+    // String's contents rather than appending, which would wipe the prefix.
+    String json;
+    serializeJson(doc, json);
+    out += json;
     out += ";\n";
     out += FPSTR(I18N_JS_HELPERS);
 }
