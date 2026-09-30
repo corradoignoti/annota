@@ -1,3 +1,15 @@
+# [1.11.0](https://github.com/corradoignoti/annota/compare/v1.10.1...v1.11.0) (2026-09-30)
+
+
+### Bug Fixes
+
+* web UI labels blank because i18n.js was malformed ([0ba8e01](https://github.com/corradoignoti/annota/commit/0ba8e01c595fb4288d6456fa2fc5af9b538567e7))
+
+
+### Features
+
+* translate device and web UI (English, Italian, French) ([f445b01](https://github.com/corradoignoti/annota/commit/f445b01297b48736d7480034595e8da4edfe8a16))
+
 ## [1.10.1](https://github.com/corradoignoti/annota/compare/v1.10.0...v1.10.1) (2026-09-30)
 
 
