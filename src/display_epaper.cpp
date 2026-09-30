@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <esp_heap_caps.h>
 #include <lvgl.h>
 
 // -----------------------------------------------------------------------
@@ -77,7 +78,14 @@ static const int EPD_BUF_LEN = (SCREEN_W * SCREEN_H) / 8; // 5000, 1 bit/px
 
 static uint8_t epd_buf[EPD_BUF_LEN];
 static lv_display_t *display;
-static lv_color_t draw_buf[SCREEN_W * SCREEN_H] __attribute__((aligned(4))); // full-frame RGB565
+// Full-frame LVGL render buffer, allocated in PSRAM by display_init_input().
+// It's the single biggest buffer in the firmware (120 KB); as a static
+// array it sat in internal DRAM, which WiFi/lwIP and the TLS stack need -
+// once USB drive mode linked in TinyUSB's own ~32 KB of static buffers,
+// what was left starved the transcription upload (HTTP -3 after a few KB).
+// Only touched once per e-paper refresh, so PSRAM's slower access is moot.
+static const size_t DRAW_BUF_BYTES = SCREEN_W * SCREEN_H * sizeof(lv_color_t);
+static lv_color_t *draw_buf;
 
 // -----------------------------------------------------------------------
 // SSD1681-class command/data plumbing
@@ -327,7 +335,9 @@ void display_init_input() {
 
     display = lv_display_create(SCREEN_W, SCREEN_H);
     lv_display_set_flush_cb(display, disp_flush_cb);
-    lv_display_set_buffers(display, draw_buf, NULL, sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_FULL);
+    draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!draw_buf) draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_BUF_BYTES, MALLOC_CAP_8BIT);
+    lv_display_set_buffers(display, draw_buf, NULL, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_FULL);
     // No LVGL indev registered here - ui_epaper.cpp polls the two buttons
     // directly (via display_button_poll() below) and drives its own
     // list/menu state machine instead of routing through LVGL's
