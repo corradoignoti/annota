@@ -313,6 +313,21 @@ bool delete_file(const char *filename) {
     return ok;
 }
 
+bool find_sibling_transcript(const char *audioFilename, char *out, size_t outLen) {
+    const char *dot = strrchr(audioFilename, '.');
+    size_t baseLen = dot ? (size_t)(dot - audioFilename) : strlen(audioFilename);
+    snprintf(out, outLen, "%.*s.txt", (int)baseLen, audioFilename);
+
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", out);
+    bool exists = SD_FS.exists(path);
+    sd_end();
+    return exists;
+}
+
 bool write_text_file(const char *filename, const char *text) {
     bool sdOk = sd_begin();
     if (!sdOk) return false;

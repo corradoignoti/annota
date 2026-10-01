@@ -116,6 +116,13 @@ bool get_audio_duration_seconds(const char *filename, uint32_t &secs);
 // the caller re-scans (load_file_catalog()) to refresh the on-screen list.
 bool delete_file(const char *filename);
 
+// Writes an audio file's sibling transcript name ("<basename>.txt", same
+// naming as the on-device and web transcription paths) into `out`, then
+// claims the SD card via sd_begin() to check whether that file exists, and
+// releases it via sd_end(). Returns true only if it does. Used by the
+// on-device Delete flow to warn about, then also remove, the transcript.
+bool find_sibling_transcript(const char *audioFilename, char *out, size_t outLen);
+
 // Claims the SD card via sd_begin(), writes `text` to a root-level file
 // (overwriting any existing one), then releases it via sd_end(). Returns
 // false if the card or file can't be opened. Same claim/release pattern

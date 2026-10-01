@@ -111,6 +111,12 @@ static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
 
+// kDeleteConfirm - an audio file's sibling "<basename>.txt" transcript, looked
+// up when Delete is picked; if it exists, the confirm screen warns that it
+// goes too and confirming deletes both.
+static char delete_transcript_name[64];
+static bool delete_has_transcript = false;
+
 // kDetails - built once when Details is picked from kActionMenu (the audio
 // length needs an SD read), so repaints don't touch the card again.
 static char details_text[192];
@@ -585,16 +591,24 @@ static void add_hint(const char *text) {
 
 // Shared by kActionMenu and kDeleteConfirm - a bordered panel holding a
 // title line plus a cycle-and-confirm option list, one icon+label card
-// per option (see add_row()).
-static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count) {
+// per option (see add_row()). `note`, if given, is a wrapped line of text
+// between the title and the options (kDeleteConfirm's transcript warning).
+static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count,
+                               const char *note = nullptr) {
     const int16_t title_h = 20;
     const int16_t panel_w = SCREEN_W - 16;
+    int16_t note_h = 0;
+    if (note) {
+        lv_point_t size;
+        lv_text_get_size(&size, note, &lv_font_it_12, 0, 0, panel_w - 12, LV_TEXT_FLAG_NONE);
+        note_h = (int16_t)size.y + 4;
+    }
     // Tighten the padding and drop the top margin when the usual layout
     // would run into the hint bar (the audio action menu's 6 rows).
     const int16_t avail_h = SCREEN_H - HEADER_H - HINT_H;
-    const bool compact = 12 + 6 * 2 + title_h + count * ROW_H > avail_h;
+    const bool compact = 12 + 6 * 2 + title_h + note_h + count * ROW_H > avail_h;
     const int16_t pad = compact ? 3 : 6;
-    const int16_t panel_h = pad * 2 + title_h + count * ROW_H;
+    const int16_t panel_h = pad * 2 + title_h + note_h + count * ROW_H;
     const int16_t panel_y = compact ? 0 : 12;
 
     lv_obj_t *panel = lv_obj_create(body);
@@ -625,6 +639,17 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
 
     int16_t y = pad + title_h;
+    if (note) {
+        lv_obj_t *note_label = lv_label_create(panel);
+        lv_label_set_text(note_label, note);
+        lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(note_label, panel_w - 12);
+        lv_obj_set_style_text_font(note_label, &lv_font_it_12, 0);
+        lv_obj_set_style_text_align(note_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(note_label, lv_color_black(), 0);
+        lv_obj_set_pos(note_label, 6, y);
+        y += note_h;
+    }
     for (int i = 0; i < count; i++) {
         add_row(panel, 6, y, panel_w - 12, icons[i], options[i], i == menu_index);
         y += ROW_H;
@@ -783,8 +808,15 @@ static void render_body() {
             char title[128];
             snprintf(title, sizeof(title), tr(Str::DELETE_TITLE), active_filename);
             static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-            const char *options[] = {tr(Str::DELETE_CONFIRM), tr(Str::CANCEL)};
-            render_option_menu(title, icons, options, 2);
+            if (delete_has_transcript) {
+                char warning[128];
+                snprintf(warning, sizeof(warning), tr(Str::DELETE_ALSO_TRANSCRIPT), delete_transcript_name);
+                const char *options[] = {tr(Str::DELETE_CONFIRM_WITH_TEXT), tr(Str::CANCEL)};
+                render_option_menu(title, icons, options, 2, warning);
+            } else {
+                const char *options[] = {tr(Str::DELETE_CONFIRM), tr(Str::CANCEL)};
+                render_option_menu(title, icons, options, 2);
+            }
             break;
         }
 
@@ -1431,6 +1463,9 @@ void ui_process_input() {
                     state = Screen::kDetails;
                     render_body();
                 } else if (menu_index == (showing_audio_files ? 3 : 2)) {
+                    delete_has_transcript = showing_audio_files &&
+                                            find_sibling_transcript(active_filename, delete_transcript_name,
+                                                                    sizeof(delete_transcript_name));
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -1466,7 +1501,9 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    delete_file(active_filename);
+                    if (delete_file(active_filename) && delete_has_transcript) {
+                        delete_file(delete_transcript_name);
+                    }
                     load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                     selected_index = 0;
                     top_index = 0;

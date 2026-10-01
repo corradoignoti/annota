@@ -186,7 +186,13 @@ may touch it.
   `platformio.ini`'s build_flags), in which case it
   goes straight to `kTranscribeResult` with a "use the web interface"
   message and nothing is queued; selecting Delete calls `storage.h`'s
-  `delete_file()` directly, same reasoning. Both the audio and `.txt`
+  `delete_file()` directly, same reasoning — on an audio file it also
+  deletes the sibling `<basename>.txt` transcript if one exists
+  (`storage.h`'s `find_sibling_transcript()`, checked when Delete is
+  picked), and `kDeleteConfirm` warns about that first (confirm label
+  "Delete audio + .txt", plus a wrapped warning line inside the menu panel,
+  between title and options, that the named `.txt` file will also be
+  deleted — `render_option_menu()`'s optional `note`). Both the audio and `.txt`
   action menus also carry a File transfer item (right before Cancel) that
   hands off to `wifi_manager.h`'s `wifi_request_file_link()` the same way
   Transcribe hands off to `transcribe_request()` — on success this shows
