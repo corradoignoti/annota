@@ -7,9 +7,8 @@
 
 constexpr size_t MAX_MP3_FILES = 64;
 
-// Extensions load_mp3_catalog() and the UI's audio/text toggle treat as
-// audio - pass to load_file_catalog() (see has_ext() in storage.cpp for
-// the '|'-separated format). .mp3 (playback: AudioGeneratorMP3) and .wav
+// Extensions load_mp3_catalog() treats as audio (see has_ext() in
+// storage.cpp for the '|'-separated format). .mp3 (playback: AudioGeneratorMP3) and .wav
 // (playback: AudioGeneratorWAV; also what mic_start_recording() now
 // writes - see speaker.cpp's top-of-recording-section comment for why
 // PCM WAV instead of an MP3 encoder) - no AAC/m4a decoder anywhere in
@@ -21,24 +20,30 @@ constexpr size_t MAX_MP3_FILES = 64;
 
 struct Mp3Entry {
     char filename[64];
-    char created[20]; // "YYYY-MM-DD HH:MM" or "Unknown date"
     uint32_t size;     // bytes, for the on-device Details screen
+    // Audio files only: the AI title from the sibling "<basename>.txt"
+    // transcript's header line (see transcribe_openai.cpp's title/abstract
+    // layout), shown under the filename on the audio list. Empty if there's
+    // no transcript or it has no title header (plain-transcript fallback).
+    // Folded to the Latin-1 the on-device fonts carry - see read_title().
+    char title[48];
+    // Audio files only: whether that sibling transcript exists, and its
+    // last-write time (0 if none/unknown) - the audio list's sort key, see
+    // load_mp3_catalog().
+    bool hasTranscript;
+    time_t transcriptTime;
 };
 
 extern Mp3Entry mp3Files[MAX_MP3_FILES];
 extern size_t mp3FileCount;
 
 // Scans the SD card's root for audio files (AUDIO_EXTS) into
-// mp3Files/mp3FileCount. Returns false if no SD card is present - the
-// caller should invite the user to insert one instead of showing a file
-// list.
+// mp3Files/mp3FileCount, fills each entry's `title` from its sibling
+// transcript, if any, and sorts the list: files with no transcript first,
+// then by transcript date, newest first. Returns false if no SD card is
+// present - the caller should invite the user to insert one instead of
+// showing a file list.
 bool load_mp3_catalog();
-
-// Scans the SD card's root for files matching `ext` (e.g. ".mp3", AUDIO_EXTS,
-// ".txt"; case-insensitive, dot required, '|'-separated for more than one)
-// into mp3Files/mp3FileCount. Generic form of load_mp3_catalog(), used by
-// the UI's audio/text list toggle. Returns false if no SD card is present.
-bool load_file_catalog(const char *ext);
 
 // Mounts the SD card for a one-off operation outside the boot-time
 // catalog scan (web_server.cpp's file manager). Callers bracket this with
@@ -101,12 +106,37 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // above.
 bool get_audio_duration_seconds(const char *filename, uint32_t &secs);
 
+// Claims the SD card via sd_begin() just long enough to read a root-level
+// file's size and last-write time (formatted like Mp3Entry::created), then
+// releases it via sd_end(). Used by the on-device audio Details screen for
+// the sibling transcript, which isn't in mp3Files while the audio list is
+// shown. Returns false if the card or file can't be opened. Same caller
+// responsibility as read_text_file_preview() above.
+bool get_file_info(const char *filename, uint32_t &size, char *created, size_t createdLen);
+
 // Claims the SD card via sd_begin(), deletes a root-level file, then
 // releases it via sd_end(). Returns false if the card can't be opened or
 // the file doesn't exist. Same caller responsibility as
 // read_text_file_preview() above. Doesn't touch mp3Files/mp3FileCount -
-// the caller re-scans (load_file_catalog()) to refresh the on-screen list.
+// the caller re-scans (load_mp3_catalog()) to refresh the on-screen list.
 bool delete_file(const char *filename);
+
+// Writes an audio file's sibling transcript name ("<basename>.txt", same
+// naming as the on-device and web transcription paths) into `out`, then
+// claims the SD card via sd_begin() to check whether that file exists, and
+// releases it via sd_end(). Returns true only if it does. Used by the
+// on-device Delete flow to warn about, then also remove, the transcript.
+bool find_sibling_transcript(const char *audioFilename, char *out, size_t outLen);
+
+// Reads a transcript's AI title header from `f` (an open .txt file,
+// positioned at its start) into `out` as raw UTF-8, truncated to fit: the
+// first line, but only when a blank line follows it - transcribe_openai.cpp
+// (and the web page's callProvider()) write
+// "title\n\nabstract\n\ntranscript", while the plain-transcript fallback
+// is Whisper's single unbroken paragraph, which has no title. Returns false
+// (out = "") if there's no title. Used by web_server.cpp's /api/files; the
+// on-device list uses the same rule, folded to Latin-1.
+bool read_transcript_title(File &f, char *out, size_t outLen);
 
 // Claims the SD card via sd_begin(), writes `text` to a root-level file
 // (overwriting any existing one), then releases it via sd_end(). Returns

@@ -100,7 +100,7 @@ may touch it.
   `ui.h`'s `ui_request_rerender()`, no reboot. See "Translations" below.
 - **usb_drive.cpp/h** — USB drive mode: the whole SD card exposed to a
   computer as a USB mass-storage device (arduino-esp32's `USBMSC`, i.e.
-  TinyUSB MSC), entered from the Home carousel's 4th card ("USB drive",
+  TinyUSB MSC), entered from the Home carousel's 3rd card ("USB drive",
   `ui_epaper.cpp`'s `kHome` -> `Screen::kUsbDrive`; WiFi is taken offline
   first so the web file manager can't touch the card). No build-config
   change: the board runs `ARDUINO_USB_MODE=1` (Serial on the
@@ -150,26 +150,31 @@ may touch it.
   case around their SD access.
 - **storage.cpp/h** — `load_mp3_catalog()` scans the SD root into the global
   `mp3Files`/`mp3FileCount` arrays (`storage.h`), filtering directories and
-  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). `sd_begin()`/
+  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). The audio
+  list is sorted: files with no sibling `<basename>.txt` first, then by
+  that transcript's last-write time, newest first (`audio_before()`).
+  `sd_begin()`/
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
   peripheral (1-bit mode, pins 39/41/40).
 - **ui_epaper.cpp** (`ui.h`'s implementation) — WiFi status, a scrollable
-  file list, and per-file Play/Record/Transcribe/Delete/View (`.txt`
-  transcripts only — `Screen::kTextView`, opened from the top of a `.txt`
-  file's action menu via `storage.h`'s `read_text_file_preview()`; Select
+  audio file list ("Notes" — the device no longer lists `.txt` files on
+  their own), and per-file Play/Record/Transcribe/Delete/View transcription
+  (`Screen::kTextView`, opened from an audio file's action menu when it has
+  a sibling transcript, via `storage.h`'s `read_text_file_preview()`; Select
   short-press scrolls down, Next short-press scrolls up — reversed from
   every other screen's Next-cycles/Select-confirms convention, since here
   Select doubles as both the scroll-down and the long-press-to-go-back
   action — and a Select long-press closes straight back to `kList` (not the
   action menu it was opened from) so the menu doesn't reappear on exit),
-  plus a Details item in both the audio and `.txt` action menus
-  (`Screen::kDetails` — name + size for both, then the `.txt` file's
-  `Mp3Entry::created` date or the audio file's playing time from
+  plus a Details item in the action menu
+  (`Screen::kDetails` — name, size, and the audio file's playing time from
   `storage.h`'s `get_audio_duration_seconds()`, which parses the WAV
   chunk list or the MP3 Xing/Info/VBRI tag, falling back to a CBR
-  estimate; Select goes back to the action menu; the audio menu's 6 rows
-  make `render_option_menu()` switch to a compact layout to clear the
-  hint bar) —
+  estimate — plus, for an audio file with a sibling `<basename>.txt`,
+  that transcript's size and date via `storage.h`'s `get_file_info()`,
+  shown in a compact icon-less 12pt card to fit; Select goes back to the
+  action menu; `render_option_menu()` switches to a compact layout
+  whenever a menu's rows wouldn't otherwise clear the hint bar) —
   no on-screen Settings or WiFi credential entry, which stay on
   `web_server.cpp`'s existing web UI. A small explicit state machine
   (`Screen` enum) driven by `display.h`'s `display_button_poll()` via
@@ -185,20 +190,18 @@ may touch it.
   `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (2 MB, set via
   `platformio.ini`'s build_flags), in which case it
   goes straight to `kTranscribeResult` with a "use the web interface"
-  message and nothing is queued; selecting Delete calls `storage.h`'s
-  `delete_file()` directly, same reasoning. Both the audio and `.txt`
-  action menus also carry a File transfer item (right before Cancel) that
-  hands off to `wifi_manager.h`'s `wifi_request_file_link()` the same way
-  Transcribe hands off to `transcribe_request()` — on success this shows
-  `Screen::kFileTransfer`, a per-file counterpart to the Home screen's own
-  generic File-transfer/QR screen (`kWifiJoined`, whole-SD-root URL; the
-  Home carousel's 4th card is USB drive mode — see `usb_drive.cpp/h`) with
-  that one file's `/api/download` URL as text plus a QR code
-  (`ui_show_file_transfer_screen()`, sharing `add_qr_screen()`'s canvas and
-  `url_encode_component()` for any filename characters that need
-  percent-encoding); a Select press on it, short or long, calls
-  `wifi_go_offline()` and returns to `kList`, same as `kWifiJoined`'s own
-  exit handler. A long Select press on the
+  message and nothing is queued. If the audio file already has a sibling
+  `<basename>.txt` (`storage.h`'s `find_sibling_transcript()`, checked
+  once when the action menu opens), Transcribe's slot shows View
+  transcription instead, opening that `.txt` in `kTextView`; re-transcribing
+  then means deleting the `.txt` or using the web UI. Selecting Delete calls `storage.h`'s
+  `delete_file()` directly, same reasoning — on an audio file it also
+  deletes the sibling `<basename>.txt` transcript if one exists
+  (`storage.h`'s `find_sibling_transcript()`, checked when the action menu
+  opens), and `kDeleteConfirm` warns about that first (confirm label
+  "Delete audio + .txt", plus a wrapped warning line inside the menu panel,
+  between title and options, that the named `.txt` file will also be
+  deleted — `render_option_menu()`'s optional `note`). A long Select press on the
   list opens a small Refresh/Offline↔Online/Reboot/Close menu instead —
   Offline↔Online is driven by two new `wifi_manager.h` calls,
   `wifi_is_connected()` (labels the option) and `wifi_go_offline()`
@@ -272,14 +275,6 @@ may touch it.
   the AP's gone, not just a reconnect attempt having failed once — it calls
   `wifi_go_offline()` silently, same as the on-device "Offline" item;
   mostly moot now that the radio is normally off already, but harmless.
-  `wifi_request_file_link()`/`wifi_process_pending_file_link()` are the
-  same request/process split, scoped to one SD file rather than the
-  Home screen's whole-root `wifi_request_file_transfer()` — wired to the
-  per-file action menu's File transfer option (`ui_epaper.cpp`'s
-  `kActionMenu` case); on success it shows that file's download link/QR
-  screen (`ui.h`'s `ui_show_file_transfer_screen()`) instead of the
-  generic root one, on failure the same `ui_show_wifi_manage_screen()`
-  fallback as the whole-root version.
 - **transcribe.cpp/h + transcribe_&lt;provider&gt;.cpp** — AI transcription,
   split into a provider-agnostic half and a provider-specific half so a
   future second provider is a new file plus a new build flag, not a
@@ -381,9 +376,17 @@ may touch it.
   symmetry with `web_server.cpp`'s SD handlers).
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80. Two pages, same dark palette as
-  `ui_epaper.cpp`: a file manager (list/download/upload/delete files on
-  the SD root, plus a per-file Transcribe button for audio files) at `/`,
-  backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
+  `ui_epaper.cpp`: a file manager at `/` mirroring the device's Notes
+  list — a Notes table with one row per audio file (`.mp3`/`.wav`, both
+  playable via `/api/play`) and its sibling `<basename>.txt` folded in
+  (`buildNotes()`: the transcript's AI title, from `/api/files`'s `title`
+  field — `storage.h`'s `read_transcript_title()`, raw UTF-8 — under the
+  filename; View transcription in place of Transcribe once transcribed;
+  Delete, Download and their batch versions cover both files; default order is the
+  device's, untranscribed first then newest transcript, with Name/Date
+  headers cycling asc/desc/default), plus an "Other files" table for
+  everything else (orphan `.txt`, `_error.txt` logs, other uploads) with
+  view/download/delete, and upload — backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
   `/api/transcript-key`, `/api/transcript`; and a `/settings` page
   (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, an
   idle-sleep-timeout slider, and the AI provider's API key field, labeled

@@ -93,11 +93,14 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     --danger-bg: rgba(163, 39, 29, 0.08);
   }
   * { box-sizing: border-box; }
+  /* #batchBar/#syncBar/#sd-widget set display: flex, which would
+     otherwise beat the hidden attribute's UA display: none. */
+  [hidden] { display: none !important; }
   body {
     font-family: "Roboto", -apple-system, system-ui, sans-serif;
     background: var(--paper);
     color: var(--ink);
-    max-width: 640px;
+    max-width: 760px;
     margin: 0 auto;
     padding: 0 0 2rem;
   }
@@ -134,7 +137,26 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     margin: 0 1rem 1.2rem;
     overflow: hidden;
   }
-  #files-card { overflow-x: auto; }
+  #files-card, #others-card { overflow-x: auto; }
+  .card-title {
+    padding: 0.65rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1.5px solid var(--border);
+  }
+  /* A note's AI title (or "no transcript yet"), under its filename - the
+     web counterpart of the device list's second line. */
+  .note-title {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    margin: 0.15rem 0 0 1.6em;
+  }
+  .note-title.none { font-style: italic; }
+  tbody tr:hover .note-title { color: rgba(255, 255, 255, 0.65); }
   #player { padding: 0.9rem 1rem; }
   #player #playerName { font-size: 0.85rem; margin-bottom: 0.5rem; word-break: break-all; }
   #player #playerName::before { content: "\25B6  "; }
@@ -180,7 +202,13 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   td.size, th.size { text-align: right; white-space: nowrap; }
   td.date, th.date { white-space: nowrap; color: var(--ink-soft); font-size: 0.85rem; }
   td.actions { text-align: right; white-space: nowrap; }
-  td.name { white-space: nowrap; }
+  /* Name takes whatever width the other columns leave; a long AI title
+     wraps under the filename instead of pushing the actions off-card. */
+  td.name { white-space: nowrap; width: 100%; }
+  td.actions { width: 1%; }
+  @media (max-width: 560px) {
+    td.date, th.date { display: none; }
+  }
   .file-icon { display: inline-block; width: 1.1em; text-align: center; opacity: 0.75; margin-right: 0.5rem; }
   table td:first-child, table th:first-child {
     max-width: 40vw;
@@ -328,6 +356,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 </div>
 
 <div class="card" id="files-card">
+  <div class="card-title" id="notesTitle"></div>
   <table id="files">
     <thead><tr>
       <th class="check"><input type="checkbox" id="selectAll" data-i18n-title="select_all"></th>
@@ -339,7 +368,12 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     <tbody></tbody>
   </table>
 </div>
-<div id="empty" class="card" hidden data-i18n="no_files"></div>
+<div id="empty" class="card" hidden></div>
+
+<div class="card" id="others-card" hidden>
+  <div class="card-title" data-i18n="other_files"></div>
+  <table id="others"><tbody></tbody></table>
+</div>
 
 <div id="drop">
   <span data-i18n="drop_here"></span>
@@ -493,18 +527,26 @@ function fmtDate(mtime) {
 }
 
 let currentFiles = [];
-let sortKey = "name";
+// The page's two views of currentFiles (see buildNotes()): notes = one
+// entry per audio file with its sibling transcript folded in, same as the
+// device's Notes list; others = every file that's neither.
+let notes = [];
+let others = [];
+// "default" = the device list's order (see noteBefore()); clicking the
+// Name/Date headers cycles ascending -> descending -> back to default.
+let sortKey = "default";
 let sortDir = 1; // 1 = ascending, -1 = descending
 
-// Batch selection - filenames, not row/index references, so it survives
-// a re-sort (render() rebuilds every row from scratch either way) and is
-// simple to prune against currentFiles after a refresh().
+// Batch selection - note (audio) filenames, not row/index references, so
+// it survives a re-sort (render() rebuilds every row from scratch either
+// way) and is simple to prune against notes after a refresh().
 let selected = new Set();
 
-// Keep in sync with web_server.cpp's audio_content_type() - only this
-// extension gets a Play button and a working /api/play.
+// Keep in sync with storage.h's AUDIO_EXTS and web_server.cpp's
+// audio_content_type() (every one gets a Play button and a working
+// /api/play).
 function isAudio(name) {
-  return /\.wav$/i.test(name);
+  return /\.(mp3|wav)$/i.test(name);
 }
 
 function isText(name) {
@@ -558,26 +600,102 @@ function updateBatchBar() {
   document.getElementById("batchCount").textContent = t("n_selected", selected.size);
   document.getElementById("batchBar").hidden = selected.size === 0;
   const selectAll = document.getElementById("selectAll");
-  const total = currentFiles.length;
+  const total = notes.length;
   selectAll.checked = total > 0 && selected.size === total;
   selectAll.indeterminate = selected.size > 0 && selected.size < total;
 }
 
+// Splits `files` (GET /api/files) into notes and others - see their
+// declarations above. A transcript pairs with its audio file
+// case-insensitively, since the SD card's FAT is.
+function buildNotes(files) {
+  const byName = new Map(files.map((f) => [f.name.toLowerCase(), f]));
+  const paired = new Set();
+  const notes = [];
+  for (const f of files) {
+    if (!isAudio(f.name)) continue;
+    const transcript = byName.get(txtSibling(f.name).toLowerCase()) || null;
+    if (transcript) paired.add(transcript.name);
+    notes.push({ name: f.name, size: f.size, transcript });
+  }
+  const others = files.filter((f) => !isAudio(f.name) && !paired.has(f.name));
+  return { notes, others };
+}
+
+function transcriptTime(n) {
+  return n.transcript ? n.transcript.mtime : 0;
+}
+
+// Same order as the device list (storage.cpp's audio_before()):
+// untranscribed first, then by transcript date, newest first. Ties keep
+// the card's scan order (Array.prototype.sort is stable).
+function noteBefore(a, b) {
+  if (!a.transcript !== !b.transcript) return a.transcript ? 1 : -1;
+  return transcriptTime(b) - transcriptTime(a);
+}
+
+// Icon-only action button (see td.actions' CSS comment) - title carries
+// the label for a11y/tooltip instead of visible text, so four fit one row.
+function actionButton(icon, title, onclick, danger) {
+  const b = document.createElement("button");
+  if (danger) b.className = "danger";
+  b.textContent = icon;
+  b.title = title;
+  b.onclick = () => onclick(b);
+  return b;
+}
+
+function downloadLink(name) {
+  const dl = document.createElement("a");
+  dl.className = "btn";
+  dl.href = "/api/download?name=" + encodeURIComponent(name);
+  dl.textContent = "⬇";
+  dl.title = t("download");
+  return dl;
+}
+
+function nameCell(icon, text, subtitle, subtitleNone) {
+  const name = document.createElement("td");
+  name.className = "name";
+  const i = document.createElement("span");
+  i.className = "file-icon";
+  i.textContent = icon;
+  name.appendChild(i);
+  name.appendChild(document.createTextNode(text));
+  if (subtitle) {
+    const sub = document.createElement("div");
+    sub.className = subtitleNone ? "note-title none" : "note-title";
+    sub.textContent = subtitle;
+    name.appendChild(sub);
+  }
+  return name;
+}
+
+function textCell(className, text) {
+  const td = document.createElement("td");
+  td.className = className;
+  td.textContent = text;
+  return td;
+}
+
 function render() {
-  // Drop selections for files that no longer exist (deleted elsewhere,
+  ({ notes, others } = buildNotes(currentFiles));
+
+  // Drop selections for notes that no longer exist (deleted elsewhere,
   // or this is the refresh() after a batch action) - selected is keyed by
   // filename, so a stale entry would otherwise just sit there unseen.
-  const stillPresent = new Set(currentFiles.map((f) => f.name));
+  const stillPresent = new Set(notes.map((n) => n.name));
   for (const name of Array.from(selected)) {
     if (!stillPresent.has(name)) selected.delete(name);
   }
 
-  const sorted = currentFiles.slice().sort((a, b) => {
+  const sorted = notes.slice().sort((a, b) => {
+    if (sortKey === "default") return noteBefore(a, b);
     let cmp;
     if (sortKey === "name") {
       cmp = a.name.localeCompare(b.name, window.I18N_LANG, { sensitivity: "base" });
     } else {
-      cmp = a.mtime - b.mtime;
+      cmp = transcriptTime(a) - transcriptTime(b);
     }
     return cmp * sortDir;
   });
@@ -587,92 +705,75 @@ function render() {
     arrow.textContent = th.dataset.sort === sortKey ? (sortDir === 1 ? " ▲" : " ▼") : "";
   });
 
+  document.getElementById("notesTitle").textContent = t("notes_title", notes.length);
+  document.getElementById("files-card").hidden = notes.length === 0;
+  const empty = document.getElementById("empty");
+  empty.hidden = notes.length > 0;
+  empty.textContent = currentFiles.length === 0 ? t("no_files") : t("no_notes");
+
   const body = document.querySelector("#files tbody");
   body.innerHTML = "";
-  document.getElementById("empty").hidden = sorted.length > 0;
-  for (const f of sorted) {
+  for (const n of sorted) {
     const tr = document.createElement("tr");
 
     const check = document.createElement("td");
     check.className = "check";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = selected.has(f.name);
+    cb.checked = selected.has(n.name);
     cb.onchange = () => {
-      if (cb.checked) selected.add(f.name); else selected.delete(f.name);
+      if (cb.checked) selected.add(n.name); else selected.delete(n.name);
       updateBatchBar();
     };
     check.appendChild(cb);
     tr.appendChild(check);
 
-    const name = document.createElement("td");
-    name.className = "name";
-    const icon = document.createElement("span");
-    icon.className = "file-icon";
-    icon.textContent = isAudio(f.name) ? "♪" : "☰"; // matches ui_epaper.cpp's LV_SYMBOL_AUDIO / LV_SYMBOL_FILE distinction
-    name.appendChild(icon);
-    name.appendChild(document.createTextNode(f.name));
-    tr.appendChild(name);
-
-    const date = document.createElement("td");
-    date.className = "date";
-    // Audio files show no date, same as the on-device Details screen.
-    date.textContent = isAudio(f.name) ? "" : fmtDate(f.mtime);
-    tr.appendChild(date);
-
-    const size = document.createElement("td");
-    size.className = "size";
-    size.textContent = fmtSize(f.size);
-    tr.appendChild(size);
+    // Second line: the transcript's AI title, nothing for a transcript
+    // without one (plain-transcript fallback), or "no transcript yet".
+    tr.appendChild(n.transcript ? nameCell("♪", n.name, n.transcript.title || "", false)
+                                : nameCell("♪", n.name, t("no_transcript"), true));
+    tr.appendChild(textCell("date", n.transcript ? fmtDate(n.transcript.mtime) : ""));
+    tr.appendChild(textCell("size", fmtSize(n.size)));
 
     const actions = document.createElement("td");
     actions.className = "actions";
-
-    // Icon-only (see td.actions' CSS comment) - title carries the label
-    // for a11y/tooltip instead of visible text, so up to four fit one row.
-    if (isAudio(f.name)) {
-      const play = document.createElement("button");
-      play.textContent = "▶";
-      play.title = t("play");
-      play.onclick = () => playFile(f.name);
-      actions.appendChild(play);
-
-      const transcribe = document.createElement("button");
-      transcribe.textContent = "✎";
-      transcribe.title = t("transcribe");
-      transcribe.onclick = () => transcribeFile(f.name, transcribe);
-      actions.appendChild(transcribe);
+    actions.appendChild(actionButton("▶", t("play"), () => playFile(n.name)));
+    // Same swap as the device's action menu: a transcribed note offers
+    // View transcription in Transcribe's place.
+    if (n.transcript) {
+      actions.appendChild(actionButton("👁", t("view_transcript"), () => viewFile(n.transcript.name)));
+    } else {
+      actions.appendChild(actionButton("✎", t("transcribe"), (b) => transcribeFile(n.name, b)));
     }
-
-    if (isText(f.name)) {
-      const view = document.createElement("button");
-      view.textContent = "👁";
-      view.title = t("view");
-      view.onclick = () => viewFile(f.name);
-      actions.appendChild(view);
-    }
-
-    const dl = document.createElement("a");
-    dl.className = "btn";
-    dl.href = "/api/download?name=" + encodeURIComponent(f.name);
-    dl.textContent = "⬇";
-    dl.title = t("download");
-    actions.appendChild(dl);
-
-    const del = document.createElement("button");
-    del.className = "danger";
-    del.textContent = "✕";
-    del.title = t("delete");
-    del.onclick = () => removeFile(f.name);
-    actions.appendChild(del);
-
+    // Audio plus its transcript, if any - same pair Delete removes.
+    actions.appendChild(actionButton("⬇", t("download"), () => downloadFiles(noteFiles(n))));
+    actions.appendChild(actionButton("✕", t("delete"), () => removeNote(n), true));
     tr.appendChild(actions);
     body.appendChild(tr);
   }
 
+  const othersSorted = others.slice().sort((a, b) =>
+    a.name.localeCompare(b.name, window.I18N_LANG, { sensitivity: "base" }));
+  document.getElementById("others-card").hidden = othersSorted.length === 0;
+  const othersBody = document.querySelector("#others tbody");
+  othersBody.innerHTML = "";
+  for (const f of othersSorted) {
+    const tr = document.createElement("tr");
+    tr.appendChild(nameCell("☰", f.name));
+    tr.appendChild(textCell("date", fmtDate(f.mtime)));
+    tr.appendChild(textCell("size", fmtSize(f.size)));
+    const actions = document.createElement("td");
+    actions.className = "actions";
+    if (isText(f.name)) actions.appendChild(actionButton("👁", t("view"), () => viewFile(f.name)));
+    actions.appendChild(downloadLink(f.name));
+    actions.appendChild(actionButton("✕", t("delete"), () => removeFile(f.name), true));
+    tr.appendChild(actions);
+    othersBody.appendChild(tr);
+  }
+
   updateBatchBar();
-  document.getElementById("syncInfo").textContent = untranscribedAudio().length > 0
-    ? t("sync_pending", untranscribedAudio().length) : t("sync_nothing");
+  const pending = untranscribedAudio().length;
+  document.getElementById("syncInfo").textContent = pending > 0 ? t("sync_pending", pending) : t("sync_nothing");
 }
 
 function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
@@ -703,10 +804,13 @@ async function refresh() {
 
 document.querySelectorAll("th.sortable").forEach((th) => {
   th.onclick = () => {
-    if (sortKey === th.dataset.sort) {
-      sortDir *= -1;
-    } else {
+    if (sortKey !== th.dataset.sort) {
       sortKey = th.dataset.sort;
+      sortDir = 1;
+    } else if (sortDir === 1) {
+      sortDir = -1;
+    } else {
+      sortKey = "default";
       sortDir = 1;
     }
     render();
@@ -858,18 +962,41 @@ async function removeFile(name) {
   refresh();
 }
 
+// A note's Delete removes its transcript too, same as on the device.
+async function removeNote(n) {
+  const msg = n.transcript ? t("confirm_delete_note", n.name, n.transcript.name) : t("confirm_delete", n.name);
+  if (!confirm(msg)) return;
+  for (const name of noteFiles(n)) {
+    const res = await fetch("/api/delete?name=" + encodeURIComponent(name), { method: "POST" });
+    if (!res.ok) {
+      alert(t("delete_failed", await res.text()));
+      break;
+    }
+  }
+  refresh();
+}
+
+// A note's files on the card: the audio file, then its transcript if any.
+function noteFiles(n) {
+  return n.transcript ? [n.name, n.transcript.name] : [n.name];
+}
+
+function selectedNotes() {
+  return notes.filter((n) => selected.has(n.name));
+}
+
 // Batch actions (#batchBar, wired up near the bottom of this script) - each
 // just loops the same per-file request the single-row buttons above already
 // use, sequentially, so nothing new is needed server-side.
 
-// Triggers one browser download per selected file rather than a server-side
+// Triggers one browser download per file rather than a server-side
 // zip (no zip library in this firmware, and SD-side zipping a possibly
 // multi-file, multi-megabyte batch isn't worth adding one for). Staggered
 // half a second apart - firing several a.click() downloads back-to-back in
 // the same tick is what gets a browser's "this site is trying to download
 // multiple files" block, or drops all but the first.
-async function batchDownload() {
-  for (const name of Array.from(selected)) {
+async function downloadFiles(names) {
+  for (const name of names) {
     const a = document.createElement("a");
     a.href = "/api/download?name=" + encodeURIComponent(name);
     a.download = name;
@@ -878,6 +1005,10 @@ async function batchDownload() {
     a.remove();
     await new Promise((r) => setTimeout(r, 500));
   }
+}
+
+async function batchDownload() {
+  await downloadFiles(selectedNotes().flatMap(noteFiles));
 }
 
 // Shared by batchTranscribe() and syncTranscribe(): transcribes `names` one
@@ -912,12 +1043,12 @@ async function runTranscribeBatch(names) {
   }
 }
 
-// Non-audio selections are silently skipped (isAudio() gates the per-row
-// Transcribe button too) rather than erroring the whole batch over a mix.
+// Already-transcribed notes are silently skipped (their row offers View
+// transcription instead of Transcribe too) rather than overwritten.
 async function batchTranscribe() {
-  const names = Array.from(selected).filter(isAudio);
+  const names = selectedNotes().filter((n) => !n.transcript).map((n) => n.name);
   if (names.length === 0) {
-    alert(t("no_audio_selected"));
+    alert(t("all_selected_transcribed"));
     return;
   }
   await runTranscribeBatch(names);
@@ -930,14 +1061,12 @@ function txtSibling(name) {
   return (dot >= 0 ? name.slice(0, dot) : name) + ".txt";
 }
 
-// Audio files in currentFiles with no sibling .txt transcript yet (a
-// leftover <basename>_error.txt doesn't count - those get retried).
-// Compared case-insensitively, since the SD card's FAT is.
+// Notes with no transcript yet (a leftover <basename>_error.txt doesn't
+// count - those get retried).
 function untranscribedAudio() {
-  const names = new Set(currentFiles.map((f) => f.name.toLowerCase()));
-  return currentFiles
-    .filter((f) => isAudio(f.name) && !names.has(txtSibling(f.name).toLowerCase()))
-    .map((f) => f.name)
+  return notes
+    .filter((n) => !n.transcript)
+    .map((n) => n.name)
     .sort((a, b) => a.localeCompare(b, window.I18N_LANG, { sensitivity: "base" }));
 }
 
@@ -955,9 +1084,10 @@ async function syncTranscribe() {
 }
 
 async function batchDelete() {
-  const names = Array.from(selected);
-  if (names.length === 0) return;
-  if (!confirm(t("confirm_delete_n", names.length))) return;
+  const picked = selectedNotes();
+  if (picked.length === 0) return;
+  if (!confirm(t("confirm_delete_notes_n", picked.length))) return;
+  const names = picked.flatMap(noteFiles);
 
   const status = document.getElementById("status");
   const btn = document.getElementById("batchDelete");
@@ -968,7 +1098,6 @@ async function batchDelete() {
     try {
       const res = await fetch("/api/delete?name=" + encodeURIComponent(name), { method: "POST" });
       if (!res.ok) throw new Error(await res.text());
-      selected.delete(name);
     } catch (e) {
       failed++;
       status.textContent = t("delete_failed_for", name, e.message);
@@ -982,7 +1111,7 @@ async function batchDelete() {
 
 document.getElementById("selectAll").onchange = (e) => {
   if (e.target.checked) {
-    currentFiles.forEach((f) => selected.add(f.name));
+    notes.forEach((n) => selected.add(n.name));
   } else {
     selected.clear();
   }
@@ -1799,6 +1928,13 @@ static void handle_list() {
                 o["name"] = base;
                 o["size"] = entry.size();
                 o["mtime"] = entry.getLastWrite(); // unix seconds, 0 if unknown - see storage.cpp's format_timestamp for the same fallback client-side
+                // A transcript's AI title, shown under its audio file in
+                // the page's Notes table.
+                size_t baseLen = strlen(base);
+                if (baseLen > 4 && strcasecmp(base + baseLen - 4, ".txt") == 0) {
+                    char title[128];
+                    if (read_transcript_title(entry, title, sizeof(title))) o["title"] = title;
+                }
             }
             entry.close();
             entry = root.openNextFile();
@@ -1821,6 +1957,7 @@ static String audio_content_type(const char *name) {
         return len > extLen && strcasecmp(name + len - extLen, ext) == 0;
     };
     if (ends_with(".wav")) return "audio/wav";
+    if (ends_with(".mp3")) return "audio/mpeg";
     return "";
 }
 
