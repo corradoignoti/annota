@@ -23,6 +23,12 @@ struct Mp3Entry {
     char filename[64];
     char created[20]; // "YYYY-MM-DD HH:MM" or "Unknown date"
     uint32_t size;     // bytes, for the on-device Details screen
+    // Audio files only: the AI title from the sibling "<basename>.txt"
+    // transcript's header line (see transcribe_openai.cpp's title/abstract
+    // layout), shown under the filename on the audio list. Empty if there's
+    // no transcript or it has no title header (plain-transcript fallback).
+    // Folded to the Latin-1 the on-device fonts carry - see read_title().
+    char title[48];
 };
 
 extern Mp3Entry mp3Files[MAX_MP3_FILES];
@@ -37,7 +43,9 @@ bool load_mp3_catalog();
 // Scans the SD card's root for files matching `ext` (e.g. ".mp3", AUDIO_EXTS,
 // ".txt"; case-insensitive, dot required, '|'-separated for more than one)
 // into mp3Files/mp3FileCount. Generic form of load_mp3_catalog(), used by
-// the UI's audio/text list toggle. Returns false if no SD card is present.
+// the UI's audio/text list toggle. Also fills each non-.txt entry's `title`
+// from its sibling transcript, if any. Returns false if no SD card is
+// present.
 bool load_file_catalog(const char *ext);
 
 // Mounts the SD card for a one-off operation outside the boot-time

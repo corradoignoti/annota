@@ -72,6 +72,7 @@ static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const cha
             out[count].filename[sizeof(out[count].filename) - 1] = '\0';
             format_timestamp(entry.getLastWrite(), out[count].created, sizeof(out[count].created));
             out[count].size = entry.size();
+            out[count].title[0] = '\0';
             count++;
         }
         entry.close();
@@ -348,10 +349,104 @@ bool load_mp3_catalog() {
     return load_file_catalog(AUDIO_EXTS);
 }
 
+// Copies UTF-8 `src` (len bytes) into `out` as UTF-8 limited to Latin-1
+// (U+0000-U+00FF, what lv_font_it_* carry - see CLAUDE.md's Translations
+// section): typographic quotes/dashes/ellipsis the AI title may use are
+// folded to ASCII, anything else outside Latin-1 is dropped. Never splits a
+// multi-byte sequence when out fills up.
+static void fold_to_latin1(const char *src, size_t len, char *out, size_t outLen) {
+    size_t o = 0;
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)src[i];
+        uint32_t cp;
+        size_t n;
+        if (c < 0x80) {
+            cp = c;
+            n = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            cp = c & 0x1F;
+            n = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            cp = c & 0x0F;
+            n = 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            cp = c & 0x07;
+            n = 4;
+        } else {
+            i++; // stray continuation byte
+            continue;
+        }
+        if (i + n > len) break; // sequence cut off by the read buffer
+        for (size_t k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)src[i + k] & 0x3F);
+        i += n;
+
+        const char *repl = nullptr;
+        char enc[3] = {0};
+        if (cp == 0x2018 || cp == 0x2019) {
+            repl = "'";
+        } else if (cp == 0x201C || cp == 0x201D || cp == 0x00AB || cp == 0x00BB) {
+            repl = "\"";
+        } else if (cp == 0x2013 || cp == 0x2014) {
+            repl = "-";
+        } else if (cp == 0x2026) {
+            repl = "...";
+        } else if (cp < 0x20) {
+            continue;
+        } else if (cp < 0x80) {
+            enc[0] = (char)cp;
+            repl = enc;
+        } else if (cp <= 0xFF) {
+            enc[0] = (char)(0xC0 | (cp >> 6));
+            enc[1] = (char)(0x80 | (cp & 0x3F));
+            repl = enc;
+        } else {
+            continue;
+        }
+        size_t rl = strlen(repl);
+        if (o + rl >= outLen) break;
+        memcpy(out + o, repl, rl);
+        o += rl;
+    }
+    out[o] = '\0';
+}
+
+// Fills `entry.title` from the AI title header of its sibling
+// "<basename>.txt" transcript: the first line, but only when a blank line
+// follows it - transcribe_openai.cpp (and the web page's callProvider())
+// write "title\n\nabstract\n\ntranscript", while the plain-transcript
+// fallback is Whisper's single unbroken paragraph, which has no title to
+// show. Card must already be mounted.
+static void read_title(fs::FS &fs, Mp3Entry &entry) {
+    entry.title[0] = '\0';
+    const char *dot = strrchr(entry.filename, '.');
+    size_t baseLen = dot ? (size_t)(dot - entry.filename) : strlen(entry.filename);
+    char path[80];
+    snprintf(path, sizeof(path), "/%.*s.txt", (int)baseLen, entry.filename);
+    File f = fs.open(path, FILE_READ);
+    if (!f) return;
+    char buf[192];
+    size_t n = f.readBytes(buf, sizeof(buf) - 1);
+    f.close();
+    buf[n] = '\0';
+
+    char *nl = strchr(buf, '\n');
+    if (!nl) return;
+    size_t lineLen = (size_t)(nl - buf);
+    if (lineLen > 0 && buf[lineLen - 1] == '\r') lineLen--;
+    const char *next = nl + 1;
+    if (*next == '\r') next++;
+    if (*next != '\n' || lineLen == 0) return;
+    fold_to_latin1(buf, lineLen, entry.title, sizeof(entry.title));
+}
+
 bool load_file_catalog(const char *ext) {
     bool sdOk = sd_begin();
     if (sdOk) {
         mp3FileCount = scan_files(SD_FS, mp3Files, MAX_MP3_FILES, ext);
+        for (size_t i = 0; i < mp3FileCount; i++) {
+            if (!has_ext(mp3Files[i].filename, ".txt")) read_title(SD_FS, mp3Files[i]);
+        }
         sd_end();
     } else {
         mp3FileCount = 0;

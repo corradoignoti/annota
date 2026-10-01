@@ -244,6 +244,26 @@ static size_t list_item_count() {
     return has_record_option() ? mp3FileCount + 1 : mp3FileCount;
 }
 
+// kList row i's transcript title (Mp3Entry::title) - "" for an audio file
+// with no titled transcript yet, so its row gets add_row()'s drawn-line
+// placeholder and every audio row stays the same height. nullptr (single-
+// line row) for the Record row and .txt rows.
+static const char *list_item_title(size_t i) {
+    if (!showing_audio_files) return nullptr;
+    if (has_record_option()) {
+        if (i == 0) return nullptr;
+        i--;
+    }
+    return mp3Files[i].title;
+}
+
+// How many ROW_H slots kList row i takes: 2 when it has a title line
+// (blank or not) under the filename, else 1. VISIBLE_ROWS counts slots,
+// not rows.
+static size_t list_item_slots(size_t i) {
+    return list_item_title(i) ? 2 : 1;
+}
+
 static void clamp_selection() {
     size_t count = list_item_count();
     if (count == 0) {
@@ -253,16 +273,26 @@ static void clamp_selection() {
     }
     if (selected_index >= count) selected_index = count - 1;
     if (selected_index < top_index) top_index = selected_index;
-    if (selected_index >= top_index + VISIBLE_ROWS) top_index = selected_index - VISIBLE_ROWS + 1;
+    // Scroll down until top_index..selected_index fits in VISIBLE_ROWS slots.
+    for (;;) {
+        size_t used = 0;
+        for (size_t i = top_index; i <= selected_index; i++) used += list_item_slots(i);
+        if (used <= (size_t)VISIBLE_ROWS || top_index == selected_index) break;
+        top_index++;
+    }
 }
 
 // One rounded, bordered "card" row: a leading icon glyph plus label text,
 // left-aligned, inverted (black bg, white text) when selected - the only
 // "focus" indicator this UI has. parent/x/y/w let this serve both the
 // full-width list (parent == body) and menu rows indented inside a
-// bordered panel (see render_option_menu()).
-static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected) {
-    int16_t card_h = ROW_H - 2;
+// bordered panel (see render_option_menu()). A non-null `subtitle` makes
+// the card two slots tall (2 * ROW_H) with it on a second, smaller line
+// under `text` - kList's transcript titles (see list_item_title()). An
+// empty `subtitle` draws a short horizontal rule there instead.
+static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const char *icon, const char *text, bool selected,
+                    const char *subtitle = nullptr) {
+    int16_t card_h = (subtitle ? 2 * ROW_H : ROW_H) - 2;
     lv_obj_t *card = lv_obj_create(parent);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, w, card_h);
@@ -280,7 +310,31 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_obj_set_width(label, w - 12);
     lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
-    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+    if (!subtitle) {
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+        return;
+    }
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 6, 1);
+
+    // Indented to line up under `text`, past the icon and its two spaces.
+    const int16_t indent = 26;
+    if (!subtitle[0]) {
+        // No title yet (untranscribed audio): a thin rule holds its place.
+        lv_obj_t *rule = lv_obj_create(card);
+        lv_obj_remove_style_all(rule);
+        lv_obj_set_size(rule, (w - indent - 6) * 2 / 3, 1);
+        lv_obj_align(rule, LV_ALIGN_TOP_LEFT, indent, ROW_H + 7);
+        lv_obj_set_style_bg_color(rule, selected ? lv_color_white() : lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
+        return;
+    }
+    lv_obj_t *sub = lv_label_create(card);
+    lv_label_set_text(sub, subtitle);
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(sub, w - indent - 6);
+    lv_obj_set_style_text_font(sub, &lv_font_it_12, 0);
+    lv_obj_set_style_text_color(sub, selected ? lv_color_white() : lv_color_black(), 0);
+    lv_obj_align(sub, LV_ALIGN_TOP_LEFT, indent, ROW_H);
 }
 
 // A windowed list's top row: a leading icon, a label, and a bottom border
@@ -593,8 +647,10 @@ static void render_body() {
             snprintf(header_label, sizeof(header_label), "%s (%u)",
                      tr(showing_audio_files ? Str::LIST_AUDIO_FILES : Str::LIST_TEXT_FILES),
                      (unsigned)mp3FileCount);
+            size_t total_slots = 0;
+            for (size_t i = 0; i < count; i++) total_slots += list_item_slots(i);
             render_list_header(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE, header_label,
-                                count > (size_t)VISIBLE_ROWS);
+                                total_slots > (size_t)VISIBLE_ROWS);
             if (count == 0) {
                 add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
                                tr(showing_audio_files ? Str::LIST_NO_AUDIO : Str::LIST_NO_TEXT));
@@ -604,11 +660,15 @@ static void render_body() {
             clamp_selection();
             bool recordOption = has_record_option();
             int16_t y = ROW_H;
-            for (size_t i = top_index; i < count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
+            size_t used_slots = 0;
+            for (size_t i = top_index; i < count; i++) {
+                size_t slots = list_item_slots(i);
+                if (used_slots + slots > (size_t)VISIBLE_ROWS) break;
                 const char *label = (recordOption && i == 0) ? tr(Str::LIST_RECORD_NEW) : mp3Files[recordOption ? i - 1 : i].filename;
                 const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
-                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index);
-                y += ROW_H;
+                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index, list_item_title(i));
+                y += slots * ROW_H;
+                used_slots += slots;
             }
             add_hint(tr(Str::HINT_LIST));
             break;
@@ -1468,6 +1528,9 @@ void ui_process_input() {
 
         case Screen::kTranscribeResult:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                // Re-scan so the new transcript's title shows under its
+                // audio file on kList (Mp3Entry::title).
+                if (transcribe_ok && sd_present) load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }
