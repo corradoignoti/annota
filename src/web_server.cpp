@@ -609,7 +609,7 @@ function render() {
     name.className = "name";
     const icon = document.createElement("span");
     icon.className = "file-icon";
-    icon.textContent = isAudio(f.name) ? "♪" : "☰"; // matches ui_epaper.cpp's LV_SYMBOL_AUDIO / LV_SYMBOL_FILE distinction
+    icon.textContent = isAudio(f.name) ? "♪" : "☰";
     name.appendChild(icon);
     name.appendChild(document.createTextNode(f.name));
     tr.appendChild(name);

@@ -58,7 +58,6 @@ enum class Screen {
     kWifiManage,
     kWifiApActive,
     kWifiJoined,
-    kFileTransfer,
     kRebootConfirm,
     kTextView,
     kWifiScanning,
@@ -73,7 +72,7 @@ enum class Screen {
 static const int16_t HEADER_H = 20;
 static const int16_t ROW_H = 20;
 static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
-// kList reserves its own top row (below) for the Audio/Text mode header,
+// kList reserves its own top row (below) for the Notes header,
 // on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
 
@@ -84,11 +83,7 @@ static lv_obj_t *body = nullptr;
 static bool sd_present = false;
 static Screen state = Screen::kNoCard;
 
-// kList. showing_audio_files: true while mp3Files/mp3FileCount hold
-// AUDIO_EXTS, false while showing .txt - set by picking Audio/Text on
-// kHome (see ui_process_input()'s kHome case; reached from kList via a
-// long Next press).
-static bool showing_audio_files = true;
+// kList - the audio files (Notes) in mp3Files/mp3FileCount.
 static size_t selected_index = 0;
 static size_t top_index = 0;
 
@@ -125,8 +120,9 @@ static bool active_has_transcript = false;
 static char details_text[256];
 static bool details_compact = false;
 
-// kTextView - text_view_buffer holds the .txt file's content (read via
-// read_text_file_preview() when View is picked from kActionMenu), truncated
+// kTextView - text_view_buffer holds the audio file's .txt transcript
+// (read via read_text_file_preview() when View transcription is picked
+// from kActionMenu), truncated
 // to fit; transcripts are short speech-to-text output, comfortably under
 // this size. text_view_scroll_px is the label's current negative y offset,
 // clamped in render_body() to the label's actual laid-out height.
@@ -144,29 +140,17 @@ static char wifi_ap_ip[16];
 // render time (render_body()), so a language change repaints it too.
 static char wifi_joined_url[64];
 
-// kFileTransfer - the per-file counterpart to kWifiJoined above. url is
-// sized for the worst case (a fully percent-encoded active_filename, see
-// url_encode_component()) even though the QR code itself can't hold that
-// much - add_qr_screen() degrades to text-only in that case (see its
-// comment), and the message label below shows the plain filename either
-// way, word-wrapped (formatted at render time, like kWifiJoined's).
-static char file_transfer_name[64];
-static char file_transfer_url[256];
-
 // kWifiApActive - STANDALONE_AP_SSID (wifi_manager.cpp) is a fixed literal
 // with no password, so unlike wifi_joined_url above this needs no runtime
 // buffer, just the WiFi-network-config QR payload format phones' camera
 // apps recognize (T:nopass - an open network, so no P: field).
 static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
 
-// QR code rendering, shared by kWifiJoined (its http:// URL),
-// kWifiApActive (the AP's join string above), and kFileTransfer (a
-// file-specific download URL, longer than either of the other two) - only
-// one of the three is ever on screen at once, so they share one canvas
-// backing buffer too. Version 4 (33x33 modules) at ECC_LOW gives 78 bytes
-// of byte-mode capacity - comfortably more than the AP/joined payloads
-// need, and enough for a download URL with a short-to-moderate filename;
-// add_qr_screen() degrades to text-only (see its comment) if a payload
+// QR code rendering, shared by kWifiJoined (its http:// URL) and
+// kWifiApActive (the AP's join string above) - only one of the two is ever
+// on screen at once, so they share one canvas backing buffer too. Version
+// 4 (33x33 modules) at ECC_LOW gives 78 bytes of byte-mode capacity -
+// comfortably more than either payload needs; add_qr_screen() degrades to text-only (see its comment) if a payload
 // ever doesn't fit. Scaled up 3px/module (99x99 canvas) onto an RGB565
 // lv_canvas, drawn pixel-exact (no lv_image zoom/interpolation) since this
 // display thresholds everything to 1bpp on flush and blurred edges would
@@ -191,15 +175,10 @@ static void render_body();
 // Set by ui_request_rerender(), consumed by ui_process_input().
 static bool rerender_requested = false;
 
-// kList shows a synthetic "Record new" row pinned above the real files -
-// but only while showing_audio_files (a recording is itself an audio
-// file; there's nothing to record onto the .txt transcript list), same
-// rule the Transcribe entry below follows. Kept as index 0 ahead of
-// mp3Files rather than a separate widget/button so it reuses the same
-// Next/Select navigation and clamp_selection() as every real row.
-static bool has_record_option() {
-    return showing_audio_files;
-}
+// kList shows a synthetic "Record new" row pinned above the real files,
+// kept as index 0 ahead of mp3Files rather than a separate widget/button
+// so it reuses the same Next/Select navigation and clamp_selection() as
+// every real row.
 
 // Opens kActionMenu for whichever real file selected_index currently
 // points at. Shared by kList's immediate Select-short path (row already at
@@ -207,12 +186,11 @@ static bool has_record_option() {
 // the double-press-to-jump-to-top gesture's timeout - see
 // select_press_pending's comment above.
 static void open_action_menu_for_selected() {
-    size_t fileIndex = has_record_option() ? selected_index - 1 : selected_index;
+    size_t fileIndex = selected_index - 1;
     active_file_index = fileIndex;
     strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
     active_filename[sizeof(active_filename) - 1] = '\0';
-    active_has_transcript = showing_audio_files &&
-                            find_sibling_transcript(active_filename, active_transcript_name,
+    active_has_transcript = find_sibling_transcript(active_filename, active_transcript_name,
                                                     sizeof(active_transcript_name));
     menu_index = 0;
     state = Screen::kActionMenu;
@@ -230,20 +208,16 @@ static void format_size(uint32_t bytes, char *out, size_t outLen) {
     }
 }
 
-// Fills details_text for kDetails from mp3Files[active_file_index]: name +
-// size for both lists, then the creation date for .txt or the playing time
-// (read off the card - see storage.h's get_audio_duration_seconds()) for
-// audio, plus the sibling transcript's size and date if it has one
-// (active_has_transcript, looked up when the action menu opened).
+// Fills details_text for kDetails from mp3Files[active_file_index]: name,
+// size and playing time (read off the card - see storage.h's
+// get_audio_duration_seconds()), plus the sibling transcript's size and
+// date if it has one (active_has_transcript, looked up when the action
+// menu opened).
 static void build_details_text() {
     const Mp3Entry &entry = mp3Files[active_file_index];
     char size[16];
     format_size(entry.size, size, sizeof(size));
     details_compact = false;
-    if (!showing_audio_files) {
-        snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_TEXT), entry.filename, size, entry.created);
-        return;
-    }
     uint32_t secs = 0;
     char length[32];
     if (get_audio_duration_seconds(entry.filename, secs)) {
@@ -267,20 +241,16 @@ static void build_details_text() {
 }
 
 static size_t list_item_count() {
-    return has_record_option() ? mp3FileCount + 1 : mp3FileCount;
+    return mp3FileCount + 1;
 }
 
 // kList row i's transcript title (Mp3Entry::title) - "" for an audio file
 // with no titled transcript yet, so its row gets add_row()'s drawn-line
 // placeholder and every audio row stays the same height. nullptr (single-
-// line row) for the Record row and .txt rows.
+// line row) for the Record row.
 static const char *list_item_title(size_t i) {
-    if (!showing_audio_files) return nullptr;
-    if (has_record_option()) {
-        if (i == 0) return nullptr;
-        i--;
-    }
-    return mp3Files[i].title;
+    if (i == 0) return nullptr;
+    return mp3Files[i - 1].title;
 }
 
 // How many ROW_H slots kList row i takes: 2 when it has a title line
@@ -292,11 +262,6 @@ static size_t list_item_slots(size_t i) {
 
 static void clamp_selection() {
     size_t count = list_item_count();
-    if (count == 0) {
-        selected_index = 0;
-        top_index = 0;
-        return;
-    }
     if (selected_index >= count) selected_index = count - 1;
     if (selected_index < top_index) top_index = selected_index;
     // Scroll down until top_index..selected_index fits in VISIBLE_ROWS slots.
@@ -373,8 +338,7 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
 // around rather than stopping at the last item (see ui_process_input()'s
 // kList case), so the arrow stays fixed rather than tracking top_index/
 // whether the view is currently at the bottom - there's always "more" to
-// scroll to either way. Shared by kList (icon/label built from
-// showing_audio_files) and kWifiJoinList (its own icon/label).
+// scroll to either way. Shared by kList and kWifiJoinList (its own icon/label).
 static void render_list_header(const char *icon, const char *label_text, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
@@ -400,40 +364,9 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
     }
 }
 
-// Percent-encodes src into out (RFC 3986 unreserved characters -
-// letters/digits/'-'/'_'/'.'/'~' - passed through as-is, everything else
-// as %XX), same rule web_server.cpp's own JS applies via
-// encodeURIComponent() before hitting /api/download. Needed because
-// ui_show_file_transfer_screen() below builds that same URL on-device, and
-// ESP32 WebServer::arg() decodes the query string automatically - so the
-// two sides already agree with no server-side change. Truncates (rather
-// than overflowing) if out is too small; SD filenames this app deals with
-// are root-only and mostly need no encoding at all (see sanitize_name() in
-// web_server.cpp), so this only matters for edge-case characters like
-// spaces.
-static void url_encode_component(const char *src, char *out, size_t outLen) {
-    static const char *hex = "0123456789ABCDEF";
-    size_t o = 0;
-    for (size_t i = 0; src[i] != '\0' && o + 1 < outLen; i++) {
-        unsigned char c = (unsigned char)src[i];
-        bool unreserved = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
-                           c == '_' || c == '.' || c == '~';
-        if (unreserved) {
-            out[o++] = (char)c;
-        } else if (o + 3 < outLen) {
-            out[o++] = '%';
-            out[o++] = hex[c >> 4];
-            out[o++] = hex[c & 0x0F];
-        } else {
-            break;
-        }
-    }
-    out[o] = '\0';
-}
-
 // A scannable QR code plus a wrapped caption below it, filling body - used
-// by kWifiJoined (its http:// URL), kWifiApActive (the AP's WiFi-join
-// string), and kFileTransfer (a file's download URL) instead of
+// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
+// string) instead of
 // add_info_card()'s icon+text layout, since a QR code needs far more of
 // body's limited space than a symbol-font glyph does. See WIFI_QR_* above
 // for the encoding/rendering choices.
@@ -690,27 +623,20 @@ static void render_body() {
             size_t count = list_item_count();
             char header_label[48];
             snprintf(header_label, sizeof(header_label), "%s (%u)",
-                     tr(showing_audio_files ? Str::LIST_AUDIO_FILES : Str::LIST_TEXT_FILES),
+                     tr(Str::LIST_AUDIO_FILES),
                      (unsigned)mp3FileCount);
             size_t total_slots = 0;
             for (size_t i = 0; i < count; i++) total_slots += list_item_slots(i);
-            render_list_header(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE, header_label,
+            render_list_header(LV_SYMBOL_AUDIO, header_label,
                                 total_slots > (size_t)VISIBLE_ROWS);
-            if (count == 0) {
-                add_info_card(showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE,
-                               tr(showing_audio_files ? Str::LIST_NO_AUDIO : Str::LIST_NO_TEXT));
-                add_hint(tr(Str::HINT_LIST_EMPTY));
-                break;
-            }
             clamp_selection();
-            bool recordOption = has_record_option();
             int16_t y = ROW_H;
             size_t used_slots = 0;
             for (size_t i = top_index; i < count; i++) {
                 size_t slots = list_item_slots(i);
                 if (used_slots + slots > (size_t)VISIBLE_ROWS) break;
-                const char *label = (recordOption && i == 0) ? tr(Str::LIST_RECORD_NEW) : mp3Files[recordOption ? i - 1 : i].filename;
-                const char *icon = (recordOption && i == 0) ? LV_SYMBOL_PLUS : (showing_audio_files ? LV_SYMBOL_AUDIO : LV_SYMBOL_FILE);
+                const char *label = i == 0 ? tr(Str::LIST_RECORD_NEW) : mp3Files[i - 1].filename;
+                const char *icon = i == 0 ? LV_SYMBOL_PLUS : LV_SYMBOL_AUDIO;
                 add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index, list_item_title(i));
                 y += slots * ROW_H;
                 used_slots += slots;
@@ -720,22 +646,20 @@ static void render_body() {
         }
 
         // Reached from kList via a long Next press (see
-        // ui_process_input()'s kList case) - a horizontal carousel of 4
+        // ui_process_input()'s kList case) - a horizontal carousel of 3
         // cells, one full-screen icon+label card shown at a time
         // (add_info_card(), same helper kNoCard/kMicError/etc. use),
-        // paged by Next; the hint bar's "(n/4)" is the position indicator
+        // paged by Next; the hint bar's "(n/3)" is the position indicator
         // (this font has no page-dot glyphs baked in, so text stays the
         // safe choice - same idiom as "Audio Files (N)" above). Select
-        // confirms: Audio/Text set showing_audio_files and open kList
-        // (what the old long-Next toggle used to do directly); File
+        // confirms: Notes opens kList on the audio files; File
         // transfer hands off to wifi_manager.h's request/process split
         // (see ui_process_input()'s kHome case for why state isn't
         // touched here for that branch); USB drive hands the card to a
         // USB host (usb_drive.h) and shows kUsbDrive.
         case Screen::kHome: {
-            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_FILE, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB};
-            const char *labels[] = {tr(Str::HOME_AUDIO), tr(Str::HOME_TEXT), tr(Str::FILE_TRANSFER),
-                                    tr(Str::USB_DRIVE)};
+            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB};
+            const char *labels[] = {tr(Str::HOME_NOTES), tr(Str::FILE_TRANSFER), tr(Str::USB_DRIVE)};
             render_list_header(LV_SYMBOL_HOME, tr(Str::HOME_TITLE), false);
             add_info_card(icons[menu_index], labels[menu_index]);
             char hint[96];
@@ -768,34 +692,20 @@ static void render_body() {
         }
 
         case Screen::kActionMenu: {
-            // Play/Transcription only make sense for audio files, not the
-            // .txt transcripts this same list shows when toggled. Details
-            // (see kDetails) and File transfer (per-file download link +
-            // QR, see kFileTransfer) apply to both. An audio file that
-            // already has a transcript gets View transcription in
-            // Transcribe's slot instead.
-            if (showing_audio_files) {
-                const char *icons[] = {LV_SYMBOL_PLAY,
-                                       active_has_transcript ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EDIT,
-                                       LV_SYMBOL_LIST,
-                                       LV_SYMBOL_TRASH,
-                                       LV_SYMBOL_UPLOAD,
-                                       LV_SYMBOL_CLOSE};
-                const char *options[] = {tr(Str::ACTION_PLAY),
-                                         active_has_transcript ? tr(Str::ACTION_VIEW_TRANSCRIPT)
-                                                               : tr(Str::ACTION_TRANSCRIBE),
-                                         tr(Str::ACTION_DETAILS),
-                                         tr(Str::ACTION_DELETE),
-                                         tr(Str::FILE_TRANSFER),
-                                         tr(Str::CANCEL)};
-                render_option_menu(active_filename, icons, options, 6);
-            } else {
-                static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
-                                               LV_SYMBOL_CLOSE};
-                const char *options[] = {tr(Str::ACTION_VIEW), tr(Str::ACTION_DETAILS), tr(Str::ACTION_DELETE),
-                                         tr(Str::FILE_TRANSFER), tr(Str::CANCEL)};
-                render_option_menu(active_filename, icons, options, 5);
-            }
+            // An audio file that already has a transcript gets View
+            // transcription in Transcribe's slot.
+            const char *icons[] = {LV_SYMBOL_PLAY,
+                                   active_has_transcript ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EDIT,
+                                   LV_SYMBOL_LIST,
+                                   LV_SYMBOL_TRASH,
+                                   LV_SYMBOL_CLOSE};
+            const char *options[] = {tr(Str::ACTION_PLAY),
+                                     active_has_transcript ? tr(Str::ACTION_VIEW_TRANSCRIPT)
+                                                           : tr(Str::ACTION_TRANSCRIBE),
+                                     tr(Str::ACTION_DETAILS),
+                                     tr(Str::ACTION_DELETE),
+                                     tr(Str::CANCEL)};
+            render_option_menu(active_filename, icons, options, 5);
             break;
         }
 
@@ -899,14 +809,6 @@ static void render_body() {
             char msg[192];
             snprintf(msg, sizeof(msg), tr(Str::WIFI_JOINED_MSG), wifi_joined_url);
             add_qr_screen(wifi_joined_url, msg);
-            add_hint(tr(Str::HINT_CLOSE_WIFI_OFF));
-            break;
-        }
-
-        case Screen::kFileTransfer: {
-            char msg[192];
-            snprintf(msg, sizeof(msg), tr(Str::FILE_TRANSFER_MSG), file_transfer_name);
-            add_qr_screen(file_transfer_url, msg);
             add_hint(tr(Str::HINT_CLOSE_WIFI_OFF));
             break;
         }
@@ -1133,27 +1035,6 @@ void ui_show_wifi_joined_screen(const char *ip) {
     lv_timer_handler();
 }
 
-// Same "really connected" guard as ui_show_wifi_joined_screen() above, same
-// reasoning.
-void ui_show_file_transfer_screen(const char *ip, const char *filename) {
-    if (!wifi_is_connected()) {
-        ui_set_wifi_status("");
-        ui_show_wifi_manage_screen();
-        return;
-    }
-    char status[64];
-    snprintf(status, sizeof(status), LV_SYMBOL_WIFI " %s", ip);
-    ui_set_wifi_status(status);
-    char encoded[190];
-    url_encode_component(filename, encoded, sizeof(encoded));
-    snprintf(file_transfer_url, sizeof(file_transfer_url), "http://%s/api/download?name=%s", ip, encoded);
-    strncpy(file_transfer_name, filename, sizeof(file_transfer_name) - 1);
-    file_transfer_name[sizeof(file_transfer_name) - 1] = '\0';
-    state = Screen::kFileTransfer;
-    render_body();
-    lv_timer_handler();
-}
-
 void ui_show_wifi_manage_screen() {
     state = Screen::kWifiManage;
     menu_index = 0;
@@ -1207,7 +1088,7 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 
 bool ui_is_sleep_blocked() {
     return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
-           state == Screen::kWifiApActive || state == Screen::kWifiJoined || state == Screen::kFileTransfer ||
+           state == Screen::kWifiApActive || state == Screen::kWifiJoined ||
            state == Screen::kUsbDrive;
 }
 
@@ -1297,9 +1178,8 @@ void ui_process_input() {
                 break;
             }
             if (selEv == DisplayButtonEvent::kLong) {
-                // Covers both the empty- and non-empty-list case (Refresh
-                // is one of the menu's own options), so no separate
-                // rescan-on-long-press branch is needed below anymore.
+                // Refresh is one of the menu's own options, so no
+                // separate rescan-on-long-press branch is needed below.
                 select_press_pending = false; // leaving kList - drop any held-back press
                 state = Screen::kMainMenu;
                 menu_index = 0;
@@ -1308,7 +1188,6 @@ void ui_process_input() {
             }
             {
                 size_t count = list_item_count();
-                if (count == 0) break;
                 if (nextEv == DisplayButtonEvent::kShort) {
                     // Scrolling means this isn't a double-press-Select
                     // gesture in progress - fire the held-back press's
@@ -1324,7 +1203,7 @@ void ui_process_input() {
                     selected_index = (selected_index + 1) % count;
                     render_body();
                 } else if (selEv == DisplayButtonEvent::kShort) {
-                    if (has_record_option() && selected_index == 0) {
+                    if (selected_index == 0) {
                         // Already on the Record row - jumping here would be
                         // a no-op, so act immediately, same as always.
                         char filename[64];
@@ -1360,20 +1239,19 @@ void ui_process_input() {
 
         case Screen::kHome:
             if (nextEv == DisplayButtonEvent::kShort) {
-                menu_index = (menu_index + 1) % 4;
+                menu_index = (menu_index + 1) % 3;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
-                if (menu_index == 0 || menu_index == 1) {
-                    showing_audio_files = (menu_index == 0);
-                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                if (menu_index == 0) {
+                    load_mp3_catalog();
                     selected_index = 0;
                     top_index = 0;
                     state = Screen::kList;
                     render_body();
-                } else if (menu_index == 2) {
+                } else if (menu_index == 1) {
                     // Don't touch state/render here - wifi_manager.h's
                     // wifi_process_pending_file_transfer() (called right
                     // after this, same loop() iteration - see main.cpp)
@@ -1410,7 +1288,7 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                    load_mp3_catalog();
                     selected_index = 0;
                     top_index = 0;
                     state = Screen::kList;
@@ -1457,10 +1335,8 @@ void ui_process_input() {
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
             // {Play, Transcribe or View transcription, Details, Delete,
-            // File transfer, Cancel} for audio, {View, Details, Delete,
-            // File transfer, Cancel} for .txt (no Play/Transcribe there -
-            // see that comment).
-            int optionCount = showing_audio_files ? 6 : 5;
+            // Cancel}.
+            const int optionCount = 5;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
@@ -1468,16 +1344,16 @@ void ui_process_input() {
                 state = Screen::kList;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
-                if (showing_audio_files && menu_index == 0) {
+                if (menu_index == 0) {
                     speaker_play(active_filename);
                     state = Screen::kPlaying;
                     render_body();
-                } else if (showing_audio_files && menu_index == 1 && active_has_transcript) {
+                } else if (menu_index == 1 && active_has_transcript) {
                     read_text_file_preview(active_transcript_name, text_view_buffer, sizeof(text_view_buffer));
                     text_view_scroll_px = 0;
                     state = Screen::kTextView;
                     render_body();
-                } else if (showing_audio_files && menu_index == 1 &&
+                } else if (menu_index == 1 &&
                            mp3Files[active_file_index].size > TRANSCRIBE_MAX_FILE_BYTES) {
                     // Too big for the ESP32's own upload - never even
                     // queue it (see TRANSCRIBE_MAX_FILE_BYTES).
@@ -1485,7 +1361,7 @@ void ui_process_input() {
                     snprintf(msg, sizeof(msg), tr(Str::TRANSCRIBE_TOO_LARGE),
                              TRANSCRIBE_MAX_FILE_BYTES / (1024.0 * 1024.0));
                     ui_show_transcribe_result(false, msg);
-                } else if (showing_audio_files && menu_index == 1) {
+                } else if (menu_index == 1) {
                     // Don't touch state/render here - transcribe.h's
                     // transcribe_process_pending() (called right after
                     // this, from the same loop() iteration - see
@@ -1494,26 +1370,14 @@ void ui_process_input() {
                     // moments from now, so redrawing the list first here
                     // would just be a wasted extra full-panel refresh.
                     transcribe_request(active_filename);
-                } else if (!showing_audio_files && menu_index == 0) {
-                    read_text_file_preview(active_filename, text_view_buffer, sizeof(text_view_buffer));
-                    text_view_scroll_px = 0;
-                    state = Screen::kTextView;
-                    render_body();
-                } else if (menu_index == (showing_audio_files ? 2 : 1)) {
+                } else if (menu_index == 2) {
                     build_details_text();
                     state = Screen::kDetails;
                     render_body();
-                } else if (menu_index == (showing_audio_files ? 3 : 2)) {
+                } else if (menu_index == 3) {
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
-                } else if (menu_index == (showing_audio_files ? 4 : 3)) {
-                    // Don't touch state/render here - wifi_manager.h's
-                    // wifi_process_pending_file_link() (called right after
-                    // this, same loop() iteration - see main.cpp) shows its
-                    // own status/result screens, same reasoning as
-                    // Transcribe above.
-                    wifi_request_file_link(active_filename);
                 } else {
                     state = Screen::kList;
                     render_body();
@@ -1542,7 +1406,7 @@ void ui_process_input() {
                     if (delete_file(active_filename) && active_has_transcript) {
                         delete_file(active_transcript_name);
                     }
-                    load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                    load_mp3_catalog();
                     selected_index = 0;
                     top_index = 0;
                 }
@@ -1564,7 +1428,7 @@ void ui_process_input() {
                 mic_stop_recording();
                 // Refresh so the just-finished recording shows up in the
                 // list right away, same reason Delete re-scans below.
-                load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                load_mp3_catalog();
                 selected_index = 0;
                 top_index = 0;
                 state = sd_present ? Screen::kList : Screen::kNoCard;
@@ -1605,7 +1469,7 @@ void ui_process_input() {
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 // Re-scan so the new transcript's title shows under its
                 // audio file on kList (Mp3Entry::title).
-                if (transcribe_ok && sd_present) load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
+                if (transcribe_ok && sd_present) load_mp3_catalog();
                 state = sd_present ? Screen::kList : Screen::kNoCard;
                 render_body();
             }
@@ -1715,14 +1579,6 @@ void ui_process_input() {
             break;
 
         case Screen::kWifiJoined:
-            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
-                wifi_go_offline();
-                state = sd_present ? Screen::kList : Screen::kNoCard;
-                render_body();
-            }
-            break;
-
-        case Screen::kFileTransfer:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
                 wifi_go_offline();
                 state = sd_present ? Screen::kList : Screen::kNoCard;

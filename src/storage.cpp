@@ -71,7 +71,6 @@ static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const cha
         if (!entry.isDirectory() && base[0] != '.' && has_ext(base, ext)) {
             strncpy(out[count].filename, base, sizeof(out[count].filename) - 1);
             out[count].filename[sizeof(out[count].filename) - 1] = '\0';
-            format_timestamp(entry.getLastWrite(), out[count].created, sizeof(out[count].created));
             out[count].size = entry.size();
             out[count].title[0] = '\0';
             out[count].hasTranscript = false;
@@ -381,10 +380,6 @@ bool next_recording_filename(char *out, size_t outLen) {
     return false;
 }
 
-bool load_mp3_catalog() {
-    return load_file_catalog(AUDIO_EXTS);
-}
-
 // Copies UTF-8 `src` (len bytes) into `out` as UTF-8 limited to Latin-1
 // (U+0000-U+00FF, what lv_font_it_* carry - see CLAUDE.md's Translations
 // section): typographic quotes/dashes/ellipsis the AI title may use are
@@ -487,14 +482,12 @@ static bool audio_before(const Mp3Entry &a, const Mp3Entry &b) {
     return a.transcriptTime > b.transcriptTime;
 }
 
-bool load_file_catalog(const char *ext) {
+bool load_mp3_catalog() {
     bool sdOk = sd_begin();
     if (sdOk) {
-        mp3FileCount = scan_files(SD_FS, mp3Files, MAX_MP3_FILES, ext);
-        for (size_t i = 0; i < mp3FileCount; i++) {
-            if (!has_ext(mp3Files[i].filename, ".txt")) read_title(SD_FS, mp3Files[i]);
-        }
-        if (!has_ext(ext, ".txt")) std::stable_sort(mp3Files, mp3Files + mp3FileCount, audio_before);
+        mp3FileCount = scan_files(SD_FS, mp3Files, MAX_MP3_FILES, AUDIO_EXTS);
+        for (size_t i = 0; i < mp3FileCount; i++) read_title(SD_FS, mp3Files[i]);
+        std::stable_sort(mp3Files, mp3Files + mp3FileCount, audio_before);
         sd_end();
     } else {
         mp3FileCount = 0;
