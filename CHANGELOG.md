@@ -1,3 +1,21 @@
+# [1.13.0](https://github.com/corradoignoti/annota/compare/v1.12.0...v1.13.0) (2026-10-01)
+
+
+### Bug Fixes
+
+* keep web file manager actions visible ([1d2e347](https://github.com/corradoignoti/annota/commit/1d2e3474e5097d2d9100d5cfb0da54681c69bf26))
+
+
+### Features
+
+* delete audio transcript along with audio file on device ([16362be](https://github.com/corradoignoti/annota/commit/16362bebc1f7527f94da89a517ee8c2baad2a77b))
+* Notes view in the web file manager ([936b282](https://github.com/corradoignoti/annota/commit/936b282f79b38f808cf81712e495c4c8d7f76af8))
+* rename audio list to Notes, drop on-device text list and per-file transfer ([16e922a](https://github.com/corradoignoti/annota/commit/16e922ab6cb2fb891b57ea829df84a300aff2f09))
+* show "View transcription" instead of "Transcribe" for transcribed audio ([9fadf81](https://github.com/corradoignoti/annota/commit/9fadf8171581dab88ad61ba7e49d42809488d86b))
+* show transcript details on audio Details screen ([f8aba4f](https://github.com/corradoignoti/annota/commit/f8aba4f437c408bf3b43b9fe4dc7db2d5b1d4f56))
+* show transcript titles under audio files on the device list ([0347c9a](https://github.com/corradoignoti/annota/commit/0347c9a375ff124800ba4b310db81dfeb9b8c396))
+* sort device audio list by transcript date, untranscribed first ([9e02562](https://github.com/corradoignoti/annota/commit/9e02562b0e469ad19df0704a24fb6281d471cbb3))
+
 # [1.12.0](https://github.com/corradoignoti/annota/compare/v1.11.0...v1.12.0) (2026-10-01)
 
 
