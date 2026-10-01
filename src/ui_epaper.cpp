@@ -111,11 +111,12 @@ static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
 
-// kDeleteConfirm - an audio file's sibling "<basename>.txt" transcript, looked
-// up when Delete is picked; if it exists, the confirm screen warns that it
-// goes too and confirming deletes both.
-static char delete_transcript_name[64];
-static bool delete_has_transcript = false;
+// kActionMenu / kDeleteConfirm - an audio file's sibling "<basename>.txt"
+// transcript, looked up when the action menu opens. If it exists, the menu
+// offers View transcription in place of Transcribe, and Delete's confirm
+// screen warns that it goes too (confirming deletes both).
+static char active_transcript_name[64];
+static bool active_has_transcript = false;
 
 // kDetails - built once when Details is picked from kActionMenu (the audio
 // length needs an SD read), so repaints don't touch the card again.
@@ -207,6 +208,9 @@ static void open_action_menu_for_selected() {
     active_file_index = fileIndex;
     strncpy(active_filename, mp3Files[fileIndex].filename, sizeof(active_filename) - 1);
     active_filename[sizeof(active_filename) - 1] = '\0';
+    active_has_transcript = showing_audio_files &&
+                            find_sibling_transcript(active_filename, active_transcript_name,
+                                                    sizeof(active_transcript_name));
     menu_index = 0;
     state = Screen::kActionMenu;
     render_body();
@@ -751,12 +755,23 @@ static void render_body() {
             // Play/Transcription only make sense for audio files, not the
             // .txt transcripts this same list shows when toggled. Details
             // (see kDetails) and File transfer (per-file download link +
-            // QR, see kFileTransfer) apply to both.
+            // QR, see kFileTransfer) apply to both. An audio file that
+            // already has a transcript gets View transcription in
+            // Transcribe's slot instead.
             if (showing_audio_files) {
-                static const char *icons[] = {LV_SYMBOL_PLAY, LV_SYMBOL_EDIT,   LV_SYMBOL_LIST,
-                                               LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD, LV_SYMBOL_CLOSE};
-                const char *options[] = {tr(Str::ACTION_PLAY),   tr(Str::ACTION_TRANSCRIBE), tr(Str::ACTION_DETAILS),
-                                         tr(Str::ACTION_DELETE), tr(Str::FILE_TRANSFER),     tr(Str::CANCEL)};
+                const char *icons[] = {LV_SYMBOL_PLAY,
+                                       active_has_transcript ? LV_SYMBOL_EYE_OPEN : LV_SYMBOL_EDIT,
+                                       LV_SYMBOL_LIST,
+                                       LV_SYMBOL_TRASH,
+                                       LV_SYMBOL_UPLOAD,
+                                       LV_SYMBOL_CLOSE};
+                const char *options[] = {tr(Str::ACTION_PLAY),
+                                         active_has_transcript ? tr(Str::ACTION_VIEW_TRANSCRIPT)
+                                                               : tr(Str::ACTION_TRANSCRIBE),
+                                         tr(Str::ACTION_DETAILS),
+                                         tr(Str::ACTION_DELETE),
+                                         tr(Str::FILE_TRANSFER),
+                                         tr(Str::CANCEL)};
                 render_option_menu(active_filename, icons, options, 6);
             } else {
                 static const char *icons[] = {LV_SYMBOL_EYE_OPEN, LV_SYMBOL_LIST, LV_SYMBOL_TRASH, LV_SYMBOL_UPLOAD,
@@ -808,9 +823,9 @@ static void render_body() {
             char title[128];
             snprintf(title, sizeof(title), tr(Str::DELETE_TITLE), active_filename);
             static const char *icons[] = {LV_SYMBOL_TRASH, LV_SYMBOL_CLOSE};
-            if (delete_has_transcript) {
+            if (active_has_transcript) {
                 char warning[128];
-                snprintf(warning, sizeof(warning), tr(Str::DELETE_ALSO_TRANSCRIPT), delete_transcript_name);
+                snprintf(warning, sizeof(warning), tr(Str::DELETE_ALSO_TRANSCRIPT), active_transcript_name);
                 const char *options[] = {tr(Str::DELETE_CONFIRM_WITH_TEXT), tr(Str::CANCEL)};
                 render_option_menu(title, icons, options, 2, warning);
             } else {
@@ -1421,9 +1436,10 @@ void ui_process_input() {
 
         case Screen::kActionMenu: {
             // Option count/order tracks render_body()'s kActionMenu case:
-            // {Play, Transcribe, Details, Delete, File transfer, Cancel} for
-            // audio, {View, Details, Delete, File transfer, Cancel} for .txt
-            // (no Play/Transcribe there - see that comment).
+            // {Play, Transcribe or View transcription, Details, Delete,
+            // File transfer, Cancel} for audio, {View, Details, Delete,
+            // File transfer, Cancel} for .txt (no Play/Transcribe there -
+            // see that comment).
             int optionCount = showing_audio_files ? 6 : 5;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
@@ -1435,6 +1451,11 @@ void ui_process_input() {
                 if (showing_audio_files && menu_index == 0) {
                     speaker_play(active_filename);
                     state = Screen::kPlaying;
+                    render_body();
+                } else if (showing_audio_files && menu_index == 1 && active_has_transcript) {
+                    read_text_file_preview(active_transcript_name, text_view_buffer, sizeof(text_view_buffer));
+                    text_view_scroll_px = 0;
+                    state = Screen::kTextView;
                     render_body();
                 } else if (showing_audio_files && menu_index == 1 &&
                            mp3Files[active_file_index].size > TRANSCRIBE_MAX_FILE_BYTES) {
@@ -1463,9 +1484,6 @@ void ui_process_input() {
                     state = Screen::kDetails;
                     render_body();
                 } else if (menu_index == (showing_audio_files ? 3 : 2)) {
-                    delete_has_transcript = showing_audio_files &&
-                                            find_sibling_transcript(active_filename, delete_transcript_name,
-                                                                    sizeof(delete_transcript_name));
                     state = Screen::kDeleteConfirm;
                     menu_index = 0;
                     render_body();
@@ -1501,8 +1519,8 @@ void ui_process_input() {
                 render_body();
             } else if (selEv == DisplayButtonEvent::kShort) {
                 if (menu_index == 0) {
-                    if (delete_file(active_filename) && delete_has_transcript) {
-                        delete_file(delete_transcript_name);
+                    if (delete_file(active_filename) && active_has_transcript) {
+                        delete_file(active_transcript_name);
                     }
                     load_file_catalog(showing_audio_files ? AUDIO_EXTS : ".txt");
                     selected_index = 0;

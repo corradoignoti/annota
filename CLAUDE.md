@@ -185,11 +185,15 @@ may touch it.
   `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (2 MB, set via
   `platformio.ini`'s build_flags), in which case it
   goes straight to `kTranscribeResult` with a "use the web interface"
-  message and nothing is queued; selecting Delete calls `storage.h`'s
+  message and nothing is queued. If the audio file already has a sibling
+  `<basename>.txt` (`storage.h`'s `find_sibling_transcript()`, checked
+  once when the action menu opens), Transcribe's slot shows View
+  transcription instead, opening that `.txt` in `kTextView`; re-transcribing
+  then means deleting the `.txt` or using the web UI. Selecting Delete calls `storage.h`'s
   `delete_file()` directly, same reasoning — on an audio file it also
   deletes the sibling `<basename>.txt` transcript if one exists
-  (`storage.h`'s `find_sibling_transcript()`, checked when Delete is
-  picked), and `kDeleteConfirm` warns about that first (confirm label
+  (`storage.h`'s `find_sibling_transcript()`, checked when the action menu
+  opens), and `kDeleteConfirm` warns about that first (confirm label
   "Delete audio + .txt", plus a wrapped warning line inside the menu panel,
   between title and options, that the named `.txt` file will also be
   deleted — `render_option_menu()`'s optional `note`). Both the audio and `.txt`
