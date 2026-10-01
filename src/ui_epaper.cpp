@@ -1348,10 +1348,8 @@ void ui_process_input() {
                            mp3Files[active_file_index].size > TRANSCRIBE_MAX_FILE_BYTES) {
                     // Too big for the ESP32's own upload - never even
                     // queue it (see TRANSCRIBE_MAX_FILE_BYTES).
-                    char msg[128];
-                    snprintf(msg, sizeof(msg),
-                             "File too large to transcribe on the device (max %.3g MB).\n"
-                             "Use the web interface's Transcribe button instead.",
+                    char msg[192];
+                    snprintf(msg, sizeof(msg), tr(Str::TRANSCRIBE_TOO_LARGE),
                              TRANSCRIBE_MAX_FILE_BYTES / (1024.0 * 1024.0));
                     ui_show_transcribe_result(false, msg);
                 } else if (showing_audio_files && menu_index == 1) {
