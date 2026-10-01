@@ -29,6 +29,11 @@ struct Mp3Entry {
     // no transcript or it has no title header (plain-transcript fallback).
     // Folded to the Latin-1 the on-device fonts carry - see read_title().
     char title[48];
+    // Audio files only: whether that sibling transcript exists, and its
+    // last-write time (0 if none/unknown) - the audio list's sort key, see
+    // load_file_catalog().
+    bool hasTranscript;
+    time_t transcriptTime;
 };
 
 extern Mp3Entry mp3Files[MAX_MP3_FILES];
@@ -44,8 +49,9 @@ bool load_mp3_catalog();
 // ".txt"; case-insensitive, dot required, '|'-separated for more than one)
 // into mp3Files/mp3FileCount. Generic form of load_mp3_catalog(), used by
 // the UI's audio/text list toggle. Also fills each non-.txt entry's `title`
-// from its sibling transcript, if any. Returns false if no SD card is
-// present.
+// from its sibling transcript, if any, and sorts the audio list: files with
+// no transcript first, then by transcript date, newest first. Returns false
+// if no SD card is present.
 bool load_file_catalog(const char *ext);
 
 // Mounts the SD card for a one-off operation outside the boot-time

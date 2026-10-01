@@ -1,6 +1,7 @@
 #include "storage.h"
 
 #include <Arduino.h>
+#include <algorithm>
 
 // -----------------------------------------------------------------------
 // MP3 catalog: SD card only - no card, no list, no fallback
@@ -73,6 +74,8 @@ static size_t scan_files(fs::FS &fs, Mp3Entry *out, size_t maxEntries, const cha
             format_timestamp(entry.getLastWrite(), out[count].created, sizeof(out[count].created));
             out[count].size = entry.size();
             out[count].title[0] = '\0';
+            out[count].hasTranscript = false;
+            out[count].transcriptTime = 0;
             count++;
         }
         entry.close();
@@ -444,7 +447,8 @@ static void fold_to_latin1(const char *src, size_t len, char *out, size_t outLen
     out[o] = '\0';
 }
 
-// Fills `entry.title` from the AI title header of its sibling
+// Fills `entry.hasTranscript`/`transcriptTime` from its sibling
+// "<basename>.txt" transcript and `entry.title` from the AI title header of its sibling
 // "<basename>.txt" transcript: the first line, but only when a blank line
 // follows it - transcribe_openai.cpp (and the web page's callProvider())
 // write "title\n\nabstract\n\ntranscript", while the plain-transcript
@@ -458,6 +462,8 @@ static void read_title(fs::FS &fs, Mp3Entry &entry) {
     snprintf(path, sizeof(path), "/%.*s.txt", (int)baseLen, entry.filename);
     File f = fs.open(path, FILE_READ);
     if (!f) return;
+    entry.hasTranscript = true;
+    entry.transcriptTime = f.getLastWrite();
     char buf[192];
     size_t n = f.readBytes(buf, sizeof(buf) - 1);
     f.close();
@@ -473,6 +479,14 @@ static void read_title(fs::FS &fs, Mp3Entry &entry) {
     fold_to_latin1(buf, lineLen, entry.title, sizeof(entry.title));
 }
 
+// Audio list order: untranscribed files first (nothing to show under them
+// yet, and they're the ones still needing work), then by transcript date,
+// newest first. Ties keep scan order (stable sort).
+static bool audio_before(const Mp3Entry &a, const Mp3Entry &b) {
+    if (a.hasTranscript != b.hasTranscript) return !a.hasTranscript;
+    return a.transcriptTime > b.transcriptTime;
+}
+
 bool load_file_catalog(const char *ext) {
     bool sdOk = sd_begin();
     if (sdOk) {
@@ -480,6 +494,7 @@ bool load_file_catalog(const char *ext) {
         for (size_t i = 0; i < mp3FileCount; i++) {
             if (!has_ext(mp3Files[i].filename, ".txt")) read_title(SD_FS, mp3Files[i]);
         }
+        if (!has_ext(ext, ".txt")) std::stable_sort(mp3Files, mp3Files + mp3FileCount, audio_before);
         sd_end();
     } else {
         mp3FileCount = 0;

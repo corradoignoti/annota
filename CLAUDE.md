@@ -150,7 +150,10 @@ may touch it.
   case around their SD access.
 - **storage.cpp/h** — `load_mp3_catalog()` scans the SD root into the global
   `mp3Files`/`mp3FileCount` arrays (`storage.h`), filtering directories and
-  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). `sd_begin()`/
+  dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). The audio
+  list is sorted: files with no sibling `<basename>.txt` first, then by
+  that transcript's last-write time, newest first (`audio_before()`);
+  the `.txt` list keeps scan order. `sd_begin()`/
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
   peripheral (1-bit mode, pins 39/41/40).
 - **ui_epaper.cpp** (`ui.h`'s implementation) — WiFi status, a scrollable
