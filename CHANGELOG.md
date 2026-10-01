@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/corradoignoti/annota/compare/v1.13.0...v1.14.0) (2026-10-01)
+
+
+### Features
+
+* web GUI icons, About page, drop browser upload ([f401e47](https://github.com/corradoignoti/annota/commit/f401e47de64604376fbd8fc2d0b19c0710d6d498))
+
 # [1.13.0](https://github.com/corradoignoti/annota/compare/v1.12.0...v1.13.0) (2026-10-01)
 
 
