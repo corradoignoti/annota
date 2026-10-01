@@ -128,6 +128,16 @@ bool delete_file(const char *filename);
 // on-device Delete flow to warn about, then also remove, the transcript.
 bool find_sibling_transcript(const char *audioFilename, char *out, size_t outLen);
 
+// Reads a transcript's AI title header from `f` (an open .txt file,
+// positioned at its start) into `out` as raw UTF-8, truncated to fit: the
+// first line, but only when a blank line follows it - transcribe_openai.cpp
+// (and the web page's callProvider()) write
+// "title\n\nabstract\n\ntranscript", while the plain-transcript fallback
+// is Whisper's single unbroken paragraph, which has no title. Returns false
+// (out = "") if there's no title. Used by web_server.cpp's /api/files; the
+// on-device list uses the same rule, folded to Latin-1.
+bool read_transcript_title(File &f, char *out, size_t outLen);
+
 // Claims the SD card via sd_begin(), writes `text` to a root-level file
 // (overwriting any existing one), then releases it via sd_end(). Returns
 // false if the card or file can't be opened. Same claim/release pattern

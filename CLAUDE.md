@@ -376,9 +376,17 @@ may touch it.
   symmetry with `web_server.cpp`'s SD handlers).
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
   ESP32-core `WebServer` on port 80. Two pages, same dark palette as
-  `ui_epaper.cpp`: a file manager (list/download/upload/delete files on
-  the SD root, plus a per-file Transcribe button for audio files) at `/`,
-  backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
+  `ui_epaper.cpp`: a file manager at `/` mirroring the device's Notes
+  list — a Notes table with one row per audio file (`.mp3`/`.wav`, both
+  playable via `/api/play`) and its sibling `<basename>.txt` folded in
+  (`buildNotes()`: the transcript's AI title, from `/api/files`'s `title`
+  field — `storage.h`'s `read_transcript_title()`, raw UTF-8 — under the
+  filename; View transcription in place of Transcribe once transcribed;
+  Delete, Download and their batch versions cover both files; default order is the
+  device's, untranscribed first then newest transcript, with Name/Date
+  headers cycling asc/desc/default), plus an "Other files" table for
+  everything else (orphan `.txt`, `_error.txt` logs, other uploads) with
+  view/download/delete, and upload — backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
   `/api/transcript-key`, `/api/transcript`; and a `/settings` page
   (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, an
   idle-sleep-timeout slider, and the AI provider's API key field, labeled

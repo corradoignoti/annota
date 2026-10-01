@@ -442,13 +442,38 @@ static void fold_to_latin1(const char *src, size_t len, char *out, size_t outLen
     out[o] = '\0';
 }
 
+// Reads the transcript's first line into buf and returns its length, or 0
+// if it isn't a title header (see read_transcript_title()'s comment).
+static size_t read_title_line(File &f, char *buf, size_t bufLen) {
+    size_t n = f.readBytes(buf, bufLen - 1);
+    buf[n] = '\0';
+    char *nl = strchr(buf, '\n');
+    if (!nl) return 0;
+    size_t lineLen = (size_t)(nl - buf);
+    if (lineLen > 0 && buf[lineLen - 1] == '\r') lineLen--;
+    const char *next = nl + 1;
+    if (*next == '\r') next++;
+    if (*next != '\n') return 0;
+    return lineLen;
+}
+
+bool read_transcript_title(File &f, char *out, size_t outLen) {
+    char buf[192];
+    size_t lineLen = read_title_line(f, buf, sizeof(buf));
+    if (lineLen >= outLen) {
+        lineLen = outLen - 1;
+        // Don't split a multi-byte UTF-8 sequence.
+        while (lineLen > 0 && ((unsigned char)buf[lineLen] & 0xC0) == 0x80) lineLen--;
+    }
+    memcpy(out, buf, lineLen);
+    out[lineLen] = '\0';
+    return lineLen > 0;
+}
+
 // Fills `entry.hasTranscript`/`transcriptTime` from its sibling
-// "<basename>.txt" transcript and `entry.title` from the AI title header of its sibling
-// "<basename>.txt" transcript: the first line, but only when a blank line
-// follows it - transcribe_openai.cpp (and the web page's callProvider())
-// write "title\n\nabstract\n\ntranscript", while the plain-transcript
-// fallback is Whisper's single unbroken paragraph, which has no title to
-// show. Card must already be mounted.
+// "<basename>.txt" transcript and `entry.title` from that transcript's
+// title header (see read_transcript_title()), folded to Latin-1 for the
+// e-paper fonts. Card must already be mounted.
 static void read_title(fs::FS &fs, Mp3Entry &entry) {
     entry.title[0] = '\0';
     const char *dot = strrchr(entry.filename, '.');
@@ -460,18 +485,9 @@ static void read_title(fs::FS &fs, Mp3Entry &entry) {
     entry.hasTranscript = true;
     entry.transcriptTime = f.getLastWrite();
     char buf[192];
-    size_t n = f.readBytes(buf, sizeof(buf) - 1);
+    size_t lineLen = read_title_line(f, buf, sizeof(buf));
     f.close();
-    buf[n] = '\0';
-
-    char *nl = strchr(buf, '\n');
-    if (!nl) return;
-    size_t lineLen = (size_t)(nl - buf);
-    if (lineLen > 0 && buf[lineLen - 1] == '\r') lineLen--;
-    const char *next = nl + 1;
-    if (*next == '\r') next++;
-    if (*next != '\n' || lineLen == 0) return;
-    fold_to_latin1(buf, lineLen, entry.title, sizeof(entry.title));
+    if (lineLen > 0) fold_to_latin1(buf, lineLen, entry.title, sizeof(entry.title));
 }
 
 // Audio list order: untranscribed files first (nothing to show under them
