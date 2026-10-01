@@ -273,6 +273,17 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   #batchBar #batchCount { color: var(--ink-soft); white-space: nowrap; }
   #batchBar .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
   #batchBar .actions button { width: auto; padding: 0.4rem 0.7rem; }
+  #syncBar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    padding: 0.6rem 1rem;
+    margin: 0 1rem 1.2rem;
+    font-size: 0.78rem;
+  }
+  #syncBar #syncInfo { color: var(--ink-soft); }
+  #syncBar button { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -299,6 +310,11 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   <div id="textViewerName"></div>
   <div id="textViewerBody"></div>
   <button id="textViewerClose" class="btn">✕ <span data-i18n="close"></span></button>
+</div>
+
+<div id="syncBar" class="card">
+  <span id="syncInfo"></span>
+  <button id="syncBtn" data-i18n-title="sync_title">⟳ <span data-i18n="sync"></span></button>
 </div>
 
 <div id="batchBar" class="card" hidden>
@@ -655,6 +671,8 @@ function render() {
   }
 
   updateBatchBar();
+  document.getElementById("syncInfo").textContent = untranscribedAudio().length > 0
+    ? t("sync_pending", untranscribedAudio().length) : t("sync_nothing");
 }
 
 function fmtGb(bytes) { return (bytes / 1000000000).toFixed(2) + " GB"; }
@@ -765,8 +783,10 @@ function xhrWithUploadProgress(method, url, headers, body) {
   });
 }
 
-// GET /api/transcript-key, split out of transcribeFile() so batchTranscribe()
-// below can fetch it once for the whole selection instead of once per file.
+// GET /api/transcript-key, split out of transcribeFile() so
+// runTranscribeBatch() below can call it before each file of a batch - every
+// call re-arms the device's web_transcribe_in_progress() deep-sleep guard,
+// which the previous file's POST /api/transcript just cleared.
 async function fetchTranscribeKey() {
   const keyRes = await fetch("/api/transcript-key");
   return keyRes.json(); // { key, providerName }
@@ -860,6 +880,38 @@ async function batchDownload() {
   }
 }
 
+// Shared by batchTranscribe() and syncTranscribe(): transcribes `names` one
+// after another. Both batch buttons stay disabled for the whole run so two
+// batches can't overlap.
+async function runTranscribeBatch(names) {
+  const status = document.getElementById("status");
+  const btns = [document.getElementById("batchTranscribe"), document.getElementById("syncBtn")];
+  btns.forEach((b) => { b.disabled = true; });
+  try {
+    let failed = 0;
+    let noSummary = 0;
+    for (const [i, name] of names.entries()) {
+      try {
+        const { key, providerName } = await fetchTranscribeKey();
+        if (!key) {
+          alert(t("no_api_key", providerName));
+          return;
+        }
+        if (await transcribeOne(name, key, "[" + (i + 1) + "/" + names.length + "] ")) noSummary++;
+      } catch (e) {
+        failed++;
+        status.textContent = t("transcribe_failed_for", name, e.message);
+      }
+    }
+    status.textContent = failed === 0 ? t("transcribed_n", names.length)
+      : t("transcribed_partial", names.length - failed, names.length, failed);
+    if (noSummary > 0) status.textContent += " " + t("saved_no_summary", noSummary);
+  } finally {
+    btns.forEach((b) => { b.disabled = false; });
+    refresh();
+  }
+}
+
 // Non-audio selections are silently skipped (isAudio() gates the per-row
 // Transcribe button too) rather than erroring the whole batch over a mix.
 async function batchTranscribe() {
@@ -868,30 +920,38 @@ async function batchTranscribe() {
     alert(t("no_audio_selected"));
     return;
   }
-  const { key, providerName } = await fetchTranscribeKey();
-  if (!key) {
-    alert(t("no_api_key", providerName));
+  await runTranscribeBatch(names);
+}
+
+// "song.wav" -> "song.txt" - mirrors transcribe_openai.cpp's
+// txt_sibling_path() and handle_save_transcript() on the device side.
+function txtSibling(name) {
+  const dot = name.lastIndexOf(".");
+  return (dot >= 0 ? name.slice(0, dot) : name) + ".txt";
+}
+
+// Audio files in currentFiles with no sibling .txt transcript yet (a
+// leftover <basename>_error.txt doesn't count - those get retried).
+// Compared case-insensitively, since the SD card's FAT is.
+function untranscribedAudio() {
+  const names = new Set(currentFiles.map((f) => f.name.toLowerCase()));
+  return currentFiles
+    .filter((f) => isAudio(f.name) && !names.has(txtSibling(f.name).toLowerCase()))
+    .map((f) => f.name)
+    .sort((a, b) => a.localeCompare(b, window.I18N_LANG, { sensitivity: "base" }));
+}
+
+// Sync button: transcribes every audio file on the card that has no
+// transcript yet, through the same browser-side path as batchTranscribe().
+async function syncTranscribe() {
+  await refresh(); // the list may be stale (uploads/transcriptions from another tab)
+  const names = untranscribedAudio();
+  if (names.length === 0) {
+    document.getElementById("status").textContent = t("sync_nothing");
     return;
   }
-
-  const status = document.getElementById("status");
-  const btn = document.getElementById("batchTranscribe");
-  btn.disabled = true;
-  let failed = 0;
-  let noSummary = 0;
-  for (const [i, name] of names.entries()) {
-    try {
-      if (await transcribeOne(name, key, "[" + (i + 1) + "/" + names.length + "] ")) noSummary++;
-    } catch (e) {
-      failed++;
-      status.textContent = t("transcribe_failed_for", name, e.message);
-    }
-  }
-  status.textContent = failed === 0 ? t("transcribed_n", names.length)
-    : t("transcribed_partial", names.length - failed, names.length, failed);
-  if (noSummary > 0) status.textContent += " " + t("saved_no_summary", noSummary);
-  btn.disabled = false;
-  refresh();
+  if (!confirm(t("confirm_sync", names.length))) return;
+  await runTranscribeBatch(names);
 }
 
 async function batchDelete() {
@@ -930,6 +990,7 @@ document.getElementById("selectAll").onchange = (e) => {
 };
 document.getElementById("batchDownload").onclick = batchDownload;
 document.getElementById("batchTranscribe").onclick = batchTranscribe;
+document.getElementById("syncBtn").onclick = syncTranscribe;
 document.getElementById("batchDelete").onclick = batchDelete;
 document.getElementById("batchClear").onclick = () => { selected.clear(); render(); };
 
