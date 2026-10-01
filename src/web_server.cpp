@@ -93,11 +93,14 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     --danger-bg: rgba(163, 39, 29, 0.08);
   }
   * { box-sizing: border-box; }
+  /* #batchBar/#syncBar/#sd-widget set display: flex, which would
+     otherwise beat the hidden attribute's UA display: none. */
+  [hidden] { display: none !important; }
   body {
     font-family: "Roboto", -apple-system, system-ui, sans-serif;
     background: var(--paper);
     color: var(--ink);
-    max-width: 640px;
+    max-width: 760px;
     margin: 0 auto;
     padding: 0 0 2rem;
   }
@@ -146,9 +149,8 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   /* A note's AI title (or "no transcript yet"), under its filename - the
      web counterpart of the device list's second line. */
   .note-title {
-    max-width: 50vw;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
     font-size: 0.78rem;
     color: var(--ink-soft);
     margin: 0.15rem 0 0 1.6em;
@@ -200,7 +202,13 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   td.size, th.size { text-align: right; white-space: nowrap; }
   td.date, th.date { white-space: nowrap; color: var(--ink-soft); font-size: 0.85rem; }
   td.actions { text-align: right; white-space: nowrap; }
-  td.name { white-space: nowrap; }
+  /* Name takes whatever width the other columns leave; a long AI title
+     wraps under the filename instead of pushing the actions off-card. */
+  td.name { white-space: nowrap; width: 100%; }
+  td.actions { width: 1%; }
+  @media (max-width: 560px) {
+    td.date, th.date { display: none; }
+  }
   .file-icon { display: inline-block; width: 1.1em; text-align: center; opacity: 0.75; margin-right: 0.5rem; }
   table td:first-child, table th:first-child {
     max-width: 40vw;
