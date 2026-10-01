@@ -1,3 +1,15 @@
+# [1.12.0](https://github.com/corradoignoti/annota/compare/v1.11.0...v1.12.0) (2026-10-01)
+
+
+### Bug Fixes
+
+* translate on-device "file too large to transcribe" message ([b3e63d6](https://github.com/corradoignoti/annota/commit/b3e63d6f9fe908f38955df2bc58ceb4c0ac5f870))
+
+
+### Features
+
+* web UI Sync button to transcribe all untranscribed audio ([2bab2ab](https://github.com/corradoignoti/annota/commit/2bab2abc33f58b7a3bc52cb388647fa86a21fa49))
+
 # [1.11.0](https://github.com/corradoignoti/annota/compare/v1.10.1...v1.11.0) (2026-09-30)
 
 
