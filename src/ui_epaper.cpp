@@ -120,7 +120,10 @@ static bool active_has_transcript = false;
 
 // kDetails - built once when Details is picked from kActionMenu (the audio
 // length needs an SD read), so repaints don't touch the card again.
-static char details_text[192];
+// details_compact - an audio file with a sibling transcript: twice the
+// lines, so the card drops its icon and uses a smaller font to fit.
+static char details_text[256];
+static bool details_compact = false;
 
 // kTextView - text_view_buffer holds the .txt file's content (read via
 // read_text_file_preview() when View is picked from kActionMenu), truncated
@@ -230,11 +233,13 @@ static void format_size(uint32_t bytes, char *out, size_t outLen) {
 // Fills details_text for kDetails from mp3Files[active_file_index]: name +
 // size for both lists, then the creation date for .txt or the playing time
 // (read off the card - see storage.h's get_audio_duration_seconds()) for
-// audio.
+// audio, plus the sibling transcript's size and date if it has one
+// (active_has_transcript, looked up when the action menu opened).
 static void build_details_text() {
     const Mp3Entry &entry = mp3Files[active_file_index];
     char size[16];
     format_size(entry.size, size, sizeof(size));
+    details_compact = false;
     if (!showing_audio_files) {
         snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_TEXT), entry.filename, size, entry.created);
         return;
@@ -246,6 +251,17 @@ static void build_details_text() {
     } else {
         strncpy(length, tr(Str::UNKNOWN), sizeof(length) - 1);
         length[sizeof(length) - 1] = '\0';
+    }
+    uint32_t txtBytes = 0;
+    char txtCreated[20];
+    if (active_has_transcript &&
+        get_file_info(active_transcript_name, txtBytes, txtCreated, sizeof(txtCreated))) {
+        char txtSize[16];
+        format_size(txtBytes, txtSize, sizeof(txtSize));
+        snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_AUDIO_TRANSCRIPT), entry.filename, size, length,
+                 txtSize, txtCreated);
+        details_compact = true;
+        return;
     }
     snprintf(details_text, sizeof(details_text), tr(Str::DETAILS_AUDIO), entry.filename, size, length);
 }
@@ -461,7 +477,7 @@ static void add_qr_screen(const char *qr_data, const char *caption) {
 // A bordered, rounded card centered in body, with an optional big icon
 // above a wrapped message - the info/dialog counterpart to add_row()'s
 // list cards, used by every message-only screen below.
-static void add_info_card(const char *icon, const char *text) {
+static void add_info_card(const char *icon, const char *text, const lv_font_t *font = &lv_font_it_14) {
     const int16_t pad = 10;
     const int16_t card_w = SCREEN_W - 24;
 
@@ -492,7 +508,7 @@ static void add_info_card(const char *icon, const char *text) {
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, card_w - pad * 2);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(msg, font, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
     lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
@@ -815,7 +831,11 @@ static void render_body() {
         }
 
         case Screen::kDetails:
-            add_info_card(LV_SYMBOL_LIST, details_text);
+            if (details_compact) {
+                add_info_card(nullptr, details_text, &lv_font_it_12);
+            } else {
+                add_info_card(LV_SYMBOL_LIST, details_text);
+            }
             add_hint(tr(Str::HINT_SELECT_BACK));
             break;
 

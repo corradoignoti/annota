@@ -167,7 +167,10 @@ may touch it.
   `Mp3Entry::created` date or the audio file's playing time from
   `storage.h`'s `get_audio_duration_seconds()`, which parses the WAV
   chunk list or the MP3 Xing/Info/VBRI tag, falling back to a CBR
-  estimate; Select goes back to the action menu; the audio menu's 6 rows
+  estimate — plus, for an audio file with a sibling `<basename>.txt`,
+  that transcript's size and date via `storage.h`'s `get_file_info()`,
+  shown in a compact icon-less 12pt card to fit; Select goes back to the
+  action menu; the audio menu's 6 rows
   make `render_option_menu()` switch to a compact layout to clear the
   hint bar) —
   no on-screen Settings or WiFi credential entry, which stay on

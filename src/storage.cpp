@@ -302,6 +302,24 @@ bool get_audio_duration_seconds(const char *filename, uint32_t &secs) {
     return ok;
 }
 
+bool get_file_info(const char *filename, uint32_t &size, char *created, size_t createdLen) {
+    bool sdOk = sd_begin();
+    if (!sdOk) return false;
+
+    char path[80];
+    snprintf(path, sizeof(path), "/%s", filename);
+    File f = SD_FS.open(path, FILE_READ);
+    if (!f) {
+        sd_end();
+        return false;
+    }
+    size = f.size();
+    format_timestamp(f.getLastWrite(), created, createdLen);
+    f.close();
+    sd_end();
+    return true;
+}
+
 bool delete_file(const char *filename) {
     bool sdOk = sd_begin();
     if (!sdOk) return false;

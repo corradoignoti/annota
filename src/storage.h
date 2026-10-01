@@ -109,6 +109,14 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // above.
 bool get_audio_duration_seconds(const char *filename, uint32_t &secs);
 
+// Claims the SD card via sd_begin() just long enough to read a root-level
+// file's size and last-write time (formatted like Mp3Entry::created), then
+// releases it via sd_end(). Used by the on-device audio Details screen for
+// the sibling transcript, which isn't in mp3Files while the audio list is
+// shown. Returns false if the card or file can't be opened. Same caller
+// responsibility as read_text_file_preview() above.
+bool get_file_info(const char *filename, uint32_t &size, char *created, size_t createdLen);
+
 // Claims the SD card via sd_begin(), deletes a root-level file, then
 // releases it via sd_end(). Returns false if the card can't be opened or
 // the file doesn't exist. Same caller responsibility as
