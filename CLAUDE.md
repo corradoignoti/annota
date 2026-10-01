@@ -436,7 +436,13 @@ may touch it.
   for the "n/total" numbering) in `#status`, with `#progress` showing
   download and upload percentages; the download and provider upload go
   through XHR (`downloadWithProgress()`/`xhrWithUploadProgress()`) since
-  `fetch()` has no progress events.
+  `fetch()` has no progress events. A Sync bar above the list (`#syncBar`,
+  `syncTranscribe()`) runs that same browser-side path over every audio
+  file with no sibling `<basename>.txt` (case-insensitive; a leftover
+  `_error.txt` doesn't count, so failed files get retried), sharing
+  `runTranscribeBatch()` with the batch bar's Transcribe button; it
+  re-fetches `/api/transcript-key` before each file so
+  `web_transcribe_in_progress()` stays armed for the whole batch.
   Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
   only happens on reboot. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final
