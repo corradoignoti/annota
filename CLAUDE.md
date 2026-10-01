@@ -72,8 +72,8 @@ may touch it.
   `ui_epaper.cpp`'s `ui_process_input()` on any onboard button edge, and
   `web_server.cpp`'s route registrations (each wrapped in a
   `with_activity()` helper) on any served HTTP request — so the device
-  won't deep-sleep out from under someone actively browsing, uploading to,
-  or downloading from the web file manager just because no button was
+  won't deep-sleep out from under someone actively browsing or
+  downloading from the web file manager just because no button was
   pressed. Waking from deep sleep is a full MCU reset — `setup()` runs
   again from scratch like a fresh boot, so there's no wake-cause branching
   here (unlike pala_note, which distinguishes which button woke it); the
@@ -375,7 +375,7 @@ may touch it.
   around the whole blocking call (a no-op on this board, but kept for
   symmetry with `web_server.cpp`'s SD handlers).
 - **web_server.cpp/h** — `web_server_start()`/`web_server_handle()`, an
-  ESP32-core `WebServer` on port 80. Two pages, same dark palette as
+  ESP32-core `WebServer` on port 80. Three pages, same dark palette as
   `ui_epaper.cpp`: a file manager at `/` mirroring the device's Notes
   list — a Notes table with one row per audio file (`.mp3`/`.wav`, both
   playable via `/api/play`) and its sibling `<basename>.txt` folded in
@@ -385,8 +385,8 @@ may touch it.
   Delete, Download and their batch versions cover both files; default order is the
   device's, untranscribed first then newest transcript, with Name/Date
   headers cycling asc/desc/default), plus an "Other files" table for
-  everything else (orphan `.txt`, `_error.txt` logs, other uploads) with
-  view/download/delete, and upload — backed by `/api/files`, `/api/download`, `/api/upload`, `/api/delete`,
+  everything else (orphan `.txt`, `_error.txt` logs, files copied in over USB) with
+  view/download/delete (no browser upload) — backed by `/api/files`, `/api/download`, `/api/delete`,
   `/api/transcript-key`, `/api/transcript`; and a `/settings` page
   (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, an
   idle-sleep-timeout slider, and the AI provider's API key field, labeled
@@ -394,7 +394,9 @@ may touch it.
   `/api/settings` (GET, a status snapshot) and `/api/settings/reconnect`,
   `/api/settings/forget`, `/api/settings/ai-key`,
   `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above),
-  `/api/settings/language` (POST, see `i18n.cpp/h` above). Both pages load
+  `/api/settings/language` (POST, see `i18n.cpp/h` above); and a static
+  `/about` page (what Annota is, plus credits for third-party icons/fonts —
+  add one there when bringing in a new asset). All three pages load
   `/i18n.js` synchronously in `<head>`; static markup carries
   `data-i18n`/`data-i18n-ph`/`data-i18n-title` keys (filled by
   `applyI18n()` at the top of each page's main script), and every JS
@@ -446,7 +448,7 @@ may touch it.
   `runTranscribeBatch()` with the batch bar's Transcribe button; it
   re-fetches `/api/transcript-key` before each file so
   `web_transcribe_in_progress()` stays armed for the whole batch.
-  Uploads/deletes don't refresh the on-screen MP3 list (`mp3Files`); that
+  Web deletes don't refresh the on-screen MP3 list (`mp3Files`); that
   only happens on reboot. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final
   POST, self-clearing on a timeout otherwise) purely so `sleep.cpp` knows
