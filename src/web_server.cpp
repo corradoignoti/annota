@@ -13,7 +13,7 @@
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
-// SD file manager web UI (list / download / upload / delete on the SD
+// SD file manager web UI (list / download / delete on the SD
 // root). Built on the ESP32 core's synchronous WebServer - no extra
 // lib_deps needed. See web_server.h for the SPI-sharing constraint that
 // shapes every handler below.
@@ -241,28 +241,34 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    box-sizing: border-box; /* <a class="btn"> defaults to content-box */
+    vertical-align: middle;  /* not baseline: <a> and <button> differ */
     width: 1.8rem;
     height: 1.8rem;
     padding: 0;
     font-size: 0.85rem;
+    line-height: 1;
     text-decoration: none;
+  }
+  /* Inline-SVG icons draw lighter than the text glyphs beside them, so a
+     touch larger to match their visual weight. */
+  td.actions svg.icon { width: 1.1rem; height: 1.1rem; vertical-align: 0; }
+  svg.icon {
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
   td.actions button + button, td.actions button + a, td.actions a + button { margin-left: 0.3rem; }
   tbody tr:hover td.actions button, tbody tr:hover td.actions .btn { border-color: var(--surface); color: var(--surface); }
   tbody tr:hover td.actions button:hover, tbody tr:hover td.actions .btn:hover { background: var(--surface); color: var(--ink); }
   tbody tr:hover button.danger, tbody tr:hover .btn.danger { color: var(--danger); border-color: var(--danger); }
 
-  #drop {
-    margin: 0 1rem 1.2rem;
-    padding: 1.6rem 1rem;
-    border: 1.5px dashed rgba(20, 20, 15, 0.3);
-    border-radius: 6px;
-    text-align: center;
-    color: var(--ink-soft);
-  }
-  #drop.over { border-color: var(--ink); border-style: solid; background: rgba(20, 20, 15, 0.04); }
-  #drop .btn { background: var(--surface); color: var(--ink); display: inline-block; margin-top: 0.4rem; }
-  #drop .btn:hover { background: var(--ink); color: var(--surface); }
+  #statusBox { margin: 0 1rem 1.2rem; color: var(--ink-soft); }
   #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--ink-soft); }
   progress {
     width: 100%;
@@ -318,7 +324,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <div class="appbar">
   <div class="row">
     <h1>Annota</h1>
-    <nav><a class="active" href="/" data-i18n="nav_files"></a><a href="/settings" data-i18n="nav_settings"></a></nav>
+    <nav><a class="active" href="/" data-i18n="nav_files"></a><a href="/settings" data-i18n="nav_settings"></a><a href="/about" data-i18n="nav_about"></a></nav>
   </div>
   <div class="sub" data-i18n="sub_files"></div>
 </div>
@@ -350,7 +356,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   <div class="actions">
     <button id="batchDownload">⬇ <span data-i18n="download"></span></button>
     <button id="batchTranscribe">✎ <span data-i18n="transcribe"></span></button>
-    <button id="batchDelete" class="danger">✕ <span data-i18n="delete"></span></button>
+    <button id="batchDelete" class="danger"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg> <span data-i18n="delete"></span></button>
     <button id="batchClear" class="btn" data-i18n="clear_selection"></button>
   </div>
 </div>
@@ -375,9 +381,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   <table id="others"><tbody></tbody></table>
 </div>
 
-<div id="drop">
-  <span data-i18n="drop_here"></span>
-  <label class="btn"><span data-i18n="choose_one"></span><input id="picker" type="file" style="display:none"></label>
+<div id="statusBox">
   <progress id="progress" max="100" value="0"></progress>
   <div id="status"></div>
 </div>
@@ -634,12 +638,22 @@ function noteBefore(a, b) {
   return transcriptTime(b) - transcriptTime(a);
 }
 
+// Trash icon for the Delete actions - an inline SVG rather than a glyph
+// (stroke: currentColor, so it follows the button's danger/hover colors).
+const TRASH_ICON = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>';
+
+// View icon (svgrepo.com #522402) for the view-transcript/view-text
+// actions - same inline-SVG treatment as TRASH_ICON. viewBox cropped to
+// 2 3 20 20: the paths sit low in the original 24x24 box (centered on y=13).
+const EYE_ICON = '<svg class="icon" viewBox="2 3 20 20" aria-hidden="true"><circle cx="12" cy="13" r="2"/><path d="M12 7.5C7.69517 7.5 4.47617 11.0833 3.39473 12.4653C3.14595 12.7832 3.14595 13.2168 3.39473 13.5347C4.47617 14.9167 7.69517 18.5 12 18.5C16.3048 18.5 19.5238 14.9167 20.6053 13.5347C20.8541 13.2168 20.8541 12.7832 20.6053 12.4653C19.5238 11.0833 16.3048 7.5 12 7.5Z"/></svg>';
+
 // Icon-only action button (see td.actions' CSS comment) - title carries
 // the label for a11y/tooltip instead of visible text, so four fit one row.
+// icon is a text glyph, or markup starting with "<" (e.g. TRASH_ICON).
 function actionButton(icon, title, onclick, danger) {
   const b = document.createElement("button");
   if (danger) b.className = "danger";
-  b.textContent = icon;
+  if (icon.startsWith("<")) b.innerHTML = icon; else b.textContent = icon;
   b.title = title;
   b.onclick = () => onclick(b);
   return b;
@@ -741,13 +755,13 @@ function render() {
     // Same swap as the device's action menu: a transcribed note offers
     // View transcription in Transcribe's place.
     if (n.transcript) {
-      actions.appendChild(actionButton("👁", t("view_transcript"), () => viewFile(n.transcript.name)));
+      actions.appendChild(actionButton(EYE_ICON, t("view_transcript"), () => viewFile(n.transcript.name)));
     } else {
       actions.appendChild(actionButton("✎", t("transcribe"), (b) => transcribeFile(n.name, b)));
     }
     // Audio plus its transcript, if any - same pair Delete removes.
     actions.appendChild(actionButton("⬇", t("download"), () => downloadFiles(noteFiles(n))));
-    actions.appendChild(actionButton("✕", t("delete"), () => removeNote(n), true));
+    actions.appendChild(actionButton(TRASH_ICON, t("delete"), () => removeNote(n), true));
     tr.appendChild(actions);
     body.appendChild(tr);
   }
@@ -764,9 +778,9 @@ function render() {
     tr.appendChild(textCell("size", fmtSize(f.size)));
     const actions = document.createElement("td");
     actions.className = "actions";
-    if (isText(f.name)) actions.appendChild(actionButton("👁", t("view"), () => viewFile(f.name)));
+    if (isText(f.name)) actions.appendChild(actionButton(EYE_ICON, t("view"), () => viewFile(f.name)));
     actions.appendChild(downloadLink(f.name));
-    actions.appendChild(actionButton("✕", t("delete"), () => removeFile(f.name), true));
+    actions.appendChild(actionButton(TRASH_ICON, t("delete"), () => removeFile(f.name), true));
     tr.appendChild(actions);
     othersBody.appendChild(tr);
   }
@@ -1073,7 +1087,7 @@ function untranscribedAudio() {
 // Sync button: transcribes every audio file on the card that has no
 // transcript yet, through the same browser-side path as batchTranscribe().
 async function syncTranscribe() {
-  await refresh(); // the list may be stale (uploads/transcriptions from another tab)
+  await refresh(); // the list may be stale (deletes/transcriptions from another tab)
   const names = untranscribedAudio();
   if (names.length === 0) {
     document.getElementById("status").textContent = t("sync_nothing");
@@ -1122,44 +1136,6 @@ document.getElementById("batchTranscribe").onclick = batchTranscribe;
 document.getElementById("syncBtn").onclick = syncTranscribe;
 document.getElementById("batchDelete").onclick = batchDelete;
 document.getElementById("batchClear").onclick = () => { selected.clear(); render(); };
-
-function uploadFile(file) {
-  const status = document.getElementById("status");
-  const progress = document.getElementById("progress");
-  const form = new FormData();
-  form.append("file", file, file.name);
-
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/upload");
-  xhr.upload.onprogress = (e) => {
-    if (!e.lengthComputable) return;
-    progress.style.display = "block";
-    progress.value = (e.loaded / e.total) * 100;
-  };
-  xhr.onload = () => {
-    progress.style.display = "none";
-    status.textContent = xhr.status === 200 ? t("uploaded", file.name) : t("upload_failed_msg", xhr.responseText);
-    refresh();
-  };
-  xhr.onerror = () => {
-    progress.style.display = "none";
-    status.textContent = t("upload_failed");
-  };
-  status.textContent = t("uploading", file.name);
-  xhr.send(form);
-}
-
-const picker = document.getElementById("picker");
-picker.onchange = () => { if (picker.files[0]) uploadFile(picker.files[0]); picker.value = ""; };
-
-const drop = document.getElementById("drop");
-drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
-drop.ondragleave = () => drop.classList.remove("over");
-drop.ondrop = (e) => {
-  e.preventDefault();
-  drop.classList.remove("over");
-  if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
-};
 
 refresh();
 </script>
@@ -1301,7 +1277,7 @@ static const char SETTINGS_HTML[] PROGMEM = R"rawliteral(
 <div class="appbar">
   <div class="row">
     <h1>Annota</h1>
-    <nav><a href="/" data-i18n="nav_files"></a><a class="active" href="/settings" data-i18n="nav_settings"></a></nav>
+    <nav><a href="/" data-i18n="nav_files"></a><a class="active" href="/settings" data-i18n="nav_settings"></a><a href="/about" data-i18n="nav_about"></a></nav>
   </div>
   <div class="sub" data-i18n="sub_settings"></div>
 </div>
@@ -1629,8 +1605,178 @@ static void handle_root() {
     server.send(200, "text/html", page);
 }
 
+// Static About page: what Annota is, plus credits for third-party assets
+// (icons) - same paper/ink look as SETTINGS_HTML, trimmed to what it uses.
+static const char ABOUT_HTML[] PROGMEM = R"rawliteral(
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-i18n="title_about"></title>
+<script src="/i18n.js"></script>
+<style>
+  /* Same paper/ink language as INDEX_HTML - see its <style> comment. */
+  :root {
+    color-scheme: light;
+    --paper: #eeece6;
+    --surface: #fffffc;
+    --ink: #14140f;
+    --ink-soft: #5a594f;
+    --border: #14140f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Roboto", -apple-system, system-ui, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 0 0 2rem;
+  }
+  .appbar {
+    background: var(--ink);
+    color: var(--surface);
+    padding: 0.9rem 1rem;
+    margin-bottom: 1rem;
+  }
+  .appbar h1 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .appbar .sub { color: rgba(255, 255, 255, 0.6); font-size: 0.75rem; margin-top: 0.15rem; letter-spacing: 0.02em; }
+  .appbar .row { display: flex; align-items: baseline; justify-content: space-between; }
+  .appbar nav a {
+    color: rgba(255, 255, 255, 0.6);
+    text-decoration: none;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-left: 1rem;
+    padding-bottom: 2px;
+    border-bottom: 1px solid transparent;
+  }
+  .appbar nav a.active { color: var(--surface); border-bottom-color: var(--surface); }
+  .card {
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    margin: 0 1rem 1.2rem;
+    padding: 1rem;
+  }
+  .card h2 {
+    margin: 0 0 0.7rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-soft);
+  }
+  .card p { margin: 0 0 0.6rem; font-size: 0.9rem; line-height: 1.45; }
+  .card p:last-child { margin-bottom: 0; }
+  .credit {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(20, 20, 15, 0.12);
+    font-size: 0.85rem;
+  }
+  .credit:last-child { border-bottom: none; }
+  .credit .what { font-weight: 600; }
+  .credit .detail { color: var(--ink-soft); margin-top: 0.15rem; }
+  a { color: var(--ink); }
+</style>
+</head>
+<body>
+<div class="appbar">
+  <div class="row">
+    <h1>Annota</h1>
+    <nav><a href="/" data-i18n="nav_files"></a><a href="/settings" data-i18n="nav_settings"></a><a class="active" href="/about" data-i18n="nav_about"></a></nav>
+  </div>
+  <div class="sub" data-i18n="sub_about"></div>
+</div>
+
+<div class="card">
+  <h2 data-i18n="about_what"></h2>
+  <p data-i18n="about_intro"></p>
+  <p data-i18n="about_features"></p>
+  <p data-i18n="about_hardware"></p>
+</div>
+
+<!-- Credit names, authors and license names are not translated. -->
+<div class="card">
+  <h2 data-i18n="about_credits"></h2>
+  <div class="credit">
+    <div class="what"><span data-i18n="credit_eye_icon"></span> &middot; SVG Repo</div>
+    <div class="detail"><a href="https://www.svgrepo.com/svg/522402/eye" target="_blank" rel="noopener">svgrepo.com/svg/522402/eye</a></div>
+  </div>
+  <div class="credit">
+    <div class="what"><span data-i18n="credit_device_icons"></span> &middot; Font Awesome Free 5</div>
+    <div class="detail">CC BY 4.0 &middot; <a href="https://fontawesome.com" target="_blank" rel="noopener">fontawesome.com</a></div>
+  </div>
+  <div class="credit">
+    <div class="what"><span data-i18n="credit_device_font"></span> &middot; Montserrat</div>
+    <div class="detail">SIL Open Font License 1.1 &middot; <a href="https://github.com/JulietaUla/Montserrat" target="_blank" rel="noopener">github.com/JulietaUla/Montserrat</a></div>
+  </div>
+</div>
+
+<!-- Open source components linked into the firmware: platformio.ini's
+     lib_deps (versions pinned there - keep in sync) plus the main parts of
+     the pioarduino/Arduino-ESP32 platform underneath them. -->
+<div class="card">
+  <h2 data-i18n="about_oss"></h2>
+  <p data-i18n="about_oss_intro"></p>
+  <div class="credit">
+    <div class="what">LVGL 9.2.2</div>
+    <div class="detail">MIT &middot; <a href="https://lvgl.io" target="_blank" rel="noopener">lvgl.io</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">ArduinoJson 7.4.1</div>
+    <div class="detail">MIT &middot; <a href="https://arduinojson.org" target="_blank" rel="noopener">arduinojson.org</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">WiFiManager 2.0.17</div>
+    <div class="detail">MIT &middot; <a href="https://github.com/tzapu/WiFiManager" target="_blank" rel="noopener">github.com/tzapu/WiFiManager</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">ESP8266Audio 2.4.1</div>
+    <div class="detail">GPL-3.0 &middot; <a href="https://github.com/earlephilhower/ESP8266Audio" target="_blank" rel="noopener">github.com/earlephilhower/ESP8266Audio</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">QRCode 0.0.1</div>
+    <div class="detail">MIT &middot; <a href="https://github.com/ricmoo/QRCode" target="_blank" rel="noopener">github.com/ricmoo/QRCode</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">Arduino-ESP32</div>
+    <div class="detail">LGPL-2.1 &middot; <a href="https://github.com/espressif/arduino-esp32" target="_blank" rel="noopener">github.com/espressif/arduino-esp32</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">ESP-IDF</div>
+    <div class="detail">Apache-2.0 &middot; <a href="https://github.com/espressif/esp-idf" target="_blank" rel="noopener">github.com/espressif/esp-idf</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">FreeRTOS</div>
+    <div class="detail">MIT &middot; <a href="https://www.freertos.org" target="_blank" rel="noopener">freertos.org</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">Mbed TLS</div>
+    <div class="detail">Apache-2.0 &middot; <a href="https://github.com/Mbed-TLS/mbedtls" target="_blank" rel="noopener">github.com/Mbed-TLS/mbedtls</a></div>
+  </div>
+  <div class="credit">
+    <div class="what">TinyUSB</div>
+    <div class="detail">MIT &middot; <a href="https://github.com/hathach/tinyusb" target="_blank" rel="noopener">github.com/hathach/tinyusb</a></div>
+  </div>
+</div>
+
+<script>
+applyI18n(); // /i18n.js, loaded in <head> - see i18n.h
+</script>
+</body>
+</html>
+)rawliteral";
+
+
 static void handle_settings_page() {
     server.send_P(200, "text/html", SETTINGS_HTML);
+}
+
+static void handle_about_page() {
+    server.send_P(200, "text/html", ABOUT_HTML);
 }
 
 // GET /i18n.js - the current language's web strings plus the t()/
@@ -1834,7 +1980,7 @@ static void handle_wifi_remove() {
 // multi-megabyte upload off the ESP32's flaky TLS stack is worth it), so
 // it needs the raw key client-side. That's no new exposure in practice -
 // this whole server is unauthenticated plain HTTP already (any other
-// device on the LAN can already download/delete/upload files here), just
+// device on the LAN can already download/delete files here), just
 // the first endpoint that hands back a *secret* rather than a file.
 // Safety-net cap on web_transcribe_in_progress() - if the browser never
 // calls handle_save_transcript() back (tab closed, network drop mid-
@@ -2060,63 +2206,9 @@ static void handle_delete() {
     }
 }
 
-// Shared between handle_upload_data() (fires per chunk, has no response
-// channel) and handle_upload_done() (fires once the body is fully consumed,
-// and is the only one of the two that can send a response).
-static File uploadFile;
-static bool uploadOk = false;
-static bool uploadClaimed = false; // whether sd_release() is still owed
-
-// Multipart upload body handler for POST /api/upload. Runs once per chunk
-// across the whole request, so the SD claim spans UPLOAD_FILE_START through
-// UPLOAD_FILE_END/ABORTED rather than one claim per call.
-static void handle_upload_data() {
-    HTTPUpload &upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-        uploadOk = false;
-        char name[64];
-        if (!sanitize_name(upload.filename, name, sizeof(name))) {
-            return;
-        }
-        if (!sd_claim()) {
-            return;
-        }
-        uploadClaimed = true;
-        char path[80];
-        snprintf(path, sizeof(path), "/%s", name);
-        uploadFile = sd_fs().open(path, FILE_WRITE);
-        uploadOk = (bool)uploadFile;
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-        if (uploadOk) {
-            uploadFile.write(upload.buf, upload.currentSize);
-        }
-    } else if (upload.status == UPLOAD_FILE_END || upload.status == UPLOAD_FILE_ABORTED) {
-        if (uploadOk) {
-            uploadFile.close();
-        }
-        if (uploadClaimed) {
-            sd_release();
-            uploadClaimed = false;
-        }
-        if (upload.status == UPLOAD_FILE_ABORTED) {
-            uploadOk = false;
-        }
-    }
-}
-
-// Runs after handle_upload_data() has consumed the whole request body -
-// sends the actual response, since the upload callback above can't.
-static void handle_upload_done() {
-    if (uploadOk) {
-        server.send(200, "text/plain", "OK");
-    } else {
-        server.send(400, "text/plain", "Upload failed (bad filename, no SD card, or write error)");
-    }
-}
-
 // Wraps a route handler so any served request also resets sleep.h's idle
 // clock - without this, the idle-timeout deep sleep could fire mid-
-// download/upload, or while someone's just sitting on the file manager
+// download, or while someone's just sitting on the file manager
 // page, purely because no onboard button was pressed in a while.
 static WebServer::THandlerFunction with_activity(WebServer::THandlerFunction handler) {
     return [handler]() {
@@ -2132,6 +2224,7 @@ void web_server_start() {
 
     server.on("/", HTTP_GET, with_activity(handle_root));
     server.on("/settings", HTTP_GET, with_activity(handle_settings_page));
+    server.on("/about", HTTP_GET, with_activity(handle_about_page));
     server.on("/api/settings", HTTP_GET, with_activity(handle_settings_info));
     server.on("/api/settings/reconnect", HTTP_POST, with_activity(handle_settings_reconnect));
     server.on("/api/settings/ai-key", HTTP_POST, with_activity(handle_settings_set_ai_key));
@@ -2148,7 +2241,6 @@ void web_server_start() {
     server.on("/api/download", HTTP_GET, with_activity(handle_download));
     server.on("/api/play", HTTP_GET, with_activity(handle_play));
     server.on("/api/delete", HTTP_POST, with_activity(handle_delete));
-    server.on("/api/upload", HTTP_POST, with_activity(handle_upload_done), with_activity(handle_upload_data));
     server.onNotFound(with_activity([]() { server.send(404, "text/plain", "Not found"); }));
     server.begin();
 
