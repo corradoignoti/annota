@@ -83,6 +83,8 @@ TR(HINT_JOIN_CANCEL_K, "Up/Down: move   Select: join   BOOT: cancel", "Su/Giù: 
 TR(HINT_JOIN_BACK, "Next: move   Select: join, hold: back", "Avanti: sposta   Sel: connetti, tieni: indietro", "Suiv: déplacer   Sél: rejoindre, maintenir: retour")
 TR(HINT_JOIN_BACK_K, "Up/Down: move   Select: join   BOOT: back", "Su/Giù: sposta   Sel: connetti   BOOT: indietro", "Haut/Bas: déplacer   Sél: rejoindre   BOOT: retour")
 TR(WIFI_AP_MSG, "Connect to WiFi \"Annota-AP\", then open http://%s in a browser.", "Connettiti al WiFi \"Annota-AP\", poi apri http://%s in un browser.", "Connectez-vous au WiFi \"Annota-AP\", puis ouvrez http://%s dans un navigateur.")
+TR(WIFI_AP_QR_JOIN, "1. Scan to join WiFi \"Annota-AP\".", "1. Inquadra per connetterti al WiFi \"Annota-AP\".", "1. Scannez pour rejoindre le WiFi \"Annota-AP\".")
+TR(WIFI_AP_QR_OPEN, "2. Then scan to open %s in a browser.", "2. Poi inquadra per aprire %s in un browser.", "2. Puis scannez pour ouvrir %s dans un navigateur.")
 TR(WIFI_JOINED_MSG, "Connected. Open %s in a browser for settings or file transfer.", "Connesso. Apri %s in un browser per impostazioni o trasferimento file.", "Connecté. Ouvrez %s dans un navigateur pour les réglages ou le transfert de fichiers.")
 TR(WIFI_SETUP_MSG, "Join WiFi network \"%s\" from your phone or laptop to set up this device's WiFi.", "Connettiti alla rete WiFi \"%s\" dal telefono o dal computer per configurare il WiFi del dispositivo.", "Rejoignez le réseau WiFi \"%s\" depuis votre téléphone ou ordinateur pour configurer le WiFi de l'appareil.")
 TR(HINT_WORK_OFFLINE, "Hold Select: work offline", "Tieni Sel: lavora offline", "Maintenir Sél: travailler hors ligne")

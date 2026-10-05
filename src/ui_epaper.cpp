@@ -224,10 +224,11 @@ static char wifi_joined_url[64];
 static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
 
 // QR code rendering, shared by kWifiJoined (its http:// URL) and
-// kWifiApActive (the AP's join string above) - only one of the two is ever
-// on screen at once, so they share one canvas backing buffer too. Version
+// kWifiApActive (the AP's join string above, plus - 3.97 only - a second
+// QR with the AP's http:// URL below it) - only one of the two screens is
+// ever on screen at once, so they share the canvas backing buffers too. Version
 // 4 (33x33 modules) at ECC_LOW gives 78 bytes of byte-mode capacity -
-// comfortably more than either payload needs; add_qr_screen() degrades to text-only (see its comment) if a payload
+// comfortably more than either payload needs; add_qr() degrades to text-only (see its comment) if a payload
 // ever doesn't fit. Scaled up 3px/module (99x99 canvas) onto an RGB565
 // lv_canvas, drawn pixel-exact (no lv_image zoom/interpolation) since this
 // display thresholds everything to 1bpp on flush and blurred edges would
@@ -242,11 +243,14 @@ static const uint8_t WIFI_QR_MODULES = WIFI_QR_VERSION * 4 + 17;
 static const uint16_t WIFI_QR_BUFFER_SIZE = (WIFI_QR_MODULES * WIFI_QR_MODULES + 7) / 8;
 static const int16_t WIFI_QR_PX = WIFI_QR_MODULES * WIFI_QR_SCALE;
 #if BOARD_EPAPER_397
-// 231x231 RGB565 is ~104 KB - too much for internal DRAM (see
+// One buffer per QR on screen at once (kWifiApActive shows two). 231x231
+// RGB565 is ~104 KB each - too much for internal DRAM (see
 // display_epaper.cpp's draw_buf comment), so allocated in PSRAM on first use.
-static lv_color_t *wifi_qr_canvas_buf = nullptr;
+static const uint8_t WIFI_QR_SLOTS = 2;
+static lv_color_t *wifi_qr_canvas_buf[WIFI_QR_SLOTS] = {};
 #else
-static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
+static const uint8_t WIFI_QR_SLOTS = 1;
+static lv_color_t wifi_qr_canvas_buf[WIFI_QR_SLOTS][WIFI_QR_PX * WIFI_QR_PX];
 #endif
 
 // kTranscribeProgress / kTranscribeResult
@@ -458,13 +462,13 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
     }
 }
 
-// A scannable QR code plus a wrapped caption below it, filling body - used
-// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
-// string) instead of
+// Scannable QR codes, each with a wrapped caption below it, in a column
+// filling body - used by kWifiJoined (its http:// URL) and kWifiApActive
+// (the AP's WiFi-join string, plus its URL on the 3.97) instead of
 // add_info_card()'s icon+text layout, since a QR code needs far more of
 // body's limited space than a symbol-font glyph does. See WIFI_QR_* above
 // for the encoding/rendering choices.
-static void add_qr_screen(const char *qr_data, const char *caption) {
+static lv_obj_t *add_qr_container() {
     lv_obj_t *cont = lv_obj_create(body);
     lv_obj_remove_style_all(cont);
     lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
@@ -472,20 +476,26 @@ static void add_qr_screen(const char *qr_data, const char *caption) {
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(cont, 4, 0);
+    return cont;
+}
 
+// One QR canvas plus its wrapped caption, appended to cont's column. slot
+// picks the canvas backing buffer (< WIFI_QR_SLOTS) - each QR on screen at
+// once needs its own, since LVGL only reads them at flush time.
+static void add_qr(lv_obj_t *cont, uint8_t slot, const char *qr_data, const char *caption) {
     QRCode qr;
     uint8_t qr_bytes[WIFI_QR_BUFFER_SIZE];
 #if BOARD_EPAPER_397
-    if (!wifi_qr_canvas_buf) {
-        wifi_qr_canvas_buf = (lv_color_t *)heap_caps_malloc(WIFI_QR_PX * WIFI_QR_PX * sizeof(lv_color_t),
-                                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!wifi_qr_canvas_buf[slot]) {
+        wifi_qr_canvas_buf[slot] = (lv_color_t *)heap_caps_malloc(WIFI_QR_PX * WIFI_QR_PX * sizeof(lv_color_t),
+                                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     }
-    if (wifi_qr_canvas_buf && qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
+    if (wifi_qr_canvas_buf[slot] && qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
 #else
     if (qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
 #endif
         lv_obj_t *canvas = lv_canvas_create(cont);
-        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
+        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf[slot], WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
         lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
         for (uint8_t my = 0; my < qr.size; my++) {
             for (uint8_t mx = 0; mx < qr.size; mx++) {
@@ -507,6 +517,10 @@ static void add_qr_screen(const char *qr_data, const char *caption) {
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(msg, FONT_HINT, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+}
+
+static void add_qr_screen(const char *qr_data, const char *caption) {
+    add_qr(add_qr_container(), 0, qr_data, caption);
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
@@ -900,9 +914,22 @@ static void render_body() {
         }
 
         case Screen::kWifiApActive: {
+#if BOARD_EPAPER_397
+            // Room for both steps on the tall panel: join the AP, then
+            // open the web UI - so the second scan needs no typing.
+            char url[32];
+            snprintf(url, sizeof(url), "http://%s", wifi_ap_ip);
+            char open_msg[128];
+            snprintf(open_msg, sizeof(open_msg), tr(Str::WIFI_AP_QR_OPEN), url);
+            lv_obj_t *cont = add_qr_container();
+            lv_obj_set_style_pad_row(cont, CARD_GAP, 0);
+            add_qr(cont, 0, WIFI_AP_QR_DATA, tr(Str::WIFI_AP_QR_JOIN));
+            add_qr(cont, 1, url, open_msg);
+#else
             char msg[160];
             snprintf(msg, sizeof(msg), tr(Str::WIFI_AP_MSG), wifi_ap_ip);
             add_qr_screen(WIFI_AP_QR_DATA, msg);
+#endif
             add_hint(tr(Str::HINT_STOP_AP));
             break;
         }
