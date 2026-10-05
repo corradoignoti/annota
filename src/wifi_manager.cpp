@@ -327,7 +327,10 @@ static bool run_setup_portal() {
     bool cancelled = false;
     while (wm.getConfigPortalActive() && WiFi.status() != WL_CONNECTED) {
         wm.process();  // services the portal's HTTP requests - autoConnect()'s own blocking loop would otherwise have done this
-        if (display_button_poll(DisplayButton::kSelect) == DisplayButtonEvent::kLong) {
+        // Long Select, or (knob boards) BOOT - see ui_epaper.cpp's
+        // HINT_WORK_OFFLINE(_K).
+        if (display_button_poll(DisplayButton::kSelect) == DisplayButtonEvent::kLong ||
+            display_button_poll(DisplayButton::kBack) == DisplayButtonEvent::kShort) {
             wm.stopConfigPortal();
             cancelled = true;
             break;

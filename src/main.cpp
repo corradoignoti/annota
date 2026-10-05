@@ -3,6 +3,7 @@
 #include <lvgl.h>
 
 #include "battery.h"
+#include "board.h"
 #include "display.h"
 #include "reboot_combo.h"
 #include "sleep.h"
@@ -13,15 +14,19 @@
 #include "web_server.h"
 #include "wifi_manager.h"
 
-// Battery power latch - see PWR_HOLD_PIN's comment in reboot_combo.h. Set
+// Battery power latch - see PWR_HOLD_PIN's comment in board.h. Set
 // first in setup(), before anything else, so nothing downstream (panel
-// init, WiFi, SD) can lose power mid-init.
+// init, WiFi, SD) can lose power mid-init. A no-op on PMIC boards (the 3.97),
+// where the PMIC holds power itself - and where PWR_HOLD_PIN's GPIO17 is
+// the SD card's CMD line, so it must not be touched.
 static void keepBatteryPowerOn() {
+#if BOARD_HAS_PWR_LATCH
     pinMode(PWR_HOLD_PIN, OUTPUT);
     digitalWrite(PWR_HOLD_PIN, HIGH);
     // Release the pad hold reboot_now() may have latched across a software
     // reset - only after driving HIGH, so the level never glitches low.
     gpio_hold_dis((gpio_num_t)PWR_HOLD_PIN);
+#endif
 }
 
 void setup() {
@@ -34,6 +39,7 @@ void setup() {
     Serial.begin(115200);
     Serial.println("annota: boot");
 
+    battery_init(); // PMIC boards: powers the panel rail - see battery.h
     display_init_panel();
 
     bool sd_present = load_mp3_catalog();

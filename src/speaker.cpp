@@ -12,6 +12,7 @@
 #include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
 
+#include "board.h"
 #include "es8311.h"
 #include "i18n.h"
 #include "storage.h"
@@ -49,15 +50,14 @@
 
 namespace {
 
-constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_14;
-constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_15;
-constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_38;
-constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_45;
-constexpr gpio_num_t I2S_DIN_PIN = GPIO_NUM_16; // mic ADC data in (I2S_ASDOUT)
-constexpr int PA_EN_PIN = 42;
-constexpr int PA_CTRL_PIN = 46;
-constexpr int I2C_SDA_PIN = 47;
-constexpr int I2C_SCL_PIN = 48;
+// The pin map above is the 1.54's; board.h has each board's values
+// (I2S_*_GPIO, AUDIO_RAIL_PIN, PA_CTRL_PIN, I2C_SDA_PIN/I2C_SCL_PIN). The
+// 3.97 has no switchable analog rail (AUDIO_RAIL_PIN -1).
+constexpr gpio_num_t I2S_MCLK_PIN = (gpio_num_t)I2S_MCLK_GPIO;
+constexpr gpio_num_t I2S_BCLK_PIN = (gpio_num_t)I2S_BCLK_GPIO;
+constexpr gpio_num_t I2S_WS_PIN = (gpio_num_t)I2S_WS_GPIO;
+constexpr gpio_num_t I2S_DOUT_PIN = (gpio_num_t)I2S_DOUT_GPIO;
+constexpr gpio_num_t I2S_DIN_PIN = (gpio_num_t)I2S_DIN_GPIO; // mic ADC data in (I2S_ASDOUT)
 
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
@@ -377,7 +377,9 @@ void cleanup() {
 bool speaker_begin() {
     if (hwReady) return true;
 
-    pinMode(PA_EN_PIN, OUTPUT);
+#if AUDIO_RAIL_PIN >= 0
+    pinMode(AUDIO_RAIL_PIN, OUTPUT);
+#endif
     pinMode(PA_CTRL_PIN, OUTPUT);
     // Active-LOW, not active-high like every other enable pin here - per
     // Waveshare's own ESP-IDF example (board_power_bsp.cpp's
@@ -389,8 +391,10 @@ bool speaker_begin() {
     // confusing to track down: every codec register readback matched a
     // known-good driver exactly, yet no sound, because the rail those
     // registers actually control was never powered.
-    digitalWrite(PA_EN_PIN, LOW); // power the codec+amp analog rail
+#if AUDIO_RAIL_PIN >= 0
+    digitalWrite(AUDIO_RAIL_PIN, LOW); // power the codec+amp analog rail
     delay(10); // let the rail settle before talking I2C to the codec
+#endif
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
@@ -401,15 +405,19 @@ bool speaker_begin() {
     audioLogger = &Serial;
 
     bool codecOk = es8311_init(DEFAULT_SAMPLE_RATE, DEFAULT_VOLUME);
-    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding on SDA=47/SCL=48 @0x18?)");
+    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding @0x18?)");
     if (!codecOk) {
-        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#if AUDIO_RAIL_PIN >= 0
+        digitalWrite(AUDIO_RAIL_PIN, HIGH); // rail off (active-low, see above)
+#endif
         return false;
     }
     bool i2sOk = i2s_configure(DEFAULT_SAMPLE_RATE);
     Serial.printf("speaker: i2s_configure -> %s\n", i2sOk ? "ok" : "FAILED");
     if (!i2sOk) {
-        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#if AUDIO_RAIL_PIN >= 0
+        digitalWrite(AUDIO_RAIL_PIN, HIGH); // rail off (active-low, see above)
+#endif
         return false;
     }
 

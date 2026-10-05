@@ -2,16 +2,21 @@
 
 #include <cstdint>
 
-// Panel resolution: 200x200 square mono e-paper (Waveshare
-// ESP32-S3-ePaper-1.54) - see display_epaper.cpp for the panel driver.
-constexpr uint16_t SCREEN_W = 200;
-constexpr uint16_t SCREEN_H = 200;
+#include "board.h"
+
+// Panel resolution, per board (board.h): 200x200 square mono e-paper on the
+// Waveshare ESP32-S3-ePaper-1.54 (panel driver: display_epaper.cpp), 480x800
+// portrait on the ESP32-S3-ePaper-3.97 (its 800x480 panel rotated by
+// display_epaper397.cpp). Exactly
+// one of those two files compiles to anything, picked by the BOARD_* flag.
+constexpr uint16_t SCREEN_W = BOARD_SCREEN_W;
+constexpr uint16_t SCREEN_H = BOARD_SCREEN_H;
 
 // Brings up just the display panel. Call first, before anything else
 // touches the screen or SPI.
 void display_init_panel();
 
-// Brings up input (the two onboard buttons) and LVGL's display + input
+// Brings up input (the onboard buttons) and LVGL's display + input
 // device. Call once storage.h's SD scan (if any) is done - the call order
 // is kept the same as it always was so main.cpp's setup() doesn't need to
 // special-case it.
@@ -24,11 +29,14 @@ void display_init_input();
 void display_suspend_touch();
 void display_resume_touch();
 
-// The board's two onboard buttons, driving ui_epaper.cpp's list/menu nav.
+// The board's onboard buttons, driving ui_epaper.cpp's list/menu nav.
 // kNext advances the current selection/menu option, kSelect opens/confirms
 // it (short press) or backs out of it (long press). See ui_epaper.cpp for
-// the actual nav scheme built on top of these.
-enum class DisplayButton { kNext, kSelect };
+// the actual nav scheme built on top of these. kPrev (step back one option)
+// and kBack (same as a long kSelect) exist only on boards with
+// BOARD_HAS_KNOB (the 3.97's rotary Up and BOOT) - elsewhere they're never
+// pressed. GPIOs: board.h's BTN_*_GPIO; implemented in display_buttons.cpp.
+enum class DisplayButton { kNext, kSelect, kPrev, kBack };
 enum class DisplayButtonEvent { kNone, kShort, kLong };
 
 // Debounced, edge-triggered: returns kShort/kLong at most once per
@@ -50,3 +58,7 @@ DisplayButtonEvent display_button_poll(DisplayButton b);
 // shorter long-press threshold, and a hold abandoned before the reboot
 // leaves no half-consumed single-button press behind either.
 bool display_button_raw_pressed(DisplayButton b);
+
+// Configures the button GPIOs as pulled-up inputs. Called by each panel
+// driver's display_init_input(); nothing else needs it.
+void display_buttons_init();

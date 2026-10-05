@@ -1,13 +1,9 @@
 #pragma once
 
-// Battery power latch (Waveshare schematic): the physical power switch only
-// pulses the regulator on - the MCU must itself hold this pin high or the
-// board powers back off the moment the switch is released. Driven HIGH by
-// main.cpp's keepBatteryPowerOn(); pad-held across a software reset by
-// reboot_now() below so the board doesn't lose power mid-reboot on battery.
-#define PWR_HOLD_PIN 17
+#include "board.h" // PWR_HOLD_PIN (boards with BOARD_HAS_PWR_LATCH)
 
-// "Hold both buttons to reboot" - watched by a dedicated FreeRTOS task
+// "Hold both buttons to reboot" (Next+Select on the 1.54; rotary Press +
+// BOOT on the 3.97, whose Next is a rotary direction) - watched by a dedicated FreeRTOS task
 // pinned to core 0 (Arduino's loop() runs on core 1), reading the two
 // button GPIOs directly rather than through display.h's
 // display_button_poll(), so it keeps working even if loop() or setup() is
@@ -19,8 +15,8 @@
 // early as possible in setup() - it configures the button pins itself.
 void reboot_combo_start();
 
-// Latches PWR_HOLD_PIN's current (HIGH) level across the reset, then
-// esp_restart(). A software reset doesn't re-sample strapping pins, so
+// Latches PWR_HOLD_PIN's current (HIGH) level across the reset (boards with
+// BOARD_HAS_PWR_LATCH only), then esp_restart(). A software reset doesn't re-sample strapping pins, so
 // holding BOOT/GPIO0 down through it won't land in download mode. Never
 // returns.
 [[noreturn]] void reboot_now();

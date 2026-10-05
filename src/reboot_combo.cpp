@@ -4,17 +4,22 @@
 #include <driver/gpio.h>
 #include <esp_system.h>
 
-// Same pins as display_epaper.cpp's BOOT_BUTTON_PIN/PWR_BUTTON_PIN (both
-// active-low with onboard pull-ups) - duplicated here rather than exposed
-// through display.h, same reasoning as sleep.cpp's own copy.
-static const gpio_num_t NEXT_BUTTON_GPIO = GPIO_NUM_0;
-static const gpio_num_t SELECT_BUTTON_GPIO = GPIO_NUM_18;
+// The two buttons of the gesture (both active-low with pull-ups, see
+// board.h): Next+Select on the 1.54, Select (rotary Press) + Back (BOOT) on
+// the 3.97 - there Next is a rotary direction, and Down+Press can't be held
+// together on the one knob.
+#if BOARD_HAS_KNOB
+static const gpio_num_t COMBO_GPIO_A = (gpio_num_t)BTN_BACK_GPIO;
+#else
+static const gpio_num_t COMBO_GPIO_A = (gpio_num_t)BTN_NEXT_GPIO;
+#endif
+static const gpio_num_t COMBO_GPIO_B = (gpio_num_t)BTN_SELECT_GPIO;
 
 static const uint32_t REBOOT_COMBO_HOLD_MS = 5000;
 static const uint32_t REBOOT_COMBO_POLL_MS = 20;
 
 static bool both_pressed() {
-    return gpio_get_level(NEXT_BUTTON_GPIO) == 0 && gpio_get_level(SELECT_BUTTON_GPIO) == 0;
+    return gpio_get_level(COMBO_GPIO_A) == 0 && gpio_get_level(COMBO_GPIO_B) == 0;
 }
 
 static void reboot_combo_task(void *) {
@@ -38,7 +43,7 @@ static void reboot_combo_task(void *) {
 
 void reboot_combo_start() {
     gpio_config_t cfg = {};
-    cfg.pin_bit_mask = (1ULL << NEXT_BUTTON_GPIO) | (1ULL << SELECT_BUTTON_GPIO);
+    cfg.pin_bit_mask = (1ULL << COMBO_GPIO_A) | (1ULL << COMBO_GPIO_B);
     cfg.mode = GPIO_MODE_INPUT;
     cfg.pull_up_en = GPIO_PULLUP_ENABLE;
     cfg.pull_down_en = GPIO_PULLDOWN_DISABLE;
@@ -52,6 +57,8 @@ void reboot_combo_start() {
 }
 
 void reboot_now() {
+#if BOARD_HAS_PWR_LATCH
     gpio_hold_en((gpio_num_t)PWR_HOLD_PIN);
+#endif
     esp_restart();
 }

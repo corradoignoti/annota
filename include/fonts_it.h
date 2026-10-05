@@ -15,3 +15,10 @@ extern const lv_font_t lv_font_it_10;
 extern const lv_font_t lv_font_it_12;
 extern const lv_font_t lv_font_it_14;
 extern const lv_font_t lv_font_it_28;
+
+// Larger sizes for the 800x480 3.97 board's layout (ui_epaper.cpp's
+// per-board font roles); unreferenced on the 1.54, so the linker drops them.
+extern const lv_font_t lv_font_it_16;
+extern const lv_font_t lv_font_it_20;
+extern const lv_font_t lv_font_it_24;
+extern const lv_font_t lv_font_it_48;

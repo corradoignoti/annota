@@ -2,11 +2,18 @@
 
 #include <cstdint>
 
-// Battery charge estimation - reads the board's own voltage-divider ADC pin
-// (GPIO4 on this Waveshare schematic) and maps the reading onto a Li-ion
-// discharge curve. No charge-detect pin is broken out on this board, so
+// Battery charge estimation. On the 1.54 it reads the board's own
+// voltage-divider ADC pin (GPIO4 on this Waveshare schematic) and maps the
+// reading onto a Li-ion discharge curve - the comments below describe that
+// path. On the 3.97 both calls read the AXP2101 PMIC's own measurement and
+// fuel gauge instead (see battery.cpp). No charge-detect pin is broken out on this board, so
 // there's no "currently charging" state here, only a percentage - see
 // ui.h's ui_set_battery_percent() for how it reaches the header.
+
+// Call once at the very start of setup(), before display_init_panel(): on
+// PMIC boards (the 3.97) it brings the PMIC up and makes sure the
+// peripheral rails (e-paper panel included) are on. A no-op on the 1.54.
+void battery_init();
 
 // Raw battery terminal voltage in millivolts, corrected for the board's
 // 200K/200K divider (the ADC pin itself only ever sees half of it). Uses

@@ -5,16 +5,19 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+#include "board.h"
 #include "ui.h"
 #include "web_server.h"
 
-// Select/PWR button display_epaper.cpp drives (its own PWR_BUTTON_PIN,
-// private to that file) - duplicated here rather than exposed through
-// display.h since nothing else needs it outside this wakeup mask. Only
-// this one button wakes the device (see ui_show_sleep_screen()'s "Hold
-// Select to wake" - BOOT/Next is left out of the mask so that message
-// stays true instead of being a second, undocumented way to wake it).
-static const int PWR_BUTTON_PIN = 18;
+#if BOARD_HAS_KNOB
+#include <driver/rtc_io.h>
+#endif
+
+// Only the Select button (board.h's WAKE_BUTTON_GPIO: PWR on the 1.54,
+// rotary Press on the 3.97) wakes the device (see ui_show_sleep_screen()'s
+// "Hold Select to wake" - the other buttons are left out of the mask so
+// that message stays true instead of being a second, undocumented way to
+// wake it).
 
 // Default before the user ever touches the Settings page slider, and the
 // clamp range for whatever they set it to - generous ceiling (3 hours) so
@@ -72,11 +75,19 @@ static void enter_deep_sleep() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
-    // PWR_HOLD_PIN (GPIO17, latched HIGH by main.cpp's
+    // PWR_HOLD_PIN (1.54: GPIO17, latched HIGH by main.cpp's
     // keepBatteryPowerOn()) is deliberately left alone here - deep sleep
     // still needs the regulator latched on for ext1 wakeup to fire at all;
-    // only pulling the physical power switch again cuts it for good.
-    uint64_t wakeMask = (1ULL << PWR_BUTTON_PIN);
+    // only pulling the physical power switch again cuts it for good. (On
+    // the 3.97 the PMIC keeps the rail up through deep sleep by itself.)
+    uint64_t wakeMask = (1ULL << WAKE_BUTTON_GPIO);
+#if BOARD_HAS_KNOB
+    // Keep the knob's pull-up alive in deep sleep - the digital pad
+    // pull-up set by display_init_input() is off once the RTC domain owns
+    // the pin, and a floating input would wake (or never wake) at random.
+    rtc_gpio_pullup_en((gpio_num_t)WAKE_BUTTON_GPIO);
+    rtc_gpio_pulldown_dis((gpio_num_t)WAKE_BUTTON_GPIO);
+#endif
     esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();
 }
