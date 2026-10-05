@@ -8,6 +8,7 @@
 #include <AudioGeneratorMP3.h>
 #include <AudioGeneratorWAV.h>
 #include <AudioOutput.h>
+#include <Preferences.h>
 #include <Wire.h>
 #include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
@@ -61,6 +62,16 @@ constexpr gpio_num_t I2S_DIN_PIN = (gpio_num_t)I2S_DIN_GPIO; // mic ADC data in 
 
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
+
+// Software gain (AudioOutput::SetGain(), applied by Amplify() to every
+// decoded MP3/WAV sample in Es8311Output::ConsumeSample()) per
+// VolumeLevel, on top of the codec's fixed DEFAULT_VOLUME - takes effect
+// on the very next sample, mid-track. High = 1.0, the unscaled output this
+// firmware always had; Medium/Low = -6/-12 dB.
+constexpr float VOLUME_GAINS[] = {0.25f, 0.5f, 1.0f};
+static_assert(sizeof(VOLUME_GAINS) / sizeof(VOLUME_GAINS[0]) == (size_t)VolumeLevel::kCount,
+              "speaker: one gain per VolumeLevel");
+constexpr const char *VOLUME_NVS_KEY = "vol";
 
 // Recording is voice-memo/transcription-oriented (not music), so mono at a
 // speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
@@ -431,8 +442,9 @@ bool speaker_begin() {
     // give it a real value. That's what made the raw-tone test (which
     // writes straight to I2S, bypassing Amplify() entirely) audible while
     // real MP3 playback (which routes every sample through it) stayed
-    // silent even with the PA_EN fix in place.
-    output->SetGain(1.0f);
+    // silent even with the PA_EN fix in place. The saved VolumeLevel's
+    // gain - 1.0 unless the 3.97's volume menu changed it.
+    output->SetGain(VOLUME_GAINS[(size_t)speaker_get_volume_level()]);
     Serial.println("speaker: hardware ready");
     return true;
 }
@@ -750,4 +762,30 @@ bool mic_is_recording() {
 
 const char *mic_last_error() {
     return micErrorMessage;
+}
+
+// kCount = not loaded from NVS yet (same lazy-load sentinel as i18n.cpp's).
+static VolumeLevel volumeLevel = VolumeLevel::kCount;
+
+VolumeLevel speaker_get_volume_level() {
+    if (volumeLevel == VolumeLevel::kCount) {
+        Preferences prefs;
+        prefs.begin("annota", true);
+        uint8_t stored = prefs.getUChar(VOLUME_NVS_KEY, (uint8_t)VolumeLevel::kHigh);
+        prefs.end();
+        volumeLevel = stored < (uint8_t)VolumeLevel::kCount ? (VolumeLevel)stored : VolumeLevel::kHigh;
+    }
+    return volumeLevel;
+}
+
+void speaker_set_volume_level(VolumeLevel level, bool persist) {
+    if (level >= VolumeLevel::kCount) return;
+    volumeLevel = level;
+    if (output) output->SetGain(VOLUME_GAINS[(size_t)level]);
+    if (persist) {
+        Preferences prefs;
+        prefs.begin("annota", false);
+        prefs.putUChar(VOLUME_NVS_KEY, (uint8_t)level);
+        prefs.end();
+    }
 }

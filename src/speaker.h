@@ -65,3 +65,16 @@ bool mic_is_recording();
 // screen on failure, since there's no serial monitor attached in normal
 // use to see the Serial.println() speaker.cpp also logs it to.
 const char *mic_last_error();
+
+// Playback volume presets - the 3.97's in-playback volume menu
+// (ui_epaper.cpp's kVolumeMenu). High is the codec volume this firmware
+// always used, so it's also the default before anything's been saved.
+enum class VolumeLevel { kLow, kMedium, kHigh, kCount };
+
+// Saved level (NVS namespace "annota", key "vol"), lazily loaded once.
+VolumeLevel speaker_get_volume_level();
+
+// Applies `level` to the codec right away (if it's powered up yet) and,
+// with `persist`, saves it to NVS so it survives a reboot. speaker_begin()
+// starts the codec at the saved level.
+void speaker_set_volume_level(VolumeLevel level, bool persist);

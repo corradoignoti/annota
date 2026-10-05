@@ -68,6 +68,7 @@ enum class Screen {
     kUsbDrive,
     kUsbDriveError,
     kUsbDriveRestarting,
+    kVolumeMenu,
 };
 
 // -----------------------------------------------------------------------
@@ -173,6 +174,14 @@ static const uint32_t DOUBLE_PRESS_WINDOW_MS = 350;
 static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
+
+#if BOARD_EPAPER_397
+// kPlaying -> kVolumeMenu: holding rotary Up or Down this long while a
+// track plays opens the volume menu. Timed off the raw pin state, since
+// display_button_poll()'s own long press (700 ms) fires far too early.
+static const uint32_t VOLUME_HOLD_MS = 3000;
+static uint32_t volume_hold_since = 0; // 0 = neither Up nor Down held
+#endif
 
 // kActionMenu / kDeleteConfirm - an audio file's sibling "<basename>.txt"
 // transcript, looked up when the action menu opens. If it exists, the menu
@@ -943,7 +952,14 @@ static void render_body() {
             char msg[128];
             snprintf(msg, sizeof(msg), tr(Str::PLAYING), active_filename);
             add_info_card(LV_SYMBOL_PLAY, msg);
-            add_hint(tr(Str::HINT_SELECT_STOP));
+            add_hint(knob_tr(Str::HINT_SELECT_STOP, Str::HINT_SELECT_STOP_K));
+            break;
+        }
+
+        case Screen::kVolumeMenu: {
+            static const char *icons[] = {LV_SYMBOL_VOLUME_MID, LV_SYMBOL_VOLUME_MID, LV_SYMBOL_VOLUME_MAX};
+            const char *options[] = {tr(Str::VOLUME_LOW), tr(Str::VOLUME_MEDIUM), tr(Str::VOLUME_HIGH)};
+            render_option_menu(tr(Str::VOLUME_TITLE), icons, options, 3);
             break;
         }
 
@@ -1181,7 +1197,8 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 bool ui_is_sleep_blocked() {
-    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
+    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kVolumeMenu ||
+           state == Screen::kTranscribeProgress ||
            state == Screen::kWifiApActive || state == Screen::kWifiJoined ||
            state == Screen::kUsbDrive;
 }
@@ -1280,6 +1297,28 @@ void ui_process_input() {
         select_press_pending = false;
         open_action_menu_for_selected();
     }
+
+#if BOARD_EPAPER_397
+    // Up/Down held VOLUME_HOLD_MS during playback opens the volume menu -
+    // ahead of the early return below, since a hold produces no new edge.
+    // The poll above already spent this press's long event (ignored on
+    // kPlaying), so its release fires nothing on the menu.
+    if (state == Screen::kPlaying &&
+        (display_button_raw_pressed(DisplayButton::kNext) || display_button_raw_pressed(DisplayButton::kPrev))) {
+        if (volume_hold_since == 0) {
+            volume_hold_since = millis() | 1; // never 0 while held
+        } else if (millis() - volume_hold_since >= VOLUME_HOLD_MS) {
+            volume_hold_since = 0;
+            menu_index = (int)speaker_get_volume_level();
+            state = Screen::kVolumeMenu;
+            sleep_reset_activity();
+            render_body();
+            return;
+        }
+    } else {
+        volume_hold_since = 0;
+    }
+#endif
 
     if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone &&
         prevEv == DisplayButtonEvent::kNone && backEv == DisplayButtonEvent::kNone) {
@@ -1569,6 +1608,35 @@ void ui_process_input() {
                 render_body();
             }
             break;
+
+#if BOARD_EPAPER_397
+        // Playback keeps running underneath. Up/Down move the highlight;
+        // Select (click) switches the playing track to that level right
+        // away and saves it, staying in the menu so another level can be
+        // tried. A back-out (long Select / BOOT) closes it - to kPlaying,
+        // or to the list if the track ended meanwhile.
+        case Screen::kVolumeMenu: {
+            const int optionCount = (int)VolumeLevel::kCount;
+            if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
+                menu_index = nextEv == DisplayButtonEvent::kShort ? (menu_index + 1) % optionCount
+                                                                  : (menu_index + optionCount - 1) % optionCount;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                speaker_set_volume_level((VolumeLevel)menu_index, true);
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                if (speaker_is_playing()) {
+                    state = Screen::kPlaying;
+                } else {
+                    state = sd_present ? Screen::kList : Screen::kNoCard;
+                }
+                render_body();
+            }
+            break;
+        }
+#else
+        case Screen::kVolumeMenu:
+            break; // 3.97 only - never entered here
+#endif
 
         case Screen::kRecording:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {

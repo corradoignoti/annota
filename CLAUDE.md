@@ -290,6 +290,15 @@ may touch it.
   first. Both claim the SD card for their whole duration (`storage.h`'s
   `sd_begin()`/`sd_end()`) and must be pumped every `loop()` iteration via
   `ui_epaper.cpp`'s `ui_process_input()`.
+  Playback volume is a `VolumeLevel` preset (Low/Medium/High = software
+  gain 0.25/0.5/1.0 via `AudioOutput::SetGain()`, on top of the codec's
+  fixed `DEFAULT_VOLUME`; High, the old output, is the default), persisted
+  in NVS (namespace `"annota"`, key `"vol"`), applied mid-track.
+  3.97 only: holding Up or Down 3 s (`VOLUME_HOLD_MS`, timed off the raw
+  pin, since the button poll's long press fires at 700 ms) on `kPlaying`
+  opens `Screen::kVolumeMenu` over the still-playing track — Up/Down move
+  the highlight, Select applies + saves that level (menu stays open),
+  Back closes it.
 - **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. WiFi is off by
   default: `wifi_start_boot_connect()` takes two paths at boot depending on
   whether a network is already saved in NVS: none saved opens a captive
