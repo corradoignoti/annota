@@ -1299,6 +1299,13 @@ void ui_process_input() {
                 render_body();
                 break;
             }
+            if (prevEv == DisplayButtonEvent::kLong) {
+                // Knob boards' jump-to-top (Record row) - their stand-in
+                // for the 1.54's double-press-Select gesture.
+                selected_index = 0;
+                render_body();
+                break;
+            }
             if (selEv == DisplayButtonEvent::kLong) {
                 // Refresh is one of the menu's own options, so no
                 // separate rescan-on-long-press branch is needed below.
@@ -1344,6 +1351,11 @@ void ui_process_input() {
                             state = Screen::kMicError;
                         }
                         render_body();
+                    } else if (BOARD_HAS_KNOB) {
+                        // Knob boards act right away - no double-press
+                        // window to wait out (Up held jumps to the top
+                        // instead, see below), so Select feels instant.
+                        open_action_menu_for_selected();
                     } else if (select_press_pending) {
                         // Second Select short-press within the window -
                         // double-press gesture: jump to the Record row

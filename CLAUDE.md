@@ -159,11 +159,15 @@ may touch it.
   rotates each pixel onto the 800x480 panel (`PANEL_W/H`; flip the
   direction with `EPD_PORTRAIT_FLIP`). Waveforms are in the
   controller's OTP (no LUT upload): 0x22 0xF7 = full refresh, 0xFF =
-  partial. Same LVGL bridge as the 1.54 (`LV_DISPLAY_RENDER_MODE_FULL`,
-  RGB565 thresholded to 1bpp), but both the 768 KB draw buffer and the
-  48 KB 1bpp buffer are PSRAM-only; SPI at 20 MHz; every flush is a
-  whole-screen partial refresh except every `EPD_FULL_REFRESH_EVERY`th,
-  which is a full one to clear ghosting. The panel's supply is the PMIC's
+  partial. Unlike the 1.54, LVGL renders in `LV_DISPLAY_RENDER_MODE_PARTIAL`
+  into a 20-line RGB565 strip buffer in internal RAM (rendering a full
+  frame into PSRAM was the slowest step of a screen change); each strip is
+  thresholded/rotated straight into the PSRAM 48 KB 1bpp `epd_buf`, and
+  the panel is refreshed once per frame, on the last strip
+  (`lv_display_flush_is_last()`). SPI at 10 MHz, 20/2/20 ms panel reset
+  before each partial refresh; every `EPD_FULL_REFRESH_EVERY`th frame is a
+  full refresh to clear ghosting. `EPD_LOG_TIMING` prints one Serial line
+  per frame (render+convert vs panel ms). The panel's supply is the PMIC's
   ALDO3, which `battery.h`'s `battery_init()` (called before
   `display_init_panel()`) makes sure is on.
 - **display_buttons.cpp** — `display.h`'s button polling for both boards:
@@ -172,7 +176,9 @@ may touch it.
   Select) and always `kNone` on the 1.54. In `ui_epaper.cpp`'s
   `ui_process_input()`, Back short is folded into a long Select (every
   screen's existing back-out path) except on `kList`, where it goes Home;
-  Prev short is the mirror of Next on every cycling screen; on `kTextView`
+  Prev short is the mirror of Next on every cycling screen; `kList` opens a
+  file's action menu on Select immediately (no double-press window) and
+  Up held jumps to the top instead; on `kTextView`
   Down/Up scroll down/up. `wifi_manager.cpp`'s setup-portal loop also
   accepts Back. The reboot combo is Press + BOOT on the 3.97
   (`reboot_combo.cpp`), and idle-sleep wake is the knob press (board.h's

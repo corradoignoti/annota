@@ -28,7 +28,7 @@ TR(NO_CARD, "Insert an SD card to see your audio files", "Inserisci una scheda S
 TR(LIST_AUDIO_FILES, "Notes", "Note", "Notes")
 TR(LIST_RECORD_NEW, "Record new", "Nuova registrazione", "Nouvel enregistrement")
 TR(HINT_LIST, "Next: move, hold: home   Sel: open, hold: menu", "Avanti: sposta, tieni: home   Sel: apri, tieni: menu", "Suiv: déplacer, maintenir: accueil   Sél: ouvrir, maintenir: menu")
-TR(HINT_LIST_K, "Up/Down: move   Select: open, hold: menu   BOOT: home", "Su/Giù: sposta   Sel: apri, tieni: menu   BOOT: home", "Haut/Bas: déplacer   Sél: ouvrir, maintenir: menu   BOOT: accueil")
+TR(HINT_LIST_K, "Up/Down: move, hold Up: top   Select: open, hold: menu   BOOT: home", "Su/Giù: sposta, tieni Su: inizio   Sel: apri, tieni: menu   BOOT: home", "Haut/Bas: déplacer, maintenir Haut: début   Sél: ouvrir, maintenir: menu   BOOT: accueil")
 TR(HOME_TITLE, "Home", "Home", "Accueil")
 TR(HOME_NOTES, "Notes", "Note", "Notes")
 TR(FILE_TRANSFER, "File transfer", "Trasferimento file", "Transfert de fichiers")

@@ -36,13 +36,23 @@ static const bool EPD_PORTRAIT_FLIP = true;
 
 static const int EPD_BUF_LEN = (PANEL_W * PANEL_H) / 8; // 48000, 1 bit/px
 
-// Both buffers live in PSRAM: at this resolution they're far too big for
-// internal DRAM (which WiFi/lwIP/TLS need - see display_epaper.cpp's
-// draw_buf comment), and each is only touched once per e-paper refresh.
+// The 1bpp panel image (48 KB) lives in PSRAM - too big for internal DRAM,
+// which WiFi/lwIP/TLS need (see display_epaper.cpp's draw_buf comment).
+// LVGL itself renders in LV_DISPLAY_RENDER_MODE_PARTIAL into a small strip
+// buffer in *internal* RAM instead of a full 768 KB RGB565 frame in PSRAM:
+// software rendering into PSRAM was the slowest step of a screen change,
+// and the strip is converted into epd_buf as each piece arrives, so only
+// the areas LVGL actually redrew are touched. The panel itself is refreshed
+// once, on the last strip of a frame (lv_display_flush_is_last()).
 static uint8_t *epd_buf;
 static lv_display_t *display;
-static const size_t DRAW_BUF_BYTES = SCREEN_W * SCREEN_H * sizeof(lv_color_t); // 768 KB
+static const int DRAW_BUF_LINES = 20;
+static const size_t DRAW_BUF_BYTES = SCREEN_W * DRAW_BUF_LINES * sizeof(lv_color_t); // ~19 KB
 static lv_color_t *draw_buf;
+
+// One Serial line per panel refresh with where the time went - for tuning.
+static const bool EPD_LOG_TIMING = true;
+static uint32_t frame_start_ms = 0; // first strip of the frame being flushed
 
 // Partial refreshes leave a little ghosting behind each time; a full
 // (flashing) refresh every this many flushes clears it.
@@ -50,10 +60,9 @@ static const uint16_t EPD_FULL_REFRESH_EVERY = 30;
 static uint16_t partials_since_full = 0;
 
 // Waveshare's factory firmware drives this panel at 20 MHz over a dedicated
-// SPI host; their Arduino example bit-bangs it far slower. 4 MHz - same as
-// the 1.54 - keeps margin on the GPIO-matrix-routed lines and still moves
-// the 48 KB frame in ~0.1 s, small next to the ~0.6 s refresh itself.
-static const uint32_t EPD_SPI_HZ = 4000000;
+// SPI host; their Arduino example bit-bangs it far slower. 10 MHz moves the
+// 48 KB frame in ~40 ms with margin left on the GPIO-matrix-routed lines.
+static const uint32_t EPD_SPI_HZ = 10000000;
 
 // Upper bound on any single BUSY wait (a full refresh takes ~3.5 s). Past
 // it the panel is assumed unresponsive - logged, and the caller carries on
@@ -100,13 +109,16 @@ static void epd_write_bytes(const uint8_t *buf, int len) {
     digitalWrite(EPD_CS_PIN, HIGH);
 }
 
+// 20/2/20 ms - Waveshare's Arduino example's timing (the factory firmware
+// uses 50/2/50); runs before every partial refresh, so it's on every
+// screen change's critical path.
 static void epd_hw_reset() {
     digitalWrite(EPD_RST_PIN, HIGH);
-    delay(50);
+    delay(20);
     digitalWrite(EPD_RST_PIN, LOW);
     delay(2);
     digitalWrite(EPD_RST_PIN, HIGH);
-    delay(50);
+    delay(20);
 }
 
 static void epd_turn_on_display(uint8_t mode) {
@@ -215,43 +227,62 @@ static void epd_display_partial() {
     epd_turn_on_display(0xFF);
 }
 
-static inline void epd_set_pixel(int x, int y, bool white) {
-    int index = y * (PANEL_W / 8) + (x >> 3);
-    uint8_t bit = 7 - (x & 0x07);
-    if (white) {
-        epd_buf[index] |= (1 << bit);
-    } else {
-        epd_buf[index] &= ~(1 << bit);
-    }
-}
-
 // -----------------------------------------------------------------------
-// LVGL bridge - same approach as display_epaper.cpp: LVGL renders a full
-// RGB565 frame (LV_DISPLAY_RENDER_MODE_FULL), thresholded to 1bpp here.
+// LVGL bridge - LVGL renders RGB565 strips (LV_DISPLAY_RENDER_MODE_PARTIAL),
+// thresholded to 1bpp and rotated into epd_buf here; the panel refresh
+// happens once per frame, on its last strip.
 // -----------------------------------------------------------------------
 
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
-    uint16_t *px = (uint16_t *)px_map;
+    uint32_t t0 = millis();
+    if (frame_start_ms == 0) frame_start_ms = t0;
+    const uint16_t *px = (const uint16_t *)px_map;
+    const int w = area->x2 - area->x1 + 1;
     for (int y = area->y1; y <= area->y2; y++) {
-        for (int x = area->x1; x <= area->x2; x++) {
-            // Portrait (x, y) -> panel: a quarter-turn, see EPD_PORTRAIT_FLIP.
-            bool white = *px >= 0x7FFF; // see display_epaper.cpp
-            if (EPD_PORTRAIT_FLIP) {
-                epd_set_pixel(y, PANEL_H - 1 - x, white);
+        // Portrait row y is one panel column (a quarter-turn, see
+        // EPD_PORTRAIT_FLIP): fixed byte/bit within each panel row, the
+        // panel row stepping by one per portrait x.
+        const int panelX = EPD_PORTRAIT_FLIP ? y : PANEL_W - 1 - y;
+        const uint8_t bit = 0x80 >> (panelX & 0x07);
+        uint8_t *dst;
+        int step;
+        if (EPD_PORTRAIT_FLIP) {
+            dst = epd_buf + (PANEL_H - 1 - area->x1) * (PANEL_W / 8) + (panelX >> 3);
+            step = -(PANEL_W / 8);
+        } else {
+            dst = epd_buf + area->x1 * (PANEL_W / 8) + (panelX >> 3);
+            step = PANEL_W / 8;
+        }
+        for (int i = 0; i < w; i++) {
+            if (*px++ >= 0x7FFF) { // white - see display_epaper.cpp
+                *dst |= bit;
             } else {
-                epd_set_pixel(PANEL_W - 1 - y, x, white);
+                *dst &= ~bit;
             }
-            px++;
+            dst += step;
         }
     }
-    static uint32_t flushes = 0;
-    if (flushes++ < 3) Serial.printf("display: flush %lu\n", (unsigned long)flushes);
-    if (++partials_since_full >= EPD_FULL_REFRESH_EVERY) {
+    if (!lv_display_flush_is_last(disp)) {
+        lv_display_flush_ready(disp);
+        return;
+    }
+
+    uint32_t t1 = millis();
+    bool full = ++partials_since_full >= EPD_FULL_REFRESH_EVERY;
+    if (full) {
         partials_since_full = 0;
         epd_display_base_image();
     } else {
         epd_display_partial();
     }
+    if (EPD_LOG_TIMING) {
+        // render+convert: from the frame's first strip to its last one
+        // being converted (LVGL's drawing interleaved with the conversion
+        // above); panel: SPI transfer + the refresh itself.
+        Serial.printf("display: %s frame, render+convert %lu ms, panel %lu ms\n", full ? "full" : "partial",
+                      (unsigned long)(t1 - frame_start_ms), (unsigned long)(millis() - t1));
+    }
+    frame_start_ms = 0;
     lv_display_flush_ready(disp);
 }
 
@@ -286,12 +317,13 @@ void display_init_input() {
 
     display = lv_display_create(SCREEN_W, SCREEN_H);
     lv_display_set_flush_cb(display, disp_flush_cb);
-    draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_BUF_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!draw_buf) draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_BUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!draw_buf || !epd_buf) {
-        Serial.println("display: no PSRAM for the LVGL frame buffer");
+        Serial.println("display: out of memory for the display buffers");
         return;
     }
-    lv_display_set_buffers(display, draw_buf, NULL, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_FULL);
+    lv_display_set_buffers(display, draw_buf, NULL, DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
     // No LVGL indev - see display_epaper.cpp.
 }
 
