@@ -1,3 +1,10 @@
+## [1.14.2](https://github.com/corradoignoti/annota/compare/v1.14.1...v1.14.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* battery icon clipped out of the header status bar ([65617c0](https://github.com/corradoignoti/annota/commit/65617c05fa2fd862c742855a4218c1f5cb73450f))
+
 ## [1.14.1](https://github.com/corradoignoti/annota/compare/v1.14.0...v1.14.1) (2026-10-06)
 
 
