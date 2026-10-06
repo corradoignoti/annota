@@ -937,14 +937,19 @@ void build_main_screen(bool sdPresent) {
     // Right-side status icons: battery percentage (always) plus the SD
     // card icon (only if present) - grouped in one flex-row container so
     // battery text width (1-3 digits) doesn't need manual offset math
-    // against the SD icon next to it.
+    // against the SD icon next to it. Main-axis START, not END: the
+    // container's LV_SIZE_CONTENT width is measured from its children's
+    // current positions, so END pushes a label that just grew (empty ->
+    // "<icon> 100%") to a negative x, the container never widens, and the
+    // label's left part - the battery icon - is clipped. The container
+    // itself is right-aligned below, so START still hugs the right edge.
     lv_obj_t *status_icons = lv_obj_create(header_bar);
     lv_obj_remove_style_all(status_icons);
     lv_obj_set_size(status_icons, LV_SIZE_CONTENT, HEADER_H);
     lv_obj_set_style_bg_opa(status_icons, LV_OPA_TRANSP, 0);
     lv_obj_clear_flag(status_icons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(status_icons, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(status_icons, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(status_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status_icons, 4, 0);
     lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
 
