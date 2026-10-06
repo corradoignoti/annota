@@ -1,3 +1,24 @@
+# [1.15.0](https://github.com/corradoignoti/annota/compare/v1.14.2...v1.15.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **397:** power down peripherals before deep sleep ([dde7cac](https://github.com/corradoignoti/annota/commit/dde7cac7decf8ccf885c77d882149af0f25b99de))
+* battery icon clipped out of the header status bar ([fb61d21](https://github.com/corradoignoti/annota/commit/fb61d21e4400848e0b0854b89078b978999e92dd))
+* don't block on Serial output after a firmware upload ([67cc42f](https://github.com/corradoignoti/annota/commit/67cc42f09d418bf1dab6def33dc2a8d0618d3a12))
+
+
+### Features
+
+* **397:** show AP join and web UI QR codes together ([bc400d3](https://github.com/corradoignoti/annota/commit/bc400d36375114ffdf074bad30d5b1c6cd1b96eb))
+* **397:** volume menu during playback ([b1ee4f8](https://github.com/corradoignoti/annota/commit/b1ee4f8284697f4bc8896f88361c07a3e3369cce))
+* add esp32-s3-epaper397 env for Waveshare ESP32-S3-ePaper-3.97 ([dbe393d](https://github.com/corradoignoti/annota/commit/dbe393d755c875813a936357802781d2fefd81b0))
+
+
+### Performance Improvements
+
+* **397:** faster screen changes on the 3.97 ([b6a862e](https://github.com/corradoignoti/annota/commit/b6a862e65f57b1e9afba40c2759dd32c70180f92))
+
 ## [1.14.2](https://github.com/corradoignoti/annota/compare/v1.14.1...v1.14.2) (2026-10-06)
 
 
