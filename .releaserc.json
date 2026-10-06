@@ -13,8 +13,8 @@
     }],
     ["@semantic-release/github", {
       "assets": [
-        { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "label": "firmware.bin" },
-        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "label": "firmware-epaper397.bin" }
+        { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "name": "firmware.bin", "label": "firmware.bin" },
+        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "name": "firmware-epaper397.bin", "label": "firmware-epaper397.bin" }
       ]
     }]
   ]
