@@ -16,11 +16,9 @@
 
 #include <SD_MMC.h>
 
+#include "board.h" // SDMMC_*_PIN, SD_BUS_WIDTH
 #include "i18n.h"
 
-#define SDMMC_CLK_PIN 39
-#define SDMMC_CMD_PIN 41
-#define SDMMC_D0_PIN  40
 #define SD_FS SD_MMC
 
 Mp3Entry mp3Files[MAX_MP3_FILES];
@@ -111,8 +109,13 @@ static size_t count_files(fs::FS &fs, const char *ext) {
 }
 
 bool sd_begin() {
+#if SD_BUS_WIDTH == 4
+    SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN, SDMMC_D1_PIN, SDMMC_D2_PIN, SDMMC_D3_PIN);
+    return SD_MMC.begin("/sdcard", /*mode1bit=*/false);
+#else
     SD_MMC.setPins(SDMMC_CLK_PIN, SDMMC_CMD_PIN, SDMMC_D0_PIN);
     return SD_MMC.begin("/sdcard", /*mode1bit=*/true);
+#endif
 }
 
 void sd_end() {

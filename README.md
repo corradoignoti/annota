@@ -1,8 +1,9 @@
 # Annota
 
-Firmware for the Waveshare ESP32-S3-ePaper-1.54: a 1.54" 200x200 mono
-e-paper panel, 2 onboard buttons, and an onboard ES8311 speaker/mic codec,
-on an ESP32-S3. It turns the board into a standalone MP3/WAV browser and
+Firmware for two Waveshare ESP32-S3 e-paper boards — the
+ESP32-S3-ePaper-1.54 (1.54" 200x200 panel, 2 buttons) and the
+ESP32-S3-ePaper-3.97 (3.97" 800x480 panel used in portrait, rotary switch + BOOT) — each
+with an onboard ES8311 speaker/mic codec. It turns the board into a standalone MP3/WAV browser and
 recorder companion: it scans an SD card's root for audio files, lists them
 on a small button-driven LVGL UI, can play them back or record a new voice
 memo from the onboard mic, and can send any of them off to an AI provider
@@ -17,15 +18,25 @@ of the espressif32 platform.
 
 ## Hardware
 
-- **Board**: Waveshare ESP32-S3-ePaper-1.54
-- **Display**: 1.54" 200x200 mono e-paper, SSD1681-class controller
-- **Input**: 2 onboard buttons (BOOT/GPIO0 "Next", PWR/GPIO18 "Select") —
-  no touch
-- **Audio**: onboard ES8311 I2C codec + NS4150B amp (speaker) and mic ADC,
-  over a shared I2S bus
-- **Storage**: microSD card slot on the board, FAT-formatted, over the
-  ESP32-S3's dedicated SDMMC peripheral (1-bit mode)
-- **Partition scheme**: Huge App (3MB app / 1MB SPIFFS, no OTA)
+One PlatformIO environment per board; pins live in `src/board.h`.
+
+| | `esp32-s3-epaper154` | `esp32-s3-epaper397` |
+|---|---|---|
+| Board | Waveshare ESP32-S3-ePaper-1.54 | Waveshare ESP32-S3-ePaper-3.97 |
+| Display | 1.54" 200x200 mono, SSD1681-class | 3.97" 800x480 mono, SSD1677-class, used in portrait (480x800) |
+| Input | BOOT/GPIO0 "Next", PWR/GPIO18 "Select" | rotary Down "Next", Up "Previous", Press "Select", BOOT "Back" |
+| Power | GPIO17 latch, battery on ADC GPIO4 | AXP2101 PMIC (battery gauge over I2C) |
+| Storage | microSD, SDMMC 1-bit | microSD, SDMMC 4-bit |
+| Flash | 8MB | 16MB |
+
+Both: no touch; onboard ES8311 I2C codec + NS4150B amp (speaker) and mic
+ADC over a shared I2S bus; Huge App partition scheme (3MB app / 1MB
+SPIFFS, no OTA).
+
+On the 3.97, Up/Down move through lists and menus, Press opens/confirms
+(long press backs out, as on the 1.54), BOOT goes back (from the file
+list: to Home). Hold Press + BOOT for 5 s to reboot; press the knob to
+wake from idle sleep.
 
 ## Features
 
@@ -61,7 +72,7 @@ Requires [PlatformIO](https://platformio.org/) (CLI or the VS Code
 extension).
 
 ```sh
-# Build
+# Build (pick the env for your board: esp32-s3-epaper154 or esp32-s3-epaper397)
 pio run -e esp32-s3-epaper154
 
 # Flash to a connected board
@@ -71,7 +82,7 @@ pio run -e esp32-s3-epaper154 -t upload
 pio device monitor
 ```
 
-`esp32-s3-epaper154` is the only environment defined. There's no test
+There's no test
 suite yet (`test/` is the stock PlatformIO placeholder).
 
 ### First run
@@ -98,10 +109,11 @@ deferred-work pumps that a nested LVGL click handler can't safely trigger
 directly (`wifi_process_pending_reconnect()` and
 `transcribe_process_pending()`), then `web_server_handle()`.
 
-### `display_epaper.cpp` / `display.h`
+### `display_epaper.cpp` / `display_epaper397.cpp` / `display.h`
 
-Bridges the SSD1681-class e-paper panel and the two onboard buttons into
-LVGL v9. `display_init_panel()` brings up the raw panel only.
+Bridges the e-paper panel into LVGL v9 — one driver file per board, each
+wrapped in its `BOARD_*` flag; buttons are polled in
+`display_buttons.cpp`. `display_init_panel()` brings up the raw panel only.
 `display_init_input()` brings up the buttons and creates the LVGL display
 (no LVGL input device — button events are polled directly, see
 `ui_epaper.cpp` below).
@@ -297,7 +309,10 @@ include/
   lv_conf.h              LVGL v9.2.0-format configuration
 src/
   main.cpp                setup()/loop(), wires every module together
-  display_epaper.cpp/.h   e-paper panel + button driver → LVGL bridge
+  board.h                 per-board pins and capabilities (BOARD_* flags)
+  display_epaper.cpp/.h   1.54 e-paper panel driver → LVGL bridge
+  display_epaper397.cpp   3.97 e-paper panel driver → LVGL bridge
+  display_buttons.cpp     button polling (both boards)
   storage.cpp/.h          SD card catalog scan
   ui_epaper.cpp            LVGL screens: file list, dialogs, button nav
   speaker.cpp/.h           ES8311 codec: onboard playback + mic recording
@@ -308,5 +323,5 @@ src/
   transcribe_gemini.cpp   Google Gemini provider
   web_server.cpp/.h       HTTP file manager + settings page
 test/                     stock PlatformIO placeholder, unused
-platformio.ini            build environment, dependencies, build flags
+platformio.ini            build environments (one per board), dependencies, build flags
 ```

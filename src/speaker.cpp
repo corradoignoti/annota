@@ -8,10 +8,13 @@
 #include <AudioGeneratorMP3.h>
 #include <AudioGeneratorWAV.h>
 #include <AudioOutput.h>
+#include <Preferences.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
 
+#include "board.h"
 #include "es8311.h"
 #include "i18n.h"
 #include "storage.h"
@@ -49,18 +52,27 @@
 
 namespace {
 
-constexpr gpio_num_t I2S_MCLK_PIN = GPIO_NUM_14;
-constexpr gpio_num_t I2S_BCLK_PIN = GPIO_NUM_15;
-constexpr gpio_num_t I2S_WS_PIN = GPIO_NUM_38;
-constexpr gpio_num_t I2S_DOUT_PIN = GPIO_NUM_45;
-constexpr gpio_num_t I2S_DIN_PIN = GPIO_NUM_16; // mic ADC data in (I2S_ASDOUT)
-constexpr int PA_EN_PIN = 42;
-constexpr int PA_CTRL_PIN = 46;
-constexpr int I2C_SDA_PIN = 47;
-constexpr int I2C_SCL_PIN = 48;
+// The pin map above is the 1.54's; board.h has each board's values
+// (I2S_*_GPIO, AUDIO_RAIL_PIN, PA_CTRL_PIN, I2C_SDA_PIN/I2C_SCL_PIN). The
+// 3.97 has no switchable analog rail (AUDIO_RAIL_PIN -1).
+constexpr gpio_num_t I2S_MCLK_PIN = (gpio_num_t)I2S_MCLK_GPIO;
+constexpr gpio_num_t I2S_BCLK_PIN = (gpio_num_t)I2S_BCLK_GPIO;
+constexpr gpio_num_t I2S_WS_PIN = (gpio_num_t)I2S_WS_GPIO;
+constexpr gpio_num_t I2S_DOUT_PIN = (gpio_num_t)I2S_DOUT_GPIO;
+constexpr gpio_num_t I2S_DIN_PIN = (gpio_num_t)I2S_DIN_GPIO; // mic ADC data in (I2S_ASDOUT)
 
 constexpr uint32_t DEFAULT_SAMPLE_RATE = 44100;
 constexpr int DEFAULT_VOLUME = 85;
+
+// Software gain (AudioOutput::SetGain(), applied by Amplify() to every
+// decoded MP3/WAV sample in Es8311Output::ConsumeSample()) per
+// VolumeLevel, on top of the codec's fixed DEFAULT_VOLUME - takes effect
+// on the very next sample, mid-track. High = 1.0, the unscaled output this
+// firmware always had; Medium/Low = -6/-12 dB.
+constexpr float VOLUME_GAINS[] = {0.25f, 0.5f, 1.0f};
+static_assert(sizeof(VOLUME_GAINS) / sizeof(VOLUME_GAINS[0]) == (size_t)VolumeLevel::kCount,
+              "speaker: one gain per VolumeLevel");
+constexpr const char *VOLUME_NVS_KEY = "vol";
 
 // Recording is voice-memo/transcription-oriented (not music), so mono at a
 // speech-friendly rate, written straight to uncompressed 16-bit PCM WAV
@@ -377,7 +389,13 @@ void cleanup() {
 bool speaker_begin() {
     if (hwReady) return true;
 
-    pinMode(PA_EN_PIN, OUTPUT);
+#if AUDIO_RAIL_PIN >= 0
+    pinMode(AUDIO_RAIL_PIN, OUTPUT);
+#else
+    // Latched LOW through deep sleep by speaker_prepare_deep_sleep(); the
+    // latch survives the wake-up reset and would swallow the writes below.
+    gpio_hold_dis((gpio_num_t)PA_CTRL_PIN);
+#endif
     pinMode(PA_CTRL_PIN, OUTPUT);
     // Active-LOW, not active-high like every other enable pin here - per
     // Waveshare's own ESP-IDF example (board_power_bsp.cpp's
@@ -389,8 +407,10 @@ bool speaker_begin() {
     // confusing to track down: every codec register readback matched a
     // known-good driver exactly, yet no sound, because the rail those
     // registers actually control was never powered.
-    digitalWrite(PA_EN_PIN, LOW); // power the codec+amp analog rail
+#if AUDIO_RAIL_PIN >= 0
+    digitalWrite(AUDIO_RAIL_PIN, LOW); // power the codec+amp analog rail
     delay(10); // let the rail settle before talking I2C to the codec
+#endif
 
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
     Wire.setClock(400000);
@@ -401,15 +421,19 @@ bool speaker_begin() {
     audioLogger = &Serial;
 
     bool codecOk = es8311_init(DEFAULT_SAMPLE_RATE, DEFAULT_VOLUME);
-    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding on SDA=47/SCL=48 @0x18?)");
+    Serial.printf("speaker: es8311_init -> %s\n", codecOk ? "ok" : "FAILED (I2C error - codec not responding @0x18?)");
     if (!codecOk) {
-        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#if AUDIO_RAIL_PIN >= 0
+        digitalWrite(AUDIO_RAIL_PIN, HIGH); // rail off (active-low, see above)
+#endif
         return false;
     }
     bool i2sOk = i2s_configure(DEFAULT_SAMPLE_RATE);
     Serial.printf("speaker: i2s_configure -> %s\n", i2sOk ? "ok" : "FAILED");
     if (!i2sOk) {
-        digitalWrite(PA_EN_PIN, HIGH); // rail off (active-low, see above)
+#if AUDIO_RAIL_PIN >= 0
+        digitalWrite(AUDIO_RAIL_PIN, HIGH); // rail off (active-low, see above)
+#endif
         return false;
     }
 
@@ -423,8 +447,9 @@ bool speaker_begin() {
     // give it a real value. That's what made the raw-tone test (which
     // writes straight to I2S, bypassing Amplify() entirely) audible while
     // real MP3 playback (which routes every sample through it) stayed
-    // silent even with the PA_EN fix in place.
-    output->SetGain(1.0f);
+    // silent even with the PA_EN fix in place. The saved VolumeLevel's
+    // gain - 1.0 unless the 3.97's volume menu changed it.
+    output->SetGain(VOLUME_GAINS[(size_t)speaker_get_volume_level()]);
     Serial.println("speaker: hardware ready");
     return true;
 }
@@ -491,6 +516,23 @@ void speaker_play(const char *filename) {
     } else {
         cleanup();
     }
+}
+
+void speaker_prepare_deep_sleep() {
+    speaker_stop();
+    if (mic_is_recording()) mic_stop_recording();
+    // Once speaker_begin() has run, the codec stays powered and the amp
+    // enabled for good - fine while awake, a steady battery drain asleep.
+    if (hwReady) es8311_power_down();
+#if AUDIO_RAIL_PIN < 0
+    // No rail switch to cut the amp with on this board (the 3.97), and
+    // PA_CTRL_PIN (GPIO39) isn't an RTC pad: in deep sleep it would float
+    // and the NS4150B could sit enabled. Drive it LOW (amp off) and latch it.
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    digitalWrite(PA_CTRL_PIN, LOW);
+    gpio_hold_en((gpio_num_t)PA_CTRL_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
 }
 
 void speaker_stop() {
@@ -742,4 +784,30 @@ bool mic_is_recording() {
 
 const char *mic_last_error() {
     return micErrorMessage;
+}
+
+// kCount = not loaded from NVS yet (same lazy-load sentinel as i18n.cpp's).
+static VolumeLevel volumeLevel = VolumeLevel::kCount;
+
+VolumeLevel speaker_get_volume_level() {
+    if (volumeLevel == VolumeLevel::kCount) {
+        Preferences prefs;
+        prefs.begin("annota", true);
+        uint8_t stored = prefs.getUChar(VOLUME_NVS_KEY, (uint8_t)VolumeLevel::kHigh);
+        prefs.end();
+        volumeLevel = stored < (uint8_t)VolumeLevel::kCount ? (VolumeLevel)stored : VolumeLevel::kHigh;
+    }
+    return volumeLevel;
+}
+
+void speaker_set_volume_level(VolumeLevel level, bool persist) {
+    if (level >= VolumeLevel::kCount) return;
+    volumeLevel = level;
+    if (output) output->SetGain(VOLUME_GAINS[(size_t)level]);
+    if (persist) {
+        Preferences prefs;
+        prefs.begin("annota", false);
+        prefs.putUChar(VOLUME_NVS_KEY, (uint8_t)level);
+        prefs.end();
+    }
 }

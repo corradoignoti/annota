@@ -1,5 +1,7 @@
 #include "display.h"
 
+#ifdef BOARD_EPAPER_154
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <esp_heap_caps.h>
@@ -19,16 +21,7 @@
 // e-paper waveform LUTs from scratch isn't something to improvise.
 // -----------------------------------------------------------------------
 
-#define EPD_SCK_PIN  12
-#define EPD_MOSI_PIN 13
-#define EPD_CS_PIN   11
-#define EPD_DC_PIN   10
-#define EPD_RST_PIN  9
-#define EPD_BUSY_PIN 8
-#define EPD_PWR_PIN  6 // active-low: LOW powers the panel on
-
-#define BOOT_BUTTON_PIN 0  // "next" - active-low, has an onboard pull-up
-#define PWR_BUTTON_PIN  18 // "select" - active-low, has an onboard pull-up
+// EPD_*_PIN: board.h (via display.h). Buttons: display_buttons.cpp.
 
 static const uint8_t WF_FULL[159] = {
     0x80, 0x48, 0x40, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
@@ -325,8 +318,7 @@ void display_init_panel() {
 }
 
 void display_init_input() {
-    pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(PWR_BUTTON_PIN, INPUT_PULLUP);
+    display_buttons_init();
 
     lv_init();
     // This lvgl build (9.2.2) ignores lv_conf.h's LV_TICK_CUSTOM macro -
@@ -348,48 +340,6 @@ void display_init_input() {
 void display_suspend_touch() {} // no shared SPI peripheral to hand off - see display.h
 void display_resume_touch() {}
 
-// -----------------------------------------------------------------------
-// Button polling - see display.h's DisplayButton/display_button_poll().
-// -----------------------------------------------------------------------
+void display_prepare_deep_sleep() {} // see display.h
 
-static const uint32_t BUTTON_DEBOUNCE_MS = 30;
-static const uint32_t BUTTON_LONG_PRESS_MS = 700;
-
-struct ButtonState {
-    uint8_t pin;
-    uint32_t pressedSinceMs = 0; // 0 while not pressed
-    bool longFired = false;
-};
-static ButtonState buttonStates[2] = {{BOOT_BUTTON_PIN}, {PWR_BUTTON_PIN}};
-
-DisplayButtonEvent display_button_poll(DisplayButton b) {
-    ButtonState &s = buttonStates[(int)b];
-    bool pressed = digitalRead(s.pin) == LOW; // active-low
-    uint32_t now = millis();
-
-    if (pressed) {
-        if (s.pressedSinceMs == 0) {
-            s.pressedSinceMs = now;
-            s.longFired = false;
-        } else if (!s.longFired && (now - s.pressedSinceMs) >= BUTTON_LONG_PRESS_MS) {
-            s.longFired = true;
-            return DisplayButtonEvent::kLong;
-        }
-        return DisplayButtonEvent::kNone;
-    }
-
-    if (s.pressedSinceMs != 0) {
-        uint32_t heldMs = now - s.pressedSinceMs;
-        bool wasLong = s.longFired;
-        s.pressedSinceMs = 0;
-        s.longFired = false;
-        if (!wasLong && heldMs >= BUTTON_DEBOUNCE_MS) {
-            return DisplayButtonEvent::kShort;
-        }
-    }
-    return DisplayButtonEvent::kNone;
-}
-
-bool display_button_raw_pressed(DisplayButton b) {
-    return digitalRead(buttonStates[(int)b].pin) == LOW; // active-low
-}
+#endif // BOARD_EPAPER_154

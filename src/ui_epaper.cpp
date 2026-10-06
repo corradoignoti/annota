@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <cstdio>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <lvgl.h>
 #include <qrcode.h>  // ricmoo/QRCode - kWifiJoined/kWifiApActive's scannable QR codes
 
@@ -67,11 +68,79 @@ enum class Screen {
     kUsbDrive,
     kUsbDriveError,
     kUsbDriveRestarting,
+    kVolumeMenu,
 };
 
+// -----------------------------------------------------------------------
+// Per-board layout. Everything below that sizes or places something reads
+// these instead of a literal, so the same screens scale from the 1.54's
+// 200x200 panel to the 3.97's 480x800 portrait one (board.h's BOARD_EPAPER_*). The
+// 1.54 column holds this file's original values, unchanged. Font roles:
+// FONT_HINT (hint bar, QR captions), FONT_SMALL (status bar, subtitles,
+// secondary lines), FONT_BODY (rows, titles, messages), FONT_ICON (an
+// info card's big icon).
+// -----------------------------------------------------------------------
+#if BOARD_EPAPER_397
+static const int16_t HEADER_H = 36;
+static const int16_t ROW_H = 40;
+static const int16_t HINT_H = 48; // fits add_hint()'s two wrapped lines
+static const lv_font_t *const FONT_HINT = &lv_font_it_16;
+static const lv_font_t *const FONT_SMALL = &lv_font_it_20;
+static const lv_font_t *const FONT_BODY = &lv_font_it_24;
+static const lv_font_t *const FONT_ICON = &lv_font_it_48;
+static const int16_t PAD_X = 12;          // label inset inside a row/header/panel
+static const int16_t LIST_X = 8;          // full-width rows' left/right margin
+static const int16_t ROW_RADIUS = 6;
+static const int16_t ROW_TITLE_DY = 3;    // two-slot row: filename line's top offset
+static const int16_t ROW_INDENT = 46;     // two-slot row: subtitle indent, past icon + "  "
+static const int16_t ROW_RULE_DY = 14;    // two-slot row: placeholder rule, below ROW_H
+static const int16_t CARD_W = SCREEN_W - 40; // info/progress card width
+static const int16_t CARD_PAD = 20;
+static const int16_t CARD_BORDER = 3;
+static const int16_t CARD_RADIUS = 12;
+static const int16_t CARD_GAP = 12;       // between a card's stacked children
+static const int16_t CARD_DY = -12;       // nudged above center, see add_info_card()
+static const int16_t BAR_H = 28;
+static const int16_t BAR_PAD = 5;
+static const int16_t MENU_W = SCREEN_W - 32; // render_option_menu()'s panel width
+static const int16_t MENU_TITLE_H = 36;
+static const int16_t MENU_RULE_DY = 32;      // title underline, from the panel's top padding
+static const int16_t MENU_PAD = 12;
+static const int16_t MENU_PAD_COMPACT = 6;
+static const int16_t MENU_MARGIN_Y = 24;
+static const int16_t TEXT_PAD = 12;       // kTextView's viewport padding
+static const int16_t STATUS_ICONS_W = 140; // header room kept for battery/SD icons
+#else
 static const int16_t HEADER_H = 20;
 static const int16_t ROW_H = 20;
 static const int16_t HINT_H = 30; // fits add_hint()'s two wrapped lines
+static const lv_font_t *const FONT_HINT = &lv_font_it_10;
+static const lv_font_t *const FONT_SMALL = &lv_font_it_12;
+static const lv_font_t *const FONT_BODY = &lv_font_it_14;
+static const lv_font_t *const FONT_ICON = &lv_font_it_28;
+static const int16_t PAD_X = 6;
+static const int16_t LIST_X = 4;
+static const int16_t ROW_RADIUS = 4;
+static const int16_t ROW_TITLE_DY = 1;
+static const int16_t ROW_INDENT = 26;
+static const int16_t ROW_RULE_DY = 7;
+static const int16_t CARD_W = SCREEN_W - 24;
+static const int16_t CARD_PAD = 10;
+static const int16_t CARD_BORDER = 2;
+static const int16_t CARD_RADIUS = 8;
+static const int16_t CARD_GAP = 6;
+static const int16_t CARD_DY = -8;
+static const int16_t BAR_H = 14;
+static const int16_t BAR_PAD = 3;
+static const int16_t MENU_W = SCREEN_W - 16;
+static const int16_t MENU_TITLE_H = 20;
+static const int16_t MENU_RULE_DY = 14;
+static const int16_t MENU_PAD = 6;
+static const int16_t MENU_PAD_COMPACT = 3;
+static const int16_t MENU_MARGIN_Y = 12;
+static const int16_t TEXT_PAD = 4;
+static const int16_t STATUS_ICONS_W = 60;
+#endif
 // kList reserves its own top row (below) for the Notes header,
 // on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
@@ -106,6 +175,14 @@ static char active_filename[64];
 static size_t active_file_index = 0;
 static int menu_index = 0;
 
+#if BOARD_EPAPER_397
+// kPlaying -> kVolumeMenu: holding rotary Up or Down this long while a
+// track plays opens the volume menu. Timed off the raw pin state, since
+// display_button_poll()'s own long press (700 ms) fires far too early.
+static const uint32_t VOLUME_HOLD_MS = 3000;
+static uint32_t volume_hold_since = 0; // 0 = neither Up nor Down held
+#endif
+
 // kActionMenu / kDeleteConfirm - an audio file's sibling "<basename>.txt"
 // transcript, looked up when the action menu opens. If it exists, the menu
 // offers View transcription in place of Transcribe, and Delete's confirm
@@ -128,7 +205,7 @@ static bool details_compact = false;
 // clamped in render_body() to the label's actual laid-out height.
 static char text_view_buffer[8192];
 static int32_t text_view_scroll_px = 0;
-static const int16_t TEXT_VIEW_SCROLL_STEP = 60; // ~3-4 lines at 14pt
+static const int16_t TEXT_VIEW_SCROLL_STEP = 3 * ROW_H; // ~3-4 lines of FONT_BODY
 
 // kWifiSetup
 static char wifi_setup_ssid[64];
@@ -147,20 +224,34 @@ static char wifi_joined_url[64];
 static const char *WIFI_AP_QR_DATA = "WIFI:T:nopass;S:Annota-AP;;";
 
 // QR code rendering, shared by kWifiJoined (its http:// URL) and
-// kWifiApActive (the AP's join string above) - only one of the two is ever
-// on screen at once, so they share one canvas backing buffer too. Version
+// kWifiApActive (the AP's join string above, plus - 3.97 only - a second
+// QR with the AP's http:// URL below it) - only one of the two screens is
+// ever on screen at once, so they share the canvas backing buffers too. Version
 // 4 (33x33 modules) at ECC_LOW gives 78 bytes of byte-mode capacity -
-// comfortably more than either payload needs; add_qr_screen() degrades to text-only (see its comment) if a payload
+// comfortably more than either payload needs; add_qr() degrades to text-only (see its comment) if a payload
 // ever doesn't fit. Scaled up 3px/module (99x99 canvas) onto an RGB565
 // lv_canvas, drawn pixel-exact (no lv_image zoom/interpolation) since this
 // display thresholds everything to 1bpp on flush and blurred edges would
 // threshold unpredictably.
 static const uint8_t WIFI_QR_VERSION = 4;
+#if BOARD_EPAPER_397
+static const uint8_t WIFI_QR_SCALE = 7;
+#else
 static const uint8_t WIFI_QR_SCALE = 3;
+#endif
 static const uint8_t WIFI_QR_MODULES = WIFI_QR_VERSION * 4 + 17;
 static const uint16_t WIFI_QR_BUFFER_SIZE = (WIFI_QR_MODULES * WIFI_QR_MODULES + 7) / 8;
 static const int16_t WIFI_QR_PX = WIFI_QR_MODULES * WIFI_QR_SCALE;
-static lv_color_t wifi_qr_canvas_buf[WIFI_QR_PX * WIFI_QR_PX];
+#if BOARD_EPAPER_397
+// One buffer per QR on screen at once (kWifiApActive shows two). 231x231
+// RGB565 is ~104 KB each - too much for internal DRAM (see
+// display_epaper.cpp's draw_buf comment), so allocated in PSRAM on first use.
+static const uint8_t WIFI_QR_SLOTS = 2;
+static lv_color_t *wifi_qr_canvas_buf[WIFI_QR_SLOTS] = {};
+#else
+static const uint8_t WIFI_QR_SLOTS = 1;
+static lv_color_t wifi_qr_canvas_buf[WIFI_QR_SLOTS][WIFI_QR_PX * WIFI_QR_PX];
+#endif
 
 // kTranscribeProgress / kTranscribeResult
 static char transcribe_filename[64];
@@ -171,6 +262,13 @@ static bool transcribe_ok = false;
 static char transcribe_message[192];
 
 static void render_body();
+
+// tr() for text naming buttons: on knob boards (BOARD_HAS_KNOB - the 3.97's
+// rotary Up/Down/Select + BOOT) the <ID>_K variant of the string, else the
+// plain one (see i18n_strings.def).
+static const char *knob_tr(Str plain, Str knob) {
+    return tr(BOARD_HAS_KNOB ? knob : plain);
+}
 
 // Set by ui_request_rerender(), consumed by ui_process_input().
 static bool rerender_requested = false;
@@ -288,7 +386,7 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, w, card_h);
     lv_obj_set_pos(card, x, y);
-    lv_obj_set_style_radius(card, 4, 0);
+    lv_obj_set_style_radius(card, ROW_RADIUS, 0);
     lv_obj_set_style_border_width(card, 1, 0);
     lv_obj_set_style_border_color(card, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
@@ -298,23 +396,23 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_obj_t *label = lv_label_create(card);
     lv_label_set_text_fmt(label, "%s  %s", icon, text);
     lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(label, w - 12);
-    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+    lv_obj_set_width(label, w - 2 * PAD_X);
+    lv_obj_set_style_text_font(label, FONT_BODY, 0);
     lv_obj_set_style_text_color(label, selected ? lv_color_white() : lv_color_black(), 0);
     if (!subtitle) {
-        lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, 0);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, PAD_X, 0);
         return;
     }
-    lv_obj_align(label, LV_ALIGN_TOP_LEFT, 6, 1);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, PAD_X, ROW_TITLE_DY);
 
     // Indented to line up under `text`, past the icon and its two spaces.
-    const int16_t indent = 26;
+    const int16_t indent = ROW_INDENT;
     if (!subtitle[0]) {
         // No title yet (untranscribed audio): a thin rule holds its place.
         lv_obj_t *rule = lv_obj_create(card);
         lv_obj_remove_style_all(rule);
-        lv_obj_set_size(rule, (w - indent - 6) * 2 / 3, 1);
-        lv_obj_align(rule, LV_ALIGN_TOP_LEFT, indent, ROW_H + 7);
+        lv_obj_set_size(rule, (w - indent - PAD_X) * 2 / 3, 1);
+        lv_obj_align(rule, LV_ALIGN_TOP_LEFT, indent, ROW_H + ROW_RULE_DY);
         lv_obj_set_style_bg_color(rule, selected ? lv_color_white() : lv_color_black(), 0);
         lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
         return;
@@ -322,8 +420,8 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
     lv_obj_t *sub = lv_label_create(card);
     lv_label_set_text(sub, subtitle);
     lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(sub, w - indent - 6);
-    lv_obj_set_style_text_font(sub, &lv_font_it_12, 0);
+    lv_obj_set_width(sub, w - indent - PAD_X);
+    lv_obj_set_style_text_font(sub, FONT_SMALL, 0);
     lv_obj_set_style_text_color(sub, selected ? lv_color_white() : lv_color_black(), 0);
     lv_obj_align(sub, LV_ALIGN_TOP_LEFT, indent, ROW_H);
 }
@@ -351,26 +449,26 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
 
     lv_obj_t *label = lv_label_create(hdr);
     lv_label_set_text_fmt(label, "%s  %s", icon, label_text);
-    lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(label, FONT_BODY, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
-    lv_obj_align(label, LV_ALIGN_LEFT_MID, 6, -1);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, PAD_X, -1);
 
     if (scrollable) {
         lv_obj_t *more = lv_label_create(hdr);
         lv_label_set_text(more, LV_SYMBOL_DOWN);
-        lv_obj_set_style_text_font(more, &lv_font_it_14, 0);
+        lv_obj_set_style_text_font(more, FONT_BODY, 0);
         lv_obj_set_style_text_color(more, lv_color_black(), 0);
-        lv_obj_align(more, LV_ALIGN_RIGHT_MID, -6, -1);
+        lv_obj_align(more, LV_ALIGN_RIGHT_MID, -PAD_X, -1);
     }
 }
 
-// A scannable QR code plus a wrapped caption below it, filling body - used
-// by kWifiJoined (its http:// URL) and kWifiApActive (the AP's WiFi-join
-// string) instead of
+// Scannable QR codes, each with a wrapped caption below it, in a column
+// filling body - used by kWifiJoined (its http:// URL) and kWifiApActive
+// (the AP's WiFi-join string, plus its URL on the 3.97) instead of
 // add_info_card()'s icon+text layout, since a QR code needs far more of
 // body's limited space than a symbol-font glyph does. See WIFI_QR_* above
 // for the encoding/rendering choices.
-static void add_qr_screen(const char *qr_data, const char *caption) {
+static lv_obj_t *add_qr_container() {
     lv_obj_t *cont = lv_obj_create(body);
     lv_obj_remove_style_all(cont);
     lv_obj_set_size(cont, SCREEN_W, SCREEN_H - HEADER_H - HINT_H);
@@ -378,12 +476,26 @@ static void add_qr_screen(const char *qr_data, const char *caption) {
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(cont, 4, 0);
+    return cont;
+}
 
+// One QR canvas plus its wrapped caption, appended to cont's column. slot
+// picks the canvas backing buffer (< WIFI_QR_SLOTS) - each QR on screen at
+// once needs its own, since LVGL only reads them at flush time.
+static void add_qr(lv_obj_t *cont, uint8_t slot, const char *qr_data, const char *caption) {
     QRCode qr;
     uint8_t qr_bytes[WIFI_QR_BUFFER_SIZE];
+#if BOARD_EPAPER_397
+    if (!wifi_qr_canvas_buf[slot]) {
+        wifi_qr_canvas_buf[slot] = (lv_color_t *)heap_caps_malloc(WIFI_QR_PX * WIFI_QR_PX * sizeof(lv_color_t),
+                                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (wifi_qr_canvas_buf[slot] && qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
+#else
     if (qrcode_initText(&qr, qr_bytes, WIFI_QR_VERSION, ECC_LOW, qr_data) == 0) {
+#endif
         lv_obj_t *canvas = lv_canvas_create(cont);
-        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf, WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
+        lv_canvas_set_buffer(canvas, wifi_qr_canvas_buf[slot], WIFI_QR_PX, WIFI_QR_PX, LV_COLOR_FORMAT_RGB565);
         lv_canvas_fill_bg(canvas, lv_color_white(), LV_OPA_COVER);
         for (uint8_t my = 0; my < qr.size; my++) {
             for (uint8_t mx = 0; mx < qr.size; mx++) {
@@ -403,16 +515,20 @@ static void add_qr_screen(const char *qr_data, const char *caption) {
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(msg, SCREEN_W - 16);
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(msg, &lv_font_it_10, 0);
+    lv_obj_set_style_text_font(msg, FONT_HINT, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+}
+
+static void add_qr_screen(const char *qr_data, const char *caption) {
+    add_qr(add_qr_container(), 0, qr_data, caption);
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
 // above a wrapped message - the info/dialog counterpart to add_row()'s
 // list cards, used by every message-only screen below.
-static void add_info_card(const char *icon, const char *text, const lv_font_t *font = &lv_font_it_14) {
-    const int16_t pad = 10;
-    const int16_t card_w = SCREEN_W - 24;
+static void add_info_card(const char *icon, const char *text, const lv_font_t *font = FONT_BODY) {
+    const int16_t pad = CARD_PAD;
+    const int16_t card_w = CARD_W;
 
     lv_obj_t *card = lv_obj_create(body);
     lv_obj_remove_style_all(card);
@@ -420,11 +536,11 @@ static void add_info_card(const char *icon, const char *text, const lv_font_t *f
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_width(card, CARD_BORDER, 0);
     lv_obj_set_style_border_color(card, lv_color_black(), 0);
-    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_radius(card, CARD_RADIUS, 0);
     lv_obj_set_style_pad_all(card, pad, 0);
-    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_set_style_pad_row(card, CARD_GAP, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -432,7 +548,7 @@ static void add_info_card(const char *icon, const char *text, const lv_font_t *f
     if (icon && icon[0]) {
         lv_obj_t *icon_label = lv_label_create(card);
         lv_label_set_text(icon_label, icon);
-        lv_obj_set_style_text_font(icon_label, &lv_font_it_28, 0);
+        lv_obj_set_style_text_font(icon_label, FONT_ICON, 0);
         lv_obj_set_style_text_color(icon_label, lv_color_black(), 0);
     }
 
@@ -444,7 +560,7 @@ static void add_info_card(const char *icon, const char *text, const lv_font_t *f
     lv_obj_set_style_text_font(msg, font, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, -8); // slightly above center, to balance against the hint bar below
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, CARD_DY); // slightly above center, to balance against the hint bar below
 }
 
 // kTranscribeProgress's card: same frame as add_info_card(), holding the
@@ -453,8 +569,8 @@ static void add_info_card(const char *icon, const char *text, const lv_font_t *f
 // black-on-white with no radius/animation so the 1bpp threshold on flush
 // stays crisp.
 static void add_transcribe_progress_card() {
-    const int16_t pad = 10;
-    const int16_t card_w = SCREEN_W - 24;
+    const int16_t pad = CARD_PAD;
+    const int16_t card_w = CARD_W;
     const int16_t inner_w = card_w - pad * 2;
 
     lv_obj_t *card = lv_obj_create(body);
@@ -463,11 +579,11 @@ static void add_transcribe_progress_card() {
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(card, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(card, 2, 0);
+    lv_obj_set_style_border_width(card, CARD_BORDER, 0);
     lv_obj_set_style_border_color(card, lv_color_black(), 0);
-    lv_obj_set_style_radius(card, 8, 0);
+    lv_obj_set_style_radius(card, CARD_RADIUS, 0);
     lv_obj_set_style_pad_all(card, pad, 0);
-    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_set_style_pad_row(card, CARD_GAP, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -479,7 +595,7 @@ static void add_transcribe_progress_card() {
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_width(name, inner_w);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(name, &lv_font_it_12, 0);
+    lv_obj_set_style_text_font(name, FONT_SMALL, 0);
     lv_obj_set_style_text_color(name, lv_color_black(), 0);
 
     lv_obj_t *phase = lv_label_create(card);
@@ -487,18 +603,18 @@ static void add_transcribe_progress_card() {
     lv_label_set_long_mode(phase, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(phase, inner_w);
     lv_obj_set_style_text_align(phase, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(phase, &lv_font_it_14, 0);
+    lv_obj_set_style_text_font(phase, FONT_BODY, 0);
     lv_obj_set_style_text_color(phase, lv_color_black(), 0);
 
     if (transcribe_percent >= 0) {
         lv_obj_t *bar = lv_bar_create(card);
         lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, inner_w, 14);
+        lv_obj_set_size(bar, inner_w, BAR_H);
         lv_obj_set_style_bg_color(bar, lv_color_white(), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(bar, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_width(bar, CARD_BORDER, LV_PART_MAIN);
         lv_obj_set_style_border_color(bar, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_pad_all(bar, 3, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(bar, BAR_PAD, LV_PART_MAIN);
         lv_obj_set_style_bg_color(bar, lv_color_black(), LV_PART_INDICATOR);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, LV_PART_INDICATOR);
         lv_bar_set_range(bar, 0, 100);
@@ -511,14 +627,14 @@ static void add_transcribe_progress_card() {
         lv_label_set_long_mode(detail, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(detail, inner_w);
         lv_obj_set_style_text_align(detail, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(detail, &lv_font_it_12, 0);
+        lv_obj_set_style_text_font(detail, FONT_SMALL, 0);
         lv_obj_set_style_text_color(detail, lv_color_black(), 0);
     }
 
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, -8);
+    lv_obj_align(card, LV_ALIGN_CENTER, 0, CARD_DY);
 }
 
-// Wraps onto up to two lines instead of running off the 200px panel edge -
+// Wraps onto up to two lines instead of running off the panel edge -
 // callers keep hint text short enough to fit HINT_H at that wrap width.
 // The top border marks it off as a distinct status strip rather than
 // trailing text.
@@ -536,7 +652,7 @@ static void add_hint(const char *text) {
     lv_label_set_text(hint, text);
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, SCREEN_W - 8);
-    lv_obj_set_style_text_font(hint, &lv_font_it_10, 0);
+    lv_obj_set_style_text_font(hint, FONT_HINT, 0);
     lv_obj_set_style_text_color(hint, lv_color_black(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 2);
@@ -548,21 +664,21 @@ static void add_hint(const char *text) {
 // between the title and the options (kDeleteConfirm's transcript warning).
 static void render_option_menu(const char *title, const char *const *icons, const char *const *options, int count,
                                const char *note = nullptr) {
-    const int16_t title_h = 20;
-    const int16_t panel_w = SCREEN_W - 16;
+    const int16_t title_h = MENU_TITLE_H;
+    const int16_t panel_w = MENU_W;
     int16_t note_h = 0;
     if (note) {
         lv_point_t size;
-        lv_text_get_size(&size, note, &lv_font_it_12, 0, 0, panel_w - 12, LV_TEXT_FLAG_NONE);
+        lv_text_get_size(&size, note, FONT_SMALL, 0, 0, panel_w - 2 * PAD_X, LV_TEXT_FLAG_NONE);
         note_h = (int16_t)size.y + 4;
     }
     // Tighten the padding and drop the top margin when the usual layout
     // would run into the hint bar (the audio action menu's 6 rows).
     const int16_t avail_h = SCREEN_H - HEADER_H - HINT_H;
-    const bool compact = 12 + 6 * 2 + title_h + note_h + count * ROW_H > avail_h;
-    const int16_t pad = compact ? 3 : 6;
+    const bool compact = MENU_MARGIN_Y + MENU_PAD * 2 + title_h + note_h + count * ROW_H > avail_h;
+    const int16_t pad = compact ? MENU_PAD_COMPACT : MENU_PAD;
     const int16_t panel_h = pad * 2 + title_h + note_h + count * ROW_H;
-    const int16_t panel_y = compact ? 0 : 12;
+    const int16_t panel_y = compact ? 0 : MENU_MARGIN_Y;
 
     lv_obj_t *panel = lv_obj_create(body);
     lv_obj_remove_style_all(panel);
@@ -570,24 +686,24 @@ static void render_option_menu(const char *title, const char *const *icons, cons
     lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, panel_y);
     lv_obj_set_style_bg_color(panel, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_border_width(panel, CARD_BORDER, 0);
     lv_obj_set_style_border_color(panel, lv_color_black(), 0);
-    lv_obj_set_style_radius(panel, 8, 0);
+    lv_obj_set_style_radius(panel, CARD_RADIUS, 0);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title_label = lv_label_create(panel);
     lv_label_set_text(title_label, title);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title_label, panel_w - 12);
-    lv_obj_set_style_text_font(title_label, &lv_font_it_14, 0);
+    lv_obj_set_width(title_label, panel_w - 2 * PAD_X);
+    lv_obj_set_style_text_font(title_label, FONT_BODY, 0);
     lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(title_label, lv_color_black(), 0);
-    lv_obj_set_pos(title_label, 6, pad);
+    lv_obj_set_pos(title_label, PAD_X, pad);
 
     lv_obj_t *rule = lv_obj_create(panel);
     lv_obj_remove_style_all(rule);
-    lv_obj_set_size(rule, panel_w - 12, 1);
-    lv_obj_set_pos(rule, 6, pad + title_h - 6);
+    lv_obj_set_size(rule, panel_w - 2 * PAD_X, 1);
+    lv_obj_set_pos(rule, PAD_X, pad + MENU_RULE_DY);
     lv_obj_set_style_bg_color(rule, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(rule, LV_OPA_COVER, 0);
 
@@ -596,19 +712,19 @@ static void render_option_menu(const char *title, const char *const *icons, cons
         lv_obj_t *note_label = lv_label_create(panel);
         lv_label_set_text(note_label, note);
         lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(note_label, panel_w - 12);
-        lv_obj_set_style_text_font(note_label, &lv_font_it_12, 0);
+        lv_obj_set_width(note_label, panel_w - 2 * PAD_X);
+        lv_obj_set_style_text_font(note_label, FONT_SMALL, 0);
         lv_obj_set_style_text_align(note_label, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_color(note_label, lv_color_black(), 0);
-        lv_obj_set_pos(note_label, 6, y);
+        lv_obj_set_pos(note_label, PAD_X, y);
         y += note_h;
     }
     for (int i = 0; i < count; i++) {
-        add_row(panel, 6, y, panel_w - 12, icons[i], options[i], i == menu_index);
+        add_row(panel, PAD_X, y, panel_w - 2 * PAD_X, icons[i], options[i], i == menu_index);
         y += ROW_H;
     }
 
-    add_hint(tr(Str::HINT_MENU));
+    add_hint(knob_tr(Str::HINT_MENU, Str::HINT_MENU_K));
 }
 
 static void render_body() {
@@ -637,11 +753,11 @@ static void render_body() {
                 if (used_slots + slots > (size_t)VISIBLE_ROWS) break;
                 const char *label = i == 0 ? tr(Str::LIST_RECORD_NEW) : mp3Files[i - 1].filename;
                 const char *icon = i == 0 ? LV_SYMBOL_PLUS : LV_SYMBOL_AUDIO;
-                add_row(body, 4, y, SCREEN_W - 8, icon, label, i == selected_index, list_item_title(i));
+                add_row(body, LIST_X, y, SCREEN_W - 2 * LIST_X, icon, label, i == selected_index, list_item_title(i));
                 y += slots * ROW_H;
                 used_slots += slots;
             }
-            add_hint(tr(Str::HINT_LIST));
+            add_hint(knob_tr(Str::HINT_LIST, Str::HINT_LIST_K));
             break;
         }
 
@@ -663,7 +779,7 @@ static void render_body() {
             render_list_header(LV_SYMBOL_HOME, tr(Str::HOME_TITLE), false);
             add_info_card(icons[menu_index], labels[menu_index]);
             char hint[96];
-            snprintf(hint, sizeof(hint), tr(Str::HINT_HOME), (int)menu_index + 1);
+            snprintf(hint, sizeof(hint), knob_tr(Str::HINT_HOME, Str::HINT_HOME_K), (int)menu_index + 1);
             add_hint(hint);
             break;
         }
@@ -715,14 +831,14 @@ static void render_body() {
             lv_obj_remove_style_all(viewport);
             lv_obj_set_size(viewport, SCREEN_W, viewport_h);
             lv_obj_set_pos(viewport, 0, 0);
-            lv_obj_set_style_pad_all(viewport, 4, 0);
+            lv_obj_set_style_pad_all(viewport, TEXT_PAD, 0);
             lv_obj_clear_flag(viewport, LV_OBJ_FLAG_SCROLLABLE);
 
             lv_obj_t *label = lv_label_create(viewport);
             lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-            lv_obj_set_width(label, SCREEN_W - 8);
+            lv_obj_set_width(label, SCREEN_W - 2 * TEXT_PAD);
             lv_label_set_text(label, text_view_buffer);
-            lv_obj_set_style_text_font(label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_font(label, FONT_BODY, 0);
             lv_obj_set_style_text_color(label, lv_color_black(), 0);
 
             // Clip via a fixed-height parent (LVGL's default child-clip
@@ -731,18 +847,18 @@ static void render_body() {
             // file uses lv_obj_scroll*(). Height is only known after
             // layout, so it's read back to clamp before the final position.
             lv_obj_update_layout(label);
-            int32_t max_scroll = lv_obj_get_height(label) - (viewport_h - 8);
+            int32_t max_scroll = lv_obj_get_height(label) - (viewport_h - 2 * TEXT_PAD);
             if (max_scroll < 0) max_scroll = 0;
             if (text_view_scroll_px > max_scroll) text_view_scroll_px = max_scroll;
             lv_obj_set_y(label, -text_view_scroll_px);
 
-            add_hint(tr(Str::HINT_TEXT_VIEW));
+            add_hint(knob_tr(Str::HINT_TEXT_VIEW, Str::HINT_TEXT_VIEW_K));
             break;
         }
 
         case Screen::kDetails:
             if (details_compact) {
-                add_info_card(nullptr, details_text, &lv_font_it_12);
+                add_info_card(nullptr, details_text, FONT_SMALL);
             } else {
                 add_info_card(LV_SYMBOL_LIST, details_text);
             }
@@ -782,25 +898,38 @@ static void render_body() {
 
             lv_obj_t *hdr_label = lv_label_create(hdr);
             lv_label_set_text_fmt(hdr_label, LV_SYMBOL_WIFI "  %s", tr(Str::WIFI_TITLE));
-            lv_obj_set_style_text_font(hdr_label, &lv_font_it_14, 0);
+            lv_obj_set_style_text_font(hdr_label, FONT_BODY, 0);
             lv_obj_set_style_text_color(hdr_label, lv_color_black(), 0);
-            lv_obj_align(hdr_label, LV_ALIGN_LEFT_MID, 6, -1);
+            lv_obj_align(hdr_label, LV_ALIGN_LEFT_MID, PAD_X, -1);
 
             static const char *icons[] = {LV_SYMBOL_WIFI, LV_SYMBOL_UPLOAD};
             const char *options[] = {tr(Str::WIFI_JOIN_AP), tr(Str::WIFI_CREATE_AP)};
             int16_t y = ROW_H;
             for (int i = 0; i < 2; i++) {
-                add_row(body, 4, y, SCREEN_W - 8, icons[i], options[i], i == menu_index);
+                add_row(body, LIST_X, y, SCREEN_W - 2 * LIST_X, icons[i], options[i], i == menu_index);
                 y += ROW_H;
             }
-            add_hint(tr(Str::HINT_MENU));
+            add_hint(knob_tr(Str::HINT_MENU, Str::HINT_MENU_K));
             break;
         }
 
         case Screen::kWifiApActive: {
+#if BOARD_EPAPER_397
+            // Room for both steps on the tall panel: join the AP, then
+            // open the web UI - so the second scan needs no typing.
+            char url[32];
+            snprintf(url, sizeof(url), "http://%s", wifi_ap_ip);
+            char open_msg[128];
+            snprintf(open_msg, sizeof(open_msg), tr(Str::WIFI_AP_QR_OPEN), url);
+            lv_obj_t *cont = add_qr_container();
+            lv_obj_set_style_pad_row(cont, CARD_GAP, 0);
+            add_qr(cont, 0, WIFI_AP_QR_DATA, tr(Str::WIFI_AP_QR_JOIN));
+            add_qr(cont, 1, url, open_msg);
+#else
             char msg[160];
             snprintf(msg, sizeof(msg), tr(Str::WIFI_AP_MSG), wifi_ap_ip);
             add_qr_screen(WIFI_AP_QR_DATA, msg);
+#endif
             add_hint(tr(Str::HINT_STOP_AP));
             break;
         }
@@ -838,10 +967,11 @@ static void render_body() {
             for (size_t i = top_index; i < (size_t)count && (i - top_index) < (size_t)VISIBLE_ROWS; i++) {
                 char ssid[WIFI_SSID_MAX_LEN + 1];
                 wifi_scan_get_in_range_ssid(i, ssid, sizeof(ssid));
-                add_row(body, 4, y, SCREEN_W - 8, LV_SYMBOL_WIFI, ssid, i == selected_index);
+                add_row(body, LIST_X, y, SCREEN_W - 2 * LIST_X, LV_SYMBOL_WIFI, ssid, i == selected_index);
                 y += ROW_H;
             }
-            add_hint(tr(transcribe_is_waiting_for_wifi() ? Str::HINT_JOIN_CANCEL : Str::HINT_JOIN_BACK));
+            add_hint(transcribe_is_waiting_for_wifi() ? knob_tr(Str::HINT_JOIN_CANCEL, Str::HINT_JOIN_CANCEL_K)
+                                                     : knob_tr(Str::HINT_JOIN_BACK, Str::HINT_JOIN_BACK_K));
             break;
         }
 
@@ -849,7 +979,14 @@ static void render_body() {
             char msg[128];
             snprintf(msg, sizeof(msg), tr(Str::PLAYING), active_filename);
             add_info_card(LV_SYMBOL_PLAY, msg);
-            add_hint(tr(Str::HINT_SELECT_STOP));
+            add_hint(knob_tr(Str::HINT_SELECT_STOP, Str::HINT_SELECT_STOP_K));
+            break;
+        }
+
+        case Screen::kVolumeMenu: {
+            static const char *icons[] = {LV_SYMBOL_VOLUME_MID, LV_SYMBOL_VOLUME_MID, LV_SYMBOL_VOLUME_MAX};
+            const char *options[] = {tr(Str::VOLUME_LOW), tr(Str::VOLUME_MEDIUM), tr(Str::VOLUME_HIGH)};
+            render_option_menu(tr(Str::VOLUME_TITLE), icons, options, 3);
             break;
         }
 
@@ -873,7 +1010,7 @@ static void render_body() {
         case Screen::kUsbDrive:
             render_list_header(LV_SYMBOL_USB, tr(Str::USB_DRIVE), false);
             add_info_card(LV_SYMBOL_USB, tr(Str::USB_CONNECTED));
-            add_hint(tr(Str::HINT_USB));
+            add_hint(knob_tr(Str::HINT_USB, Str::HINT_USB_K));
             break;
 
         case Screen::kUsbDriveError:
@@ -889,7 +1026,7 @@ static void render_body() {
             char msg[192];
             snprintf(msg, sizeof(msg), tr(Str::WIFI_SETUP_MSG), wifi_setup_ssid);
             add_info_card(LV_SYMBOL_WIFI, msg);
-            add_hint(tr(Str::HINT_WORK_OFFLINE));
+            add_hint(knob_tr(Str::HINT_WORK_OFFLINE, Str::HINT_WORK_OFFLINE_K));
             break;
         }
 
@@ -904,7 +1041,7 @@ static void render_body() {
             break;
 
         case Screen::kSleeping:
-            add_info_card(LV_SYMBOL_POWER, tr(Str::SLEEPING));
+            add_info_card(LV_SYMBOL_POWER, knob_tr(Str::SLEEPING, Str::SLEEPING_K));
             break;
     }
 }
@@ -928,11 +1065,11 @@ void build_main_screen(bool sdPresent) {
     lv_obj_clear_flag(header_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     header_label = lv_label_create(header_bar);
-    lv_obj_set_style_text_font(header_label, &lv_font_it_12, 0);
+    lv_obj_set_style_text_font(header_label, FONT_SMALL, 0);
     lv_obj_set_style_text_color(header_label, lv_color_white(), 0);
     lv_label_set_long_mode(header_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(header_label, "");
-    lv_obj_align(header_label, LV_ALIGN_LEFT_MID, 6, 0);
+    lv_obj_align(header_label, LV_ALIGN_LEFT_MID, PAD_X, 0);
 
     // Right-side status icons: battery percentage (always) plus the SD
     // card icon (only if present) - grouped in one flex-row container so
@@ -951,10 +1088,10 @@ void build_main_screen(bool sdPresent) {
     lv_obj_set_flex_flow(status_icons, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status_icons, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status_icons, 4, 0);
-    lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -6, 0);
+    lv_obj_align(status_icons, LV_ALIGN_RIGHT_MID, -PAD_X, 0);
 
     battery_label = lv_label_create(status_icons);
-    lv_obj_set_style_text_font(battery_label, &lv_font_it_12, 0);
+    lv_obj_set_style_text_font(battery_label, FONT_SMALL, 0);
     lv_obj_set_style_text_color(battery_label, lv_color_white(), 0);
     lv_label_set_text(battery_label, ""); // filled in by ui_set_battery_percent()
     battery_last_percent = 255;           // force the next ui_set_battery_percent() call to repaint
@@ -962,11 +1099,11 @@ void build_main_screen(bool sdPresent) {
     if (sdPresent) {
         lv_obj_t *sd_icon = lv_label_create(status_icons);
         lv_label_set_text(sd_icon, LV_SYMBOL_SD_CARD);
-        lv_obj_set_style_text_font(sd_icon, &lv_font_it_12, 0);
+        lv_obj_set_style_text_font(sd_icon, FONT_SMALL, 0);
         lv_obj_set_style_text_color(sd_icon, lv_color_white(), 0);
     }
 
-    lv_obj_set_width(header_label, SCREEN_W - 60); // leaves room for status_icons
+    lv_obj_set_width(header_label, SCREEN_W - STATUS_ICONS_W); // leaves room for status_icons
 
     body = lv_obj_create(scr);
     lv_obj_remove_style_all(body);
@@ -1092,7 +1229,8 @@ void ui_show_transcribe_result(bool ok, const char *message) {
 }
 
 bool ui_is_sleep_blocked() {
-    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kTranscribeProgress ||
+    return state == Screen::kRecording || state == Screen::kPlaying || state == Screen::kVolumeMenu ||
+           state == Screen::kTranscribeProgress ||
            state == Screen::kWifiApActive || state == Screen::kWifiJoined ||
            state == Screen::kUsbDrive;
 }
@@ -1150,12 +1288,37 @@ void ui_process_input() {
     // Both buttons held = the "hold both to reboot" gesture, handled
     // entirely by reboot_combo.h's own task - skip the per-button poll
     // while it's in progress, see display_button_raw_pressed()'s comment.
+    // (Knob boards: Select + Back, see reboot_combo.h.)
+#if BOARD_HAS_KNOB
+    if (display_button_raw_pressed(DisplayButton::kBack) && display_button_raw_pressed(DisplayButton::kSelect)) {
+        return;
+    }
+#else
     if (display_button_raw_pressed(DisplayButton::kNext) && display_button_raw_pressed(DisplayButton::kSelect)) {
         return;
     }
+#endif
 
     DisplayButtonEvent nextEv = display_button_poll(DisplayButton::kNext);
     DisplayButtonEvent selEv = display_button_poll(DisplayButton::kSelect);
+    // kPrev/kBack only exist on knob boards (the 3.97's rotary Up and
+    // BOOT) - always kNone elsewhere, so every branch below that reads
+    // them is inert on the 1.54. prevEv short steps the selection back one
+    // (the mirror of Next). Back short is, everywhere but kList, exactly a
+    // long Select (every screen's existing "back out" path) - so it's
+    // folded into selEv right here rather than handled per screen; kList
+    // (the root screen, where a long Select opens the menu instead) maps
+    // it to Home below.
+    DisplayButtonEvent prevEv = display_button_poll(DisplayButton::kPrev);
+    DisplayButtonEvent backEv = display_button_poll(DisplayButton::kBack);
+    bool backToHome = false;
+    if (backEv == DisplayButtonEvent::kShort && selEv == DisplayButtonEvent::kNone) {
+        if (state == Screen::kList) {
+            backToHome = true;
+        } else {
+            selEv = DisplayButtonEvent::kLong;
+        }
+    }
 
     // A held-back Select-short from kList (see select_press_pending's
     // comment) needs to fire even on a tick with no new button edge at
@@ -1167,7 +1330,32 @@ void ui_process_input() {
         open_action_menu_for_selected();
     }
 
-    if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone) return;
+#if BOARD_EPAPER_397
+    // Up/Down held VOLUME_HOLD_MS during playback opens the volume menu -
+    // ahead of the early return below, since a hold produces no new edge.
+    // The poll above already spent this press's long event (ignored on
+    // kPlaying), so its release fires nothing on the menu.
+    if (state == Screen::kPlaying &&
+        (display_button_raw_pressed(DisplayButton::kNext) || display_button_raw_pressed(DisplayButton::kPrev))) {
+        if (volume_hold_since == 0) {
+            volume_hold_since = millis() | 1; // never 0 while held
+        } else if (millis() - volume_hold_since >= VOLUME_HOLD_MS) {
+            volume_hold_since = 0;
+            menu_index = (int)speaker_get_volume_level();
+            state = Screen::kVolumeMenu;
+            sleep_reset_activity();
+            render_body();
+            return;
+        }
+    } else {
+        volume_hold_since = 0;
+    }
+#endif
+
+    if (nextEv == DisplayButtonEvent::kNone && selEv == DisplayButtonEvent::kNone &&
+        prevEv == DisplayButtonEvent::kNone && backEv == DisplayButtonEvent::kNone) {
+        return;
+    }
     sleep_reset_activity(); // any button edge counts as activity - see sleep.h
 
     switch (state) {
@@ -1175,10 +1363,17 @@ void ui_process_input() {
             break; // nothing to navigate - insert a card and reboot
 
         case Screen::kList:
-            if (nextEv == DisplayButtonEvent::kLong) {
+            if (nextEv == DisplayButtonEvent::kLong || backToHome) {
                 select_press_pending = false; // leaving kList's row set - drop any held-back press
                 menu_index = 0;
                 state = Screen::kHome;
+                render_body();
+                break;
+            }
+            if (prevEv == DisplayButtonEvent::kLong) {
+                // Knob boards' jump-to-top (Record row) - their stand-in
+                // for the 1.54's double-press-Select gesture.
+                selected_index = 0;
                 render_body();
                 break;
             }
@@ -1193,7 +1388,7 @@ void ui_process_input() {
             }
             {
                 size_t count = list_item_count();
-                if (nextEv == DisplayButtonEvent::kShort) {
+                if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
                     // Scrolling means this isn't a double-press-Select
                     // gesture in progress - fire the held-back press's
                     // action now rather than let it fire late after the
@@ -1205,7 +1400,11 @@ void ui_process_input() {
                         open_action_menu_for_selected();
                         break;
                     }
-                    selected_index = (selected_index + 1) % count;
+                    if (nextEv == DisplayButtonEvent::kShort) {
+                        selected_index = (selected_index + 1) % count;
+                    } else {
+                        selected_index = (selected_index + count - 1) % count;
+                    }
                     render_body();
                 } else if (selEv == DisplayButtonEvent::kShort) {
                     if (selected_index == 0) {
@@ -1223,6 +1422,11 @@ void ui_process_input() {
                             state = Screen::kMicError;
                         }
                         render_body();
+                    } else if (BOARD_HAS_KNOB) {
+                        // Knob boards act right away - no double-press
+                        // window to wait out (Up held jumps to the top
+                        // instead, see below), so Select feels instant.
+                        open_action_menu_for_selected();
                     } else if (select_press_pending) {
                         // Second Select short-press within the window -
                         // double-press gesture: jump to the Record row
@@ -1245,6 +1449,9 @@ void ui_process_input() {
         case Screen::kHome:
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 3;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + 2) % 3;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -1288,6 +1495,9 @@ void ui_process_input() {
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
                 render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + optionCount - 1) % optionCount;
+                render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
                 render_body();
@@ -1321,7 +1531,7 @@ void ui_process_input() {
         // power cycle) to warrant the same guard as Delete/WiFi-management
         // below rather than firing straight off the menu row.
         case Screen::kRebootConfirm:
-            if (nextEv == DisplayButtonEvent::kShort) {
+            if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
@@ -1344,6 +1554,9 @@ void ui_process_input() {
             const int optionCount = 5;
             if (nextEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % optionCount;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                menu_index = (menu_index + optionCount - 1) % optionCount;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -1400,7 +1613,7 @@ void ui_process_input() {
             break;
 
         case Screen::kDeleteConfirm:
-            if (nextEv == DisplayButtonEvent::kShort) {
+            if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
@@ -1427,6 +1640,35 @@ void ui_process_input() {
                 render_body();
             }
             break;
+
+#if BOARD_EPAPER_397
+        // Playback keeps running underneath. Up/Down move the highlight;
+        // Select (click) switches the playing track to that level right
+        // away and saves it, staying in the menu so another level can be
+        // tried. A back-out (long Select / BOOT) closes it - to kPlaying,
+        // or to the list if the track ended meanwhile.
+        case Screen::kVolumeMenu: {
+            const int optionCount = (int)VolumeLevel::kCount;
+            if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
+                menu_index = nextEv == DisplayButtonEvent::kShort ? (menu_index + 1) % optionCount
+                                                                  : (menu_index + optionCount - 1) % optionCount;
+                render_body();
+            } else if (selEv == DisplayButtonEvent::kShort) {
+                speaker_set_volume_level((VolumeLevel)menu_index, true);
+            } else if (selEv == DisplayButtonEvent::kLong) {
+                if (speaker_is_playing()) {
+                    state = Screen::kPlaying;
+                } else {
+                    state = sd_present ? Screen::kList : Screen::kNoCard;
+                }
+                render_body();
+            }
+            break;
+        }
+#else
+        case Screen::kVolumeMenu:
+            break; // 3.97 only - never entered here
+#endif
 
         case Screen::kRecording:
             if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
@@ -1484,10 +1726,13 @@ void ui_process_input() {
             if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
                 render_body();
-            } else if (selEv == DisplayButtonEvent::kShort) {
+            } else if (selEv == DisplayButtonEvent::kShort || (BOARD_HAS_KNOB && nextEv == DisplayButtonEvent::kShort)) {
+                // Knob boards: Down (Next) scrolls down, Up (Prev) up -
+                // Select still scrolls down too, same as on the 1.54.
                 text_view_scroll_px += TEXT_VIEW_SCROLL_STEP;
                 render_body(); // clamps to content height itself
-            } else if (nextEv == DisplayButtonEvent::kShort) {
+            } else if ((!BOARD_HAS_KNOB && nextEv == DisplayButtonEvent::kShort) ||
+                       prevEv == DisplayButtonEvent::kShort) {
                 text_view_scroll_px -= TEXT_VIEW_SCROLL_STEP;
                 if (text_view_scroll_px < 0) text_view_scroll_px = 0;
                 render_body();
@@ -1498,7 +1743,7 @@ void ui_process_input() {
             break; // device deep-sleeps right after showing this - never reached
 
         case Screen::kWifiManage:
-            if (nextEv == DisplayButtonEvent::kShort) {
+            if (nextEv == DisplayButtonEvent::kShort || prevEv == DisplayButtonEvent::kShort) {
                 menu_index = (menu_index + 1) % 2;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
@@ -1549,6 +1794,9 @@ void ui_process_input() {
             }
             if (nextEv == DisplayButtonEvent::kShort) {
                 selected_index = (selected_index + 1) % count;
+                render_body();
+            } else if (prevEv == DisplayButtonEvent::kShort) {
+                selected_index = (selected_index + count - 1) % count;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 // "Previous screen" = the menu this list was opened from,

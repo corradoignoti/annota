@@ -4,10 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Firmware (PlatformIO/Arduino, C++) for the Waveshare ESP32-S3-ePaper-1.54
-— a 1.54" 200x200 mono e-paper panel + 2 onboard buttons + an onboard
-ES8311 speaker/mic codec, ESP32-S3, no touch (see `platformio.ini`'s
-`esp32-s3-epaper154` env). It's an MP3/WAV file browser: scans an SD
+Firmware (PlatformIO/Arduino, C++) for two Waveshare boards, one
+`platformio.ini` env each, sharing `[env]`:
+- `esp32-s3-epaper154` — ESP32-S3-ePaper-1.54: 1.54" 200x200 mono e-paper
+  + 2 onboard buttons + ES8311 codec, no touch.
+- `esp32-s3-epaper397` — ESP32-S3-ePaper-3.97: 3.97" 800x480 mono e-paper
+  used in portrait (UI is 480x800) + 3-way rotary switch (Up/Press/Down) + BOOT + the same
+  ES8311 codec + an AXP2101 PMIC, 16MB flash.
+
+The env sets `-D BOARD_EPAPER_154=1` or `-D BOARD_EPAPER_397=1`;
+`src/board.h` maps it to pins and capability flags (`BOARD_HAS_KNOB`,
+`BOARD_HAS_PWR_LATCH`, `BOARD_HAS_PMIC`, `SD_BUS_WIDTH`, `AUDIO_RAIL_PIN`
+-1 = none, ...) and `#error`s if neither is set. Every pin lives there —
+never hardcode one in a module. Board-specific code goes behind those
+flags; the 1.54 must keep behaving exactly as before any 3.97 change.
+**New features: the user states which envs get them** — gate per-env
+code on `BOARD_*`. Same app on both: It's an MP3/WAV file browser: scans an SD
 card's root for audio files and lists them on an LVGL UI, with a WiFi
 connection manager (captive-portal setup) and an HTTP file manager for the
 SD card alongside. Selecting an audio file offers to transcribe it via an
@@ -18,14 +30,18 @@ straight from the on-device UI (see `speaker.cpp/h`).
 
 ## Commands
 
-Build (`esp32-s3-epaper154` is the only environment defined):
+Build (`esp32-s3-epaper154` or `esp32-s3-epaper397` — build both after
+touching shared code):
 ```
 pio run -e esp32-s3-epaper154
+pio run -e esp32-s3-epaper397
 ```
 Flash to a connected board:
 ```
 pio run -e esp32-s3-epaper154 -t upload
 ```
+`.releaserc.json` builds both and attaches `firmware.bin` (1.54) and
+`firmware-epaper397.bin`.
 Serial monitor (115200 baud, set in platformio.ini):
 ```
 pio device monitor
@@ -67,7 +83,16 @@ may touch it.
   below), with no request landing on this device for the whole duration,
   so it needs its own explicit guard rather than relying on request
   traffic; it self-clears on a safety-net timeout if the browser never
-  calls back. `sleep_reset_activity()` is called from `main.cpp`'s
+  calls back. Right before `esp_deep_sleep_start()` it powers down what
+  the ESP32-S3's own deep sleep doesn't: `speaker_prepare_deep_sleep()`
+  (codec power-down via `es8311_power_down()`; on the 3.97, which has no
+  audio rail switch, the non-RTC amp pin GPIO39 latched LOW with
+  `gpio_hold_en()` — `speaker_begin()` releases it after wake-up), then
+  `display_prepare_deep_sleep()` (3.97 panel's deep-sleep command), then
+  `battery_prepare_deep_sleep()` (3.97: AXP2101 ALDO1-3 rails off, turned
+  back on by the next boot's `battery_init()`). All no-ops on the 1.54
+  except the codec power-down. Left on, those 3.97 rails drained the
+  battery behind the sleep screen. `sleep_reset_activity()` is called from `main.cpp`'s
   `setup()` (starts the clock at boot) and from two activity sources:
   `ui_epaper.cpp`'s `ui_process_input()` on any onboard button edge, and
   `web_server.cpp`'s route registrations (each wrapped in a
@@ -130,16 +155,58 @@ may touch it.
   both buttons have been seen released since boot (no reboot loop while
   still held). `reboot_now()` is the shared reboot path (also used by the
   on-device Reboot menu item and `wifi_forget_and_reboot()`): it
-  `gpio_hold_en()`s `PWR_HOLD_PIN` (defined in `reboot_combo.h`) so the
+  `gpio_hold_en()`s `PWR_HOLD_PIN` (defined in `board.h`, 1.54 only) so the
   battery latch doesn't glitch low during the reset, then `esp_restart()`;
   `main.cpp`'s `keepBatteryPowerOn()` releases the hold after driving the
   pin HIGH again. `ui_process_input()` still skips per-button polling while
   both are held, so the gesture never fires a single-button long press.
-- **display_epaper.cpp** (`display.h`'s implementation) — an SSD1681-class
+- **display_epaper397.cpp** (3.97 only, whole body in `#ifdef
+  BOARD_EPAPER_397`) — the 3.97's SSD1677-class 800x480 panel, ported
+  from Waveshare's waveshareteam/ESP32-S3-ePaper-3.97 examples
+  (EPD_3in97.cpp / factory firmware's epaper_port.c). Portrait: LVGL
+  renders 480x800 (board.h's `BOARD_SCREEN_W/H`) and `disp_flush_cb`
+  rotates each pixel onto the 800x480 panel (`PANEL_W/H`; flip the
+  direction with `EPD_PORTRAIT_FLIP`). Waveforms are in the
+  controller's OTP (no LUT upload): 0x22 0xF7 = full refresh, 0xFF =
+  partial. Unlike the 1.54, LVGL renders in `LV_DISPLAY_RENDER_MODE_PARTIAL`
+  into a 20-line RGB565 strip buffer in internal RAM (rendering a full
+  frame into PSRAM was the slowest step of a screen change); each strip is
+  thresholded/rotated straight into the PSRAM 48 KB 1bpp `epd_buf`, and
+  the panel is refreshed once per frame, on the last strip
+  (`lv_display_flush_is_last()`). SPI at 10 MHz, 20/2/20 ms panel reset
+  before each partial refresh; every `EPD_FULL_REFRESH_EVERY`th frame is a
+  full refresh to clear ghosting. `EPD_LOG_TIMING` prints one Serial line
+  per frame (render+convert vs panel ms). The panel's supply is the PMIC's
+  ALDO3, which `battery.h`'s `battery_init()` (called before
+  `display_init_panel()`) makes sure is on.
+- **display_buttons.cpp** — `display.h`'s button polling for both boards:
+  `DisplayButton` is `kNext`/`kSelect` plus `kPrev`/`kBack`, the latter two
+  only wired on knob boards (3.97: rotary Up and BOOT; Down = Next, Press =
+  Select) and always `kNone` on the 1.54. In `ui_epaper.cpp`'s
+  `ui_process_input()`, Back short is folded into a long Select (every
+  screen's existing back-out path) except on `kList`, where it goes Home;
+  Prev short is the mirror of Next on every cycling screen; `kList` opens a
+  file's action menu on Select immediately (no double-press window) and
+  Up held jumps to the top instead; on `kTextView`
+  Down/Up scroll down/up. `wifi_manager.cpp`'s setup-portal loop also
+  accepts Back. The reboot combo is Press + BOOT on the 3.97
+  (`reboot_combo.cpp`), and idle-sleep wake is the knob press (board.h's
+  `WAKE_BUTTON_GPIO`, RTC pull-up kept on in `sleep.cpp`).
+- **battery.cpp/h** — 1.54: ADC on GPIO4 through a divider, voltage-curve
+  percentage. 3.97 (`BOARD_HAS_PMIC`): AXP2101 via lewisxhe/XPowersLib on
+  the shared I2C bus (SDA41/SCL42, also the ES8311's) — fuel-gauge
+  percentage (100 with no cell, i.e. USB-only); `battery_init()` sets
+  ALDO1-3 to 3.3 V/on with raw I2C writes (not via XPowersLib, whose
+  begin() bails on a chip-ID mismatch) on every boot - ALDO3 is the panel
+  supply, and Waveshare's factory firmware turns it off when idle, a state
+  the PMIC keeps across ESP32 resets/reflashes (no-op on the 1.54). There's no GPIO power latch on the 3.97
+  (GPIO17 is SD CMD there) — `main.cpp`'s `keepBatteryPowerOn()` and
+  `reboot_now()`'s pad hold are `BOARD_HAS_PWR_LATCH`-only.
+- **display_epaper.cpp** (1.54 only, whole body in `#ifdef
+  BOARD_EPAPER_154`; `display.h`'s implementation there) — an SSD1681-class
   e-paper panel driver (command/LUT sequence ported from Waveshare's own
   example repo, waveshareteam/ESP32-S3-ePaper-1.54) bridged into LVGL v9,
-  plus the two onboard buttons (`display_button_poll()`, declared in
-  `display.h`). `disp_flush_cb` renders LVGL's normal RGB565 framebuffer
+  (buttons: `display_buttons.cpp`). `disp_flush_cb` renders LVGL's normal RGB565 framebuffer
   (`LV_DISPLAY_RENDER_MODE_FULL`, so it always sees the whole 200x200
   screen in one call — there's no such thing as updating a sub-rect on
   this controller) and thresholds it to 1bpp on the way out, rather than
@@ -155,8 +222,16 @@ may touch it.
   that transcript's last-write time, newest first (`audio_before()`).
   `sd_begin()`/
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
-  peripheral (1-bit mode, pins 39/41/40).
-- **ui_epaper.cpp** (`ui.h`'s implementation) — WiFi status, a scrollable
+  peripheral (board.h's `SDMMC_*_PIN`/`SD_BUS_WIDTH`: 1-bit on the 1.54,
+  4-bit on the 3.97).
+- **ui_epaper.cpp** (`ui.h`'s implementation) — shared by both boards:
+  every size, offset and font comes from the per-board layout block at the
+  top of the file (`HEADER_H`/`ROW_H`/`HINT_H`, `FONT_HINT`/`FONT_SMALL`/
+  `FONT_BODY`/`FONT_ICON`, `PAD_X`, `CARD_*`, `MENU_*`, ...; the 1.54
+  column holds the original values) — never add a raw pixel literal or
+  `&lv_font_it_N` at a call site. Hints/strings naming buttons go through
+  `knob_tr(Str::X, Str::X_K)` (see Translations). The 3.97's QR canvas
+  buffer is PSRAM-allocated on first use. WiFi status, a scrollable
   audio file list ("Notes" — the device no longer lists `.txt` files on
   their own), and per-file Play/Record/Transcribe/Delete/View transcription
   (`Screen::kTextView`, opened from an audio file's action menu when it has
@@ -224,6 +299,15 @@ may touch it.
   first. Both claim the SD card for their whole duration (`storage.h`'s
   `sd_begin()`/`sd_end()`) and must be pumped every `loop()` iteration via
   `ui_epaper.cpp`'s `ui_process_input()`.
+  Playback volume is a `VolumeLevel` preset (Low/Medium/High = software
+  gain 0.25/0.5/1.0 via `AudioOutput::SetGain()`, on top of the codec's
+  fixed `DEFAULT_VOLUME`; High, the old output, is the default), persisted
+  in NVS (namespace `"annota"`, key `"vol"`), applied mid-track.
+  3.97 only: holding Up or Down 3 s (`VOLUME_HOLD_MS`, timed off the raw
+  pin, since the button poll's long press fires at 700 ms) on `kPlaying`
+  opens `Screen::kVolumeMenu` over the still-playing track — Up/Down move
+  the highlight, Select applies + saves that level (menu stays open),
+  Back closes it.
 - **wifi_manager.cpp/h** — tzapu/WiFiManager underneath. WiFi is off by
   default: `wifi_start_boot_connect()` takes two paths at boot depending on
   whether a network is already saved in NVS: none saved opens a captive
@@ -460,6 +544,10 @@ may touch it.
 Every user-visible string — e-paper UI, error messages that reach the
 screen, both web pages — lives in `src/i18n_strings.def`, never as a
 literal at the call site. When adding or changing one:
+- Text that names buttons needs a `<ID>_K` twin row for knob boards
+  (Up/Down/Select/BOOT), picked via `ui_epaper.cpp`'s `knob_tr()`.
+  Board-specific web text (About page) uses `<key>_397` rows, chosen with
+  `#if` inside the raw-literal HTML.
 - Add/edit the row with **all three** languages (EN, IT, FR). A missing
   column is a compile error by design; don't paper over it with a copy of
   the English text.
@@ -485,7 +573,8 @@ lib_deps sources like lvgl itself). The pinned lvgl version (9.2.2) is a
 config-compatible match for this v9.2.0-format `lv_conf.h` — don't bump it
 without checking that.
 
-`src/fonts/lv_font_it_{10,12,14,28}.c` (declared in `include/fonts_it.h`,
+`src/fonts/lv_font_it_{10,12,14,28}.c` (1.54) and `{16,20,24,48}.c` (3.97's
+layout; unreferenced on the 1.54, so not linked there) (declared in `include/fonts_it.h`,
 used everywhere `ui_epaper.cpp` sets a text font) are custom-built
 replacements for lvgl's own `lv_font_montserrat_{10,12,14,28}` — the
 built-in ones only bake in ASCII, so accented letters (e.g. Italian's è à ò)

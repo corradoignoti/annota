@@ -1693,10 +1693,20 @@ static const char ABOUT_HTML[] PROGMEM = R"rawliteral(
 
 <div class="card">
   <h2 data-i18n="about_what"></h2>
-  <p data-i18n="about_intro"></p>
+)rawliteral"
+// Board-specific lines (screen size, hardware) - see board.h.
+#if BOARD_EPAPER_397
+R"rawliteral(  <p data-i18n="about_intro_397"></p>
+  <p data-i18n="about_features"></p>
+  <p data-i18n="about_hardware_397"></p>
+)rawliteral"
+#else
+R"rawliteral(  <p data-i18n="about_intro"></p>
   <p data-i18n="about_features"></p>
   <p data-i18n="about_hardware"></p>
-</div>
+)rawliteral"
+#endif
+R"rawliteral(</div>
 
 <!-- Credit names, authors and license names are not translated. -->
 <div class="card">
@@ -1741,7 +1751,15 @@ static const char ABOUT_HTML[] PROGMEM = R"rawliteral(
     <div class="what">QRCode 0.0.1</div>
     <div class="detail">MIT &middot; <a href="https://github.com/ricmoo/QRCode" target="_blank" rel="noopener">github.com/ricmoo/QRCode</a></div>
   </div>
-  <div class="credit">
+)rawliteral"
+#if BOARD_EPAPER_397
+R"rawliteral(  <div class="credit">
+    <div class="what">XPowersLib 0.3.3</div>
+    <div class="detail">MIT &middot; <a href="https://github.com/lewisxhe/XPowersLib" target="_blank" rel="noopener">github.com/lewisxhe/XPowersLib</a></div>
+  </div>
+)rawliteral"
+#endif
+R"rawliteral(  <div class="credit">
     <div class="what">Arduino-ESP32</div>
     <div class="detail">LGPL-2.1 &middot; <a href="https://github.com/espressif/arduino-esp32" target="_blank" rel="noopener">github.com/espressif/arduino-esp32</a></div>
   </div>

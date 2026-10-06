@@ -5,7 +5,7 @@
     "@semantic-release/release-notes-generator",
     "@semantic-release/changelog",
     ["@semantic-release/exec", {
-      "prepareCmd": "sed -i.bak \"s/^#define FW_VERSION .*/#define FW_VERSION \\\"${nextRelease.version}\\\"/\" include/version.h && rm -f include/version.h.bak && pio run -e esp32-s3-epaper154"
+      "prepareCmd": "sed -i.bak \"s/^#define FW_VERSION .*/#define FW_VERSION \\\"${nextRelease.version}\\\"/\" include/version.h && rm -f include/version.h.bak && pio run -e esp32-s3-epaper154 && pio run -e esp32-s3-epaper397"
     }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "include/version.h", "package.json"],
@@ -13,7 +13,8 @@
     }],
     ["@semantic-release/github", {
       "assets": [
-        { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "label": "firmware.bin" }
+        { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "label": "firmware.bin" },
+        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "label": "firmware-epaper397.bin" }
       ]
     }]
   ]
