@@ -27,3 +27,11 @@ uint16_t battery_read_millivolts();
 // a voltage-based estimate, so expect it to sag under load (e.g. mid
 // playback) and recover at rest.
 uint8_t battery_read_percent();
+
+// Call right before esp_deep_sleep_start() (sleep.cpp), after everything
+// else that still talks to the panel/codec. PMIC boards (the 3.97): turns
+// the ALDO1-3 peripheral rails battery_init() enabled back off - left on,
+// they keep the e-paper panel's supply (and whatever else hangs off them)
+// drawing from the battery the whole time the ESP32-S3 sleeps. The next
+// boot's battery_init() turns them on again. A no-op on the 1.54.
+void battery_prepare_deep_sleep();

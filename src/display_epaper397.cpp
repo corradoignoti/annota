@@ -330,4 +330,13 @@ void display_init_input() {
 void display_suspend_touch() {} // no shared SPI peripheral to hand off - see display.h
 void display_resume_touch() {}
 
+void display_prepare_deep_sleep() {
+    // Deep-sleep mode 1 - EPD_3IN97_Sleep() in Waveshare's example. Every
+    // partial refresh starts with a hardware reset (epd_display_partial()),
+    // so the controller is otherwise left awake after the sleep screen.
+    epd_cmd(0x10);
+    epd_data(0x01);
+    delay(100);
+}
+
 #endif // BOARD_EPAPER_397

@@ -56,3 +56,8 @@ void es8311_set_mic_enabled(bool enable);
 // (ES8311_MIC_GAIN_0DB..ES8311_MIC_GAIN_42DB; that enum's MIN/MAX
 // sentinels, -1 and 8, are never valid here).
 void es8311_set_mic_gain(int gainCode);
+
+// Powers the codec's analog/digital blocks down (Espressif's esp_codec_dev
+// es8311 suspend sequence) - for deep sleep, where nothing else turns it
+// off. Undone only by a fresh es8311_init().
+void es8311_power_down();

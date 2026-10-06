@@ -27,6 +27,13 @@ bool speaker_begin();
 // call only starts decoding, it doesn't block for the file's duration.
 void speaker_play(const char *filename);
 
+// Stops any playback/recording and leaves the audio hardware in its
+// lowest-power state - call right before esp_deep_sleep_start()
+// (sleep.cpp). Powers the codec down and, on boards without a switchable
+// audio rail (the 3.97), latches the amp-enable pin off through deep
+// sleep; the next speaker_begin() after wake-up releases it.
+void speaker_prepare_deep_sleep();
+
 // Stops playback immediately (no-op if nothing is playing) and releases
 // the SD card.
 void speaker_stop();

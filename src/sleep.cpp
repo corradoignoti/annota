@@ -5,7 +5,10 @@
 #include <WiFi.h>
 #include <esp_sleep.h>
 
+#include "battery.h"
 #include "board.h"
+#include "display.h"
+#include "speaker.h"
 #include "ui.h"
 #include "web_server.h"
 
@@ -75,6 +78,13 @@ static void enter_deep_sleep() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
+    // Peripherals the ESP32-S3's own deep sleep doesn't power down. Order
+    // matters: the codec and panel are still talked to over I2C/SPI, so the
+    // PMIC rails go last.
+    speaker_prepare_deep_sleep();
+    display_prepare_deep_sleep();
+    battery_prepare_deep_sleep();
+
     // PWR_HOLD_PIN (1.54: GPIO17, latched HIGH by main.cpp's
     // keepBatteryPowerOn()) is deliberately left alone here - deep sleep
     // still needs the regulator latched on for ext1 wakeup to fire at all;
@@ -87,6 +97,9 @@ static void enter_deep_sleep() {
     // the pin, and a floating input would wake (or never wake) at random.
     rtc_gpio_pullup_en((gpio_num_t)WAKE_BUTTON_GPIO);
     rtc_gpio_pulldown_dis((gpio_num_t)WAKE_BUTTON_GPIO);
+    // The RTC pull-up only exists while the RTC peripheral domain is
+    // powered, which ext1 alone doesn't guarantee.
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #endif
     esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW);
     esp_deep_sleep_start();

@@ -165,6 +165,18 @@ void es8311_set_mic_enabled(bool enable) {
     }
 }
 
+void es8311_power_down() {
+    write_reg(REG_DAC_VOL_32, 0x00);
+    write_reg(REG_ADC_17, 0x00);
+    write_reg(REG_SYSTEM_0E, 0xFF);
+    write_reg(REG_SYSTEM_12, 0x02);
+    write_reg(REG_SYSTEM_14, 0x00);
+    write_reg(REG_SYSTEM_0D, 0xFA);
+    write_reg(REG_ADC_15, 0x00);
+    write_reg(REG_DAC_37, 0x08);
+    write_reg(0x45, 0x01); // GP register: power down the analog reference
+}
+
 void es8311_set_mic_gain(int gainCode) {
     if (gainCode < 0) gainCode = 0;
     if (gainCode > 7) gainCode = 7;

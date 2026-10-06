@@ -340,4 +340,6 @@ void display_init_input() {
 void display_suspend_touch() {} // no shared SPI peripheral to hand off - see display.h
 void display_resume_touch() {}
 
+void display_prepare_deep_sleep() {} // see display.h
+
 #endif // BOARD_EPAPER_154

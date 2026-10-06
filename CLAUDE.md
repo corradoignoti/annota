@@ -83,7 +83,16 @@ may touch it.
   below), with no request landing on this device for the whole duration,
   so it needs its own explicit guard rather than relying on request
   traffic; it self-clears on a safety-net timeout if the browser never
-  calls back. `sleep_reset_activity()` is called from `main.cpp`'s
+  calls back. Right before `esp_deep_sleep_start()` it powers down what
+  the ESP32-S3's own deep sleep doesn't: `speaker_prepare_deep_sleep()`
+  (codec power-down via `es8311_power_down()`; on the 3.97, which has no
+  audio rail switch, the non-RTC amp pin GPIO39 latched LOW with
+  `gpio_hold_en()` — `speaker_begin()` releases it after wake-up), then
+  `display_prepare_deep_sleep()` (3.97 panel's deep-sleep command), then
+  `battery_prepare_deep_sleep()` (3.97: AXP2101 ALDO1-3 rails off, turned
+  back on by the next boot's `battery_init()`). All no-ops on the 1.54
+  except the codec power-down. Left on, those 3.97 rails drained the
+  battery behind the sleep screen. `sleep_reset_activity()` is called from `main.cpp`'s
   `setup()` (starts the clock at boot) and from two activity sources:
   `ui_epaper.cpp`'s `ui_process_input()` on any onboard button edge, and
   `web_server.cpp`'s route registrations (each wrapped in a

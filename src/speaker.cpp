@@ -10,6 +10,7 @@
 #include <AudioOutput.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
 
@@ -390,6 +391,10 @@ bool speaker_begin() {
 
 #if AUDIO_RAIL_PIN >= 0
     pinMode(AUDIO_RAIL_PIN, OUTPUT);
+#else
+    // Latched LOW through deep sleep by speaker_prepare_deep_sleep(); the
+    // latch survives the wake-up reset and would swallow the writes below.
+    gpio_hold_dis((gpio_num_t)PA_CTRL_PIN);
 #endif
     pinMode(PA_CTRL_PIN, OUTPUT);
     // Active-LOW, not active-high like every other enable pin here - per
@@ -511,6 +516,23 @@ void speaker_play(const char *filename) {
     } else {
         cleanup();
     }
+}
+
+void speaker_prepare_deep_sleep() {
+    speaker_stop();
+    if (mic_is_recording()) mic_stop_recording();
+    // Once speaker_begin() has run, the codec stays powered and the amp
+    // enabled for good - fine while awake, a steady battery drain asleep.
+    if (hwReady) es8311_power_down();
+#if AUDIO_RAIL_PIN < 0
+    // No rail switch to cut the amp with on this board (the 3.97), and
+    // PA_CTRL_PIN (GPIO39) isn't an RTC pad: in deep sleep it would float
+    // and the NS4150B could sit enabled. Drive it LOW (amp off) and latch it.
+    pinMode(PA_CTRL_PIN, OUTPUT);
+    digitalWrite(PA_CTRL_PIN, LOW);
+    gpio_hold_en((gpio_num_t)PA_CTRL_PIN);
+    gpio_deep_sleep_hold_en();
+#endif
 }
 
 void speaker_stop() {

@@ -48,8 +48,9 @@ static bool pmu_reg_write(uint8_t reg, uint8_t val) {
 // refuses to do anything unless the chip-ID register reads exactly 0x4A,
 // and the panel rail must not hinge on that (the factory code ignores a
 // failed begin() too). DC1 (the ESP32-S3 itself) is left alone.
+static const uint8_t ALDO_ONOFF = 0x90; // bit0 ALDO1, bit1 ALDO2, bit2 ALDO3
+
 static void pmu_enable_rails() {
-    static const uint8_t ALDO_ONOFF = 0x90;                // bit0 ALDO1, bit1 ALDO2, bit2 ALDO3
     static const uint8_t ALDO_VOL[] = {0x92, 0x93, 0x94};  // ALDO1..3 voltage
     static const uint8_t VOL_3V3 = (3300 - 500) / 100;     // 100 mV steps from 0.5 V
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
@@ -81,6 +82,15 @@ void battery_init() {
     pmu_begin();
 }
 
+void battery_prepare_deep_sleep() {
+    // Same raw-register approach as pmu_enable_rails(), and the same thing
+    // Waveshare's factory firmware does to ALDO3 whenever its screen idles.
+    uint8_t on = 0;
+    bool ok = pmu_reg_read(ALDO_ONOFF, on) && pmu_reg_write(ALDO_ONOFF, on & ~0x07);
+    Serial.printf("battery: PMIC rails ALDO1-3 %s\n", ok ? "off" : "off FAILED");
+    Serial.flush();
+}
+
 uint16_t battery_read_millivolts() {
     if (!pmu_begin()) return 0;
     return pmu.getBattVoltage(); // 0 if no cell is connected
@@ -103,6 +113,8 @@ uint8_t battery_read_percent() {
 // default attenuation (already full 0-3.3V range on this chip), so nothing
 // to configure at startup.
 void battery_init() {}
+
+void battery_prepare_deep_sleep() {}
 
 uint16_t battery_read_millivolts() {
     // analogReadMilliVolts() applies the SoC's factory ADC calibration

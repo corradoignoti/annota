@@ -29,6 +29,14 @@ void display_init_input();
 void display_suspend_touch();
 void display_resume_touch();
 
+// Puts the panel into its lowest-power state right before sleep.cpp's
+// esp_deep_sleep_start(), once the sleep screen has been painted (e-paper
+// keeps the image unpowered). The panel isn't usable again afterwards -
+// waking is a full reset, and display_init_panel() starts it from scratch.
+// 3.97: the controller's deep-sleep command (its supply rail itself is cut
+// by battery_prepare_deep_sleep()). 1.54: no-op.
+void display_prepare_deep_sleep();
+
 // The board's onboard buttons, driving ui_epaper.cpp's list/menu nav.
 // kNext advances the current selection/menu option, kSelect opens/confirms
 // it (short press) or backs out of it (long press). See ui_epaper.cpp for
