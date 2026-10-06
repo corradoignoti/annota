@@ -32,6 +32,12 @@ void setup() {
     sleep_reset_activity(); // starts the idle-sleep clock from boot - see sleep.h
 
     Serial.begin(115200);
+    // Never block on Serial output. On the USB-Serial-JTAG port (ARDUINO_USB_MODE=1)
+    // HWCDC counts the link as connected once a host has read from it - esptool does,
+    // during an upload - and from then on every write waits up to 20 x tx_timeout_ms
+    // (100 ms) for a host that's no longer reading, stalling loop() on each log line
+    // until the next reset. 0 = drop output instead when nobody reads the port.
+    Serial.setTxTimeoutMs(0);
     Serial.println("annota: boot");
 
     display_init_panel();
