@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/corradoignoti/annota/compare/v1.14.0...v1.14.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* don't block on Serial output after a firmware upload ([298d8bb](https://github.com/corradoignoti/annota/commit/298d8bb79fbcd4e257d36ac4680cc2396ef20020))
+
 # [1.14.0](https://github.com/corradoignoti/annota/compare/v1.13.0...v1.14.0) (2026-10-01)
 
 
