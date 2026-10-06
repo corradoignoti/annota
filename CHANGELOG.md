@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/corradoignoti/annota/compare/v1.15.0...v1.15.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **release:** give each firmware asset a unique upload name ([d810293](https://github.com/corradoignoti/annota/commit/d81029313953649ec84a6955a63e6af982d23b8f))
+
 # [1.15.0](https://github.com/corradoignoti/annota/compare/v1.14.2...v1.15.0) (2026-10-06)
 
 
