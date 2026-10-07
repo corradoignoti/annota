@@ -262,7 +262,7 @@ may touch it.
   directly rather than through a confirm dialog — safe here since
   `ui_process_input()` runs at `loop()`'s top level, not nested inside
   `lv_timer_handler()` — unless the file's `Mp3Entry::size` exceeds
-  `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (2 MB, set via
+  `transcribe.h`'s `TRANSCRIBE_MAX_FILE_BYTES` (2 MB on the 1.54, 4 MB on the 3.97, set per env via
   `platformio.ini`'s build_flags), in which case it
   goes straight to `kTranscribeResult` with a "use the web interface"
   message and nothing is queued. If the audio file already has a sibling
