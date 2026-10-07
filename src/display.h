@@ -37,6 +37,11 @@ void display_resume_touch();
 // by battery_prepare_deep_sleep()). 1.54: no-op.
 void display_prepare_deep_sleep();
 
+// Makes the next panel refresh a full (flashing) one instead of a partial,
+// clearing ghosting - used for the sleep screen, which stays up unpowered.
+// 3.97 only; no-op on the 1.54, whose flush path stays as it was.
+void display_request_full_refresh();
+
 // The board's onboard buttons, driving ui_epaper.cpp's list/menu nav.
 // kNext advances the current selection/menu option, kSelect opens/confirms
 // it (short press) or backs out of it (long press). See ui_epaper.cpp for

@@ -342,4 +342,6 @@ void display_resume_touch() {}
 
 void display_prepare_deep_sleep() {} // see display.h
 
+void display_request_full_refresh() {} // see display.h
+
 #endif // BOARD_EPAPER_154
