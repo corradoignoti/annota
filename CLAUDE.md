@@ -439,9 +439,11 @@ may touch it.
   `TranscribePhase::kSummarizing`, "4/5" on the progress screen). It
   streams the upload straight off the SD card through a custom `Stream`
   subclass wrapping the multipart preamble/file/trailer — the ESP32
-  doesn't have enough RAM to buffer a whole audio file first — and skips
-  TLS cert validation (`WiFiClientSecure::setInsecure()`); no root-CA
-  bundle exists in this project. `WiFiClientSecure` is arduino-esp32's
+  doesn't have enough RAM to buffer a whole audio file first — and
+  verifies api.openai.com's cert against the root CAs embedded in
+  `openai_ca.h` (GTS Root R1/R4, ISRG Root X1; `setCACert()`, both the
+  Whisper and summary requests — the header lists the live chain and how
+  to re-check it). Other providers still use `setInsecure()`. `WiFiClientSecure` is arduino-esp32's
   stock mbedTLS client (hardware AES/SHA on the S3; an earlier wolfSSL
   swap was reverted — uploads through it topped out around 30 KB/s). The Whisper upload goes through `UploadClient`, a
   `WiFiClientSecure` subclass that coalesces HTTPClient's 1460-byte body

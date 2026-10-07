@@ -15,6 +15,7 @@
 #include <WiFiClientSecure.h>
 
 #include "i18n.h"
+#include "openai_ca.h"
 #include "storage.h"
 
 // -----------------------------------------------------------------------
@@ -290,7 +291,7 @@ static bool summarize_transcript(const char *apiKey, const String &transcript, S
             delay(1000);
         }
         WiFiClientSecure client;
-        client.setInsecure(); // same as the transcription request above
+        client.setCACert(OPENAI_ROOT_CA); // same as the transcription request
         HTTPClient http;
         // Both timeouts for the same reason as ai_transcribe_file()'s
         // setConnectTimeout() comment.
@@ -306,10 +307,11 @@ static bool summarize_transcript(const char *apiKey, const String &transcript, S
         unsigned long startMs = millis();
         code = http.POST(body);
         response = http.getString();
+        String tlsError = code < 0 ? tls_error_suffix(client) : String();
         http.end();
-        transcribe_log("Summary attempt %d/%d: HTTP %d%s%s, %lu ms", attempt + 1, kMaxAttempts, code,
+        transcribe_log("Summary attempt %d/%d: HTTP %d%s%s%s, %lu ms", attempt + 1, kMaxAttempts, code,
                        code < 0 ? " " : "", code < 0 ? HTTPClient::errorToString(code).c_str() : "",
-                       millis() - startMs);
+                       tlsError.c_str(), millis() - startMs);
         if (code >= 0) break;
     }
     body = String(); // free before parsing the response
@@ -434,11 +436,11 @@ bool ai_transcribe_file(const char *filename, char *errOut, size_t errOutLen) {
         }
 
         UploadClient client;
-        // No certificate pinning / root-CA bundle exists in this project
-        // yet - accept whatever cert the server presents. Traffic is
-        // still TLS-encrypted in transit; this just means no protection
-        // against a MITM presenting a fake cert.
-        client.setInsecure();
+        // Verify api.openai.com's cert against the root CAs in openai_ca.h,
+        // so a MITM can't read the API key out of the Authorization header.
+        // A verification failure shows up in the attempt log through
+        // tls_error_suffix().
+        client.setCACert(OPENAI_ROOT_CA);
 
         HTTPClient http;
         http.setTimeout(60000);
