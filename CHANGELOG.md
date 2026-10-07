@@ -1,3 +1,12 @@
+# [1.17.0](https://github.com/corradoignoti/annota/compare/v1.16.0...v1.17.0) (2026-10-07)
+
+
+### Features
+
+* **397:** summary box on the sleep screen ([5183bd2](https://github.com/corradoignoti/annota/commit/5183bd2523f5a45cab75a13c87922e0b1adcb5ef))
+* logo sleep screen on both boards ([7061b7d](https://github.com/corradoignoti/annota/commit/7061b7d5443f7559854d4c244844ea22f4eb57d9))
+* **openai:** verify api.openai.com TLS certificate ([549c345](https://github.com/corradoignoti/annota/commit/549c3452db5a66328649737857553095981961a6))
+
 # [1.16.0](https://github.com/corradoignoti/annota/compare/v1.15.1...v1.16.0) (2026-10-07)
 
 
