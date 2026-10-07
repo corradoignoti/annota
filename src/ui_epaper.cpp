@@ -8,6 +8,7 @@
 #include <lvgl.h>
 #include <qrcode.h>  // ricmoo/QRCode - kWifiJoined/kWifiApActive's scannable QR codes
 
+#include "battery.h"
 #include "display.h"
 #include "fonts_it.h"
 #include "i18n.h"
@@ -566,7 +567,74 @@ static void add_logo_arc(lv_obj_t *parent, float cx, float cy, float r, int16_t 
     lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_INDICATOR);
 }
 
-// kSleeping: the logo above the wake hint, filling the whole screen (body
+#if BOARD_EPAPER_397
+// One "label ........ value" line of add_sleep_stats()'s box.
+static void add_sleep_stat_row(lv_obj_t *box, const char *label, const char *value) {
+    lv_obj_t *row = lv_obj_create(box);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *l = lv_label_create(row);
+    lv_label_set_text(l, label);
+    lv_obj_set_style_text_font(l, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(l, lv_color_black(), 0);
+    lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+
+    lv_obj_t *v = lv_label_create(row);
+    lv_label_set_text(v, value);
+    lv_obj_set_style_text_font(v, FONT_SMALL, 0);
+    lv_obj_set_style_text_color(v, lv_color_black(), 0);
+    lv_obj_align(v, LV_ALIGN_RIGHT_MID, 0, 0);
+}
+
+static void format_gb(uint64_t bytes, char *out, size_t outLen) {
+    snprintf(out, outLen, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+}
+
+// 3.97 only: a bordered summary box under the wake hint - stored notes,
+// how many still lack a transcript (mp3Files, as last scanned), battery
+// charge, and SD space used/total. Read once here, as the device goes to
+// sleep; the box then stays on the unpowered panel as-is.
+static void add_sleep_stats(lv_obj_t *parent) {
+    lv_obj_t *box = lv_obj_create(parent);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, CARD_W, LV_SIZE_CONTENT);
+    lv_obj_set_style_border_width(box, CARD_BORDER, 0);
+    lv_obj_set_style_border_color(box, lv_color_black(), 0);
+    lv_obj_set_style_radius(box, CARD_RADIUS, 0);
+    lv_obj_set_style_pad_all(box, CARD_PAD, 0);
+    lv_obj_set_style_pad_row(box, CARD_GAP, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+
+    char value[32];
+    size_t untranscribed = 0;
+    for (size_t i = 0; i < mp3FileCount; i++) {
+        if (!mp3Files[i].hasTranscript) untranscribed++;
+    }
+    snprintf(value, sizeof(value), "%u", (unsigned)mp3FileCount);
+    add_sleep_stat_row(box, tr(Str::SLEEP_STAT_NOTES), value);
+    snprintf(value, sizeof(value), "%u", (unsigned)untranscribed);
+    add_sleep_stat_row(box, tr(Str::SLEEP_STAT_UNTRANSCRIBED), value);
+    snprintf(value, sizeof(value), "%u%%", (unsigned)battery_read_percent());
+    add_sleep_stat_row(box, tr(Str::SLEEP_STAT_BATTERY), value);
+
+    SdInfo info;
+    if (sd_present && get_sd_info(info)) {
+        char used[16], total[16];
+        format_gb(info.usedBytes, used, sizeof(used));
+        format_gb(info.totalBytes, total, sizeof(total));
+        snprintf(value, sizeof(value), "%s / %s", used, total);
+    } else {
+        snprintf(value, sizeof(value), "-");
+    }
+    add_sleep_stat_row(box, tr(Str::SLEEP_STAT_SD), value);
+}
+#endif
+
+// kSleeping: the logo above the wake hint (plus, on the 3.97, the
+// add_sleep_stats() box below it), filling the whole screen (body
 // is stretched over the header bar - nothing comes after this screen but
 // deep sleep, and waking is a full reset that rebuilds everything).
 static void add_sleep_screen(const char *text) {
@@ -614,6 +682,10 @@ static void add_sleep_screen(const char *text) {
     lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(msg, FONT_SLEEP, 0);
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+
+#if BOARD_EPAPER_397
+    add_sleep_stats(col);
+#endif
 
     // The SVG leaves 26 empty units above the mic; shift up by half that
     // so the drawn content, not the logo's box, sits centered.

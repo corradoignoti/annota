@@ -75,7 +75,9 @@ may touch it.
   `ui_epaper.cpp`'s `add_sleep_screen()`, is full-screen: the
   `assets/icon_200x200.svg` logo redrawn from LVGL arcs/rects scaled to
   the per-board `LOGO_SIZE`, painted with a full refresh on the 3.97 via
-  `display.h`'s `display_request_full_refresh()`) once
+  `display.h`'s `display_request_full_refresh()`; 3.97 only, a summary box
+  below it, `add_sleep_stats()`: notes, untranscribed notes, battery %, SD
+  used/total) once
   `sleep_get_idle_timeout_minutes()` (default 30, persisted in NVS,
   clamped to 1–180 — see `IDLE_TIMEOUT_MIN_DEFAULT`/`_MIN`/`_MAX` in
   sleep.cpp) have passed with no activity, unless `ui.h`'s
