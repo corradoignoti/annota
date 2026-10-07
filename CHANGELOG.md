@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/corradoignoti/annota/compare/v1.15.1...v1.16.0) (2026-10-07)
+
+
+### Features
+
+* **397:** raise on-device transcription cap to 4 MB ([0b83858](https://github.com/corradoignoti/annota/commit/0b8385829c7d8deb88e52ed51ebcd63d76eb8a81))
+
 ## [1.15.1](https://github.com/corradoignoti/annota/compare/v1.15.0...v1.15.1) (2026-10-06)
 
 
