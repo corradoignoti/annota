@@ -1,6 +1,7 @@
 #include "ui.h"
 
 #include <Arduino.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <esp_heap_caps.h>
@@ -110,6 +111,8 @@ static const int16_t MENU_PAD_COMPACT = 6;
 static const int16_t MENU_MARGIN_Y = 24;
 static const int16_t TEXT_PAD = 12;       // kTextView's viewport padding
 static const int16_t STATUS_ICONS_W = 140; // header room kept for battery/SD icons
+static const int16_t LOGO_SIZE = 400;     // kSleeping's logo, see add_sleep_screen()
+static const lv_font_t *const FONT_SLEEP = &lv_font_it_24;
 #else
 static const int16_t HEADER_H = 20;
 static const int16_t ROW_H = 20;
@@ -140,6 +143,8 @@ static const int16_t MENU_PAD_COMPACT = 3;
 static const int16_t MENU_MARGIN_Y = 12;
 static const int16_t TEXT_PAD = 4;
 static const int16_t STATUS_ICONS_W = 60;
+static const int16_t LOGO_SIZE = 140;
+static const lv_font_t *const FONT_SLEEP = &lv_font_it_12;
 #endif
 // kList reserves its own top row (below) for the Notes header,
 // on top of HEADER_H/HINT_H.
@@ -521,6 +526,98 @@ static void add_qr(lv_obj_t *cont, uint8_t slot, const char *qr_data, const char
 
 static void add_qr_screen(const char *qr_data, const char *caption) {
     add_qr(add_qr_container(), 0, qr_data, caption);
+}
+
+// kSleeping's logo: assets/icon_200x200.svg redrawn from LVGL primitives
+// (arcs + rounded rects) rather than shipped as a bitmap, so it scales to
+// each board's LOGO_SIZE with crisp 1bpp edges. Coordinates below are the
+// SVG's own 200x200 units; logo_px() scales them to LOGO_SIZE. The SVG's
+// A-commands are converted to center/radius/angle form (LVGL angles: 0 =
+// right, clockwise) - keep the two in sync if the icon changes.
+static int16_t logo_px(float v) {
+    return (int16_t)lroundf(v * LOGO_SIZE / 200.0f);
+}
+
+static void add_logo_rect(lv_obj_t *parent, float x, float y, float w, float h, float r, lv_color_t color) {
+    lv_obj_t *o = lv_obj_create(parent);
+    lv_obj_remove_style_all(o);
+    lv_obj_set_pos(o, logo_px(x), logo_px(y));
+    lv_obj_set_size(o, logo_px(w), logo_px(h));
+    lv_obj_set_style_radius(o, logo_px(r), 0);
+    lv_obj_set_style_bg_color(o, color, 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+}
+
+// A 9-unit round-capped stroke centered on radius r around (cx, cy), like
+// the SVG's stroke-width="9" stroke-linecap="round" paths. lv_arc draws its
+// width inward from the widget's edge, hence the outer radius below.
+static void add_logo_arc(lv_obj_t *parent, float cx, float cy, float r, int16_t start, int16_t end) {
+    const int16_t width = logo_px(9);
+    const int16_t outer = logo_px(r) + width / 2;
+    lv_obj_t *arc = lv_arc_create(parent);
+    lv_obj_remove_style_all(arc); // no theme padding/knob/indicator
+    lv_obj_remove_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(arc, outer * 2, outer * 2);
+    lv_obj_set_pos(arc, logo_px(cx) - outer, logo_px(cy) - outer);
+    lv_arc_set_bg_angles(arc, start, end);
+    lv_obj_set_style_arc_width(arc, width, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(arc, true, LV_PART_MAIN);
+    lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_INDICATOR);
+}
+
+// kSleeping: the logo above the wake hint, filling the whole screen (body
+// is stretched over the header bar - nothing comes after this screen but
+// deep sleep, and waking is a full reset that rebuilds everything).
+static void add_sleep_screen(const char *text) {
+    lv_obj_set_pos(body, 0, 0);
+    lv_obj_set_height(body, SCREEN_H);
+    lv_obj_set_style_bg_color(body, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
+    lv_obj_move_foreground(body);
+
+    lv_obj_t *col = lv_obj_create(body);
+    lv_obj_remove_style_all(col);
+    lv_obj_set_size(col, SCREEN_W, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_row(col, CARD_GAP, 0);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *logo = lv_obj_create(col);
+    lv_obj_remove_style_all(logo);
+    lv_obj_set_size(logo, LOGO_SIZE, LOGO_SIZE);
+    lv_obj_clear_flag(logo, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Sound waves, both sides of the mic.
+    add_logo_arc(logo, 77.4f, 100, 40, 147, 213);
+    add_logo_arc(logo, 77.0f, 100, 58, 144, 216);
+    add_logo_arc(logo, 122.6f, 100, 40, 327, 33);
+    add_logo_arc(logo, 123.0f, 100, 58, 324, 36);
+    // Mic capsule with its grille cut out in white.
+    add_logo_rect(logo, 76, 26, 48, 76, 24, lv_color_black());
+    add_logo_rect(logo, 82, 46, 36, 6, 0, lv_color_white());
+    add_logo_rect(logo, 82, 60, 36, 6, 0, lv_color_white());
+    add_logo_rect(logo, 82, 74, 36, 6, 0, lv_color_white());
+    // Stand: arc, post, base.
+    add_logo_arc(logo, 100, 96, 38, 0, 180);
+    add_logo_rect(logo, 96, 130, 8, 20, 0, lv_color_black());
+    add_logo_rect(logo, 76, 150, 48, 9, 4, lv_color_black());
+    // Transcribed text lines.
+    add_logo_rect(logo, 54, 174, 92, 8, 4, lv_color_black());
+    add_logo_rect(logo, 66, 188, 68, 8, 4, lv_color_black());
+
+    lv_obj_t *msg = lv_label_create(col);
+    lv_label_set_text(msg, text);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, SCREEN_W - PAD_X * 2);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(msg, FONT_SLEEP, 0);
+    lv_obj_set_style_text_color(msg, lv_color_black(), 0);
+
+    // The SVG leaves 26 empty units above the mic; shift up by half that
+    // so the drawn content, not the logo's box, sits centered.
+    lv_obj_align(col, LV_ALIGN_CENTER, 0, -logo_px(13));
 }
 
 // A bordered, rounded card centered in body, with an optional big icon
@@ -1041,7 +1138,7 @@ static void render_body() {
             break;
 
         case Screen::kSleeping:
-            add_info_card(LV_SYMBOL_POWER, knob_tr(Str::SLEEPING, Str::SLEEPING_K));
+            add_sleep_screen(knob_tr(Str::SLEEPING, Str::SLEEPING_K));
             break;
     }
 }
@@ -1247,6 +1344,7 @@ void ui_request_rerender() {
 
 void ui_show_sleep_screen() {
     state = Screen::kSleeping;
+    display_request_full_refresh(); // this image stays up for hours - no ghosting
     render_body();
     lv_timer_handler();
 }

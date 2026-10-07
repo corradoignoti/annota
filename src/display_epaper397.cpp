@@ -330,6 +330,10 @@ void display_init_input() {
 void display_suspend_touch() {} // no shared SPI peripheral to hand off - see display.h
 void display_resume_touch() {}
 
+void display_request_full_refresh() {
+    partials_since_full = EPD_FULL_REFRESH_EVERY - 1; // disp_flush_cb()'s ++ tips it over
+}
+
 void display_prepare_deep_sleep() {
     // Deep-sleep mode 1 - EPD_3IN97_Sleep() in Waveshare's example. Every
     // partial refresh starts with a hardware reset (epd_display_partial()),
