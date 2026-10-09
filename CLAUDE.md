@@ -531,7 +531,8 @@ may touch it.
   Uploading to AI provider / Waiting for transcription / Writing title &
   abstract / Saving — each provider's `PROVIDER_PHASES` picks its subset
   for the "n/total" numbering) in `#status`, with `#progress` showing
-  download and upload percentages; the download and provider upload go
+  download and upload percentages (both inside the `#syncBar` card at
+  the top of the page, used by every status message); the download and provider upload go
   through XHR (`downloadWithProgress()`/`xhrWithUploadProgress()`) since
   `fetch()` has no progress events. A Sync bar above the list (`#syncBar`,
   `syncTranscribe()`) runs that same browser-side path over every audio
