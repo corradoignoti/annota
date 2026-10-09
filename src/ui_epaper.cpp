@@ -279,6 +279,10 @@ static const char *knob_tr(Str plain, Str knob) {
 // Set by ui_request_rerender(), consumed by ui_process_input().
 static bool rerender_requested = false;
 
+// Set by ui_request_catalog_refresh(), consumed by ui_process_input() (only
+// on kList/kHome - see there) or ui_show_sleep_screen().
+static bool catalog_refresh_requested = false;
+
 // kList shows a synthetic "Record new" row pinned above the real files,
 // kept as index 0 ahead of mp3Files rather than a separate widget/button
 // so it reuses the same Next/Select navigation and clamp_selection() as
@@ -1414,7 +1418,17 @@ void ui_request_rerender() {
     rerender_requested = true;
 }
 
+void ui_request_catalog_refresh() {
+    catalog_refresh_requested = true;
+}
+
 void ui_show_sleep_screen() {
+    // Nothing is playing/recording here (ui_is_sleep_blocked()), so the
+    // SD card is free - re-scan so add_sleep_stats() counts are current.
+    if (catalog_refresh_requested && sd_present) {
+        catalog_refresh_requested = false;
+        load_mp3_catalog();
+    }
     state = Screen::kSleeping;
     display_request_full_refresh(); // this image stays up for hours - no ghosting
     render_body();
@@ -1430,6 +1444,29 @@ void ui_process_input() {
     if (rerender_requested) {
         rerender_requested = false;
         render_body();
+    }
+    // Web-side file change (see ui_request_catalog_refresh()). Only on
+    // screens that neither hold the SD card (playback/recording - claims
+    // aren't ref-counted, a re-scan's sd_end() would unmount it under
+    // them) nor point at an mp3Files entry (active_file_index); otherwise
+    // it stays pending until the user is back on one of these.
+    if (catalog_refresh_requested && sd_present && (state == Screen::kList || state == Screen::kHome)) {
+        catalog_refresh_requested = false;
+        char keep[sizeof(mp3Files[0].filename)] = "";
+        if (selected_index > 0 && selected_index - 1 < mp3FileCount) {
+            strncpy(keep, mp3Files[selected_index - 1].filename, sizeof(keep) - 1);
+            keep[sizeof(keep) - 1] = '\0';
+        }
+        load_mp3_catalog();
+        if (keep[0]) {
+            for (size_t i = 0; i < mp3FileCount; i++) {
+                if (strcmp(mp3Files[i].filename, keep) == 0) {
+                    selected_index = i + 1;
+                    break;
+                }
+            }
+        }
+        if (state == Screen::kList) render_body(); // render_body() clamps selected_index
     }
     if (state == Screen::kWifiScanning && wifi_scan_status() != WifiScanStatus::kRunning) {
         // Same unconditional-pump idiom as speaker_process()/mic_process()

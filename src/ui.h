@@ -128,3 +128,11 @@ void ui_show_sleep_screen();
 // without a reboot. Only flags it, same request/process split as the
 // other cross-module UI triggers.
 void ui_request_rerender();
+
+// Asks for mp3Files to be re-scanned from the SD card - used by
+// web_server.cpp after a browser-side delete or transcript save, so the
+// Notes list doesn't keep showing the old file set. Only flags it:
+// ui_process_input() re-scans once the device is on kList/kHome (never
+// mid-playback/recording, which hold the SD card, nor on a screen pointing
+// at an mp3Files entry), and ui_show_sleep_screen() before its stats.
+void ui_request_catalog_refresh();

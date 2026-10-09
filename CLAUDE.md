@@ -541,8 +541,12 @@ may touch it.
   `runTranscribeBatch()` with the batch bar's Transcribe button; it
   re-fetches `/api/transcript-key` before each file so
   `web_transcribe_in_progress()` stays armed for the whole batch.
-  Web deletes don't refresh the on-screen MP3 list (`mp3Files`); that
-  only happens on reboot. `web_transcribe_in_progress()` tracks the window
+  A successful web delete or transcript save calls `ui.h`'s
+  `ui_request_catalog_refresh()`, which only flags it: `ui_process_input()`
+  re-scans `mp3Files` (keeping the selected file) once the device is on
+  `kList`/`kHome` — never during playback/recording (SD claims aren't
+  ref-counted) or on a screen holding `active_file_index` — and
+  `ui_show_sleep_screen()` re-scans before its stats. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final
   POST, self-clearing on a timeout otherwise) purely so `sleep.cpp` knows
   not to deep-sleep mid-flight — no request lands here while the browser
