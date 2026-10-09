@@ -93,7 +93,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
     --danger-bg: rgba(163, 39, 29, 0.08);
   }
   * { box-sizing: border-box; }
-  /* #batchBar/#syncBar/#sd-widget set display: flex, which would
+  /* #batchBar/#sd-widget set display: flex, which would
      otherwise beat the hidden attribute's UA display: none. */
   [hidden] { display: none !important; }
   body {
@@ -268,8 +268,9 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   tbody tr:hover td.actions button:hover, tbody tr:hover td.actions .btn:hover { background: var(--surface); color: var(--ink); }
   tbody tr:hover button.danger, tbody tr:hover .btn.danger { color: var(--danger); border-color: var(--danger); }
 
-  #statusBox { margin: 0 1rem 1.2rem; color: var(--ink-soft); }
+  #statusBox { color: var(--ink-soft); }
   #status { margin-top: 0.7rem; font-size: 0.85rem; color: var(--ink-soft); }
+  #status:empty { display: none; }
   progress {
     width: 100%;
     margin-top: 0.7rem;
@@ -307,14 +308,19 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   #batchBar #batchCount { color: var(--ink-soft); white-space: nowrap; }
   #batchBar .actions { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
   #batchBar .actions button { width: auto; padding: 0.4rem 0.7rem; }
+  /* #syncBar also hosts #statusBox (transcription phase line + progress
+     bar) under its info/button row, so progress shows at the top of the
+     page, right where Sync was clicked. */
   #syncBar {
+    padding: 0.6rem 1rem;
+    margin: 0 1rem 1.2rem;
+    font-size: 0.78rem;
+  }
+  #syncBar .syncRow {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.6rem;
-    padding: 0.6rem 1rem;
-    margin: 0 1rem 1.2rem;
-    font-size: 0.78rem;
   }
   #syncBar #syncInfo { color: var(--ink-soft); }
   #syncBar button { white-space: nowrap; }
@@ -347,8 +353,14 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 </div>
 
 <div id="syncBar" class="card">
-  <span id="syncInfo"></span>
-  <button id="syncBtn" data-i18n-title="sync_title">⟳ <span data-i18n="sync"></span></button>
+  <div class="syncRow">
+    <span id="syncInfo"></span>
+    <button id="syncBtn" data-i18n-title="sync_title">⟳ <span data-i18n="sync"></span></button>
+  </div>
+  <div id="statusBox">
+    <progress id="progress" max="100" value="0"></progress>
+    <div id="status"></div>
+  </div>
 </div>
 
 <div id="batchBar" class="card" hidden>
@@ -379,11 +391,6 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
 <div class="card" id="others-card" hidden>
   <div class="card-title" data-i18n="other_files"></div>
   <table id="others"><tbody></tbody></table>
-</div>
-
-<div id="statusBox">
-  <progress id="progress" max="100" value="0"></progress>
-  <div id="status"></div>
 </div>
 )rawliteral";
 
