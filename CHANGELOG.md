@@ -1,3 +1,11 @@
+## [1.17.1](https://github.com/corradoignoti/annota/compare/v1.17.0...v1.17.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ui:** refresh Notes list after web-side file changes ([22d40a8](https://github.com/corradoignoti/annota/commit/22d40a80879631d8f31341d2af1c03c24d98300f))
+* **web:** show transcription progress in the Sync bar at the top ([af80a86](https://github.com/corradoignoti/annota/commit/af80a8609ddd868988681f97019384677e4e65f5)), closes [#statusBox](https://github.com/corradoignoti/annota/issues/statusBox) [#syncBar](https://github.com/corradoignoti/annota/issues/syncBar)
+
 # [1.17.0](https://github.com/corradoignoti/annota/compare/v1.16.0...v1.17.0) (2026-10-07)
 
 
