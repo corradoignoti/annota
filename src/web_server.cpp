@@ -2069,6 +2069,7 @@ static void handle_save_transcript() {
         f.close();
     }
     sd_release();
+    if (ok) ui_request_catalog_refresh(); // new transcript: title + list order change
 
     server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "Write failed");
 }
@@ -2216,6 +2217,7 @@ static void handle_delete() {
     snprintf(path, sizeof(path), "/%s", name);
     bool ok = sd_fs().remove(path);
     sd_release();
+    if (ok) ui_request_catalog_refresh();
 
     if (ok) {
         server.send(200, "text/plain", "OK");
