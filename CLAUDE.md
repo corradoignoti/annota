@@ -169,7 +169,8 @@ may touch it.
   the combo works even when `loop()`/`setup()` is stuck. Only armed after
   both buttons have been seen released since boot (no reboot loop while
   still held). `reboot_now()` is the shared reboot path (also used by the
-  on-device Reboot menu item and `wifi_forget_and_reboot()`): it
+  on-device Reboot menu item and `wifi_forget_and_reboot()`, which has
+  no caller since the web UI dropped Delete WiFi Setup): it
   `gpio_hold_en()`s `PWR_HOLD_PIN` (defined in `board.h`, 1.54 only) so the
   battery latch doesn't glitch low during the reset, then `esp_restart()`;
   `main.cpp`'s `keepBatteryPowerOn()` releases the hold after driving the
@@ -359,9 +360,11 @@ may touch it.
   record, delete, and preview all work with no network — and this same
   boot logic runs unchanged on every boot, including a deep-sleep wakeup
   (waking is a full MCU reset, see `sleep.cpp/h` above, so there's no
-  separate wake-time path). The only way back to the setup portal is the
-  explicit, irreversible "Delete WiFi Setup" button
-  (`wifi_forget_and_reboot()`). `wifi_go_offline()` (`WiFi.disconnect(true)`,
+  separate wake-time path). The only way back to the setup portal is
+  removing every saved network on the web Settings page's WiFi Networks
+  card (`/api/wifi/networks/remove`) and rebooting — the web "Delete WiFi
+  Setup" button is gone, leaving `wifi_forget_and_reboot()` uncalled.
+  `wifi_go_offline()` (`WiFi.disconnect(true)`,
   powering the radio off for battery life, saved network untouched) has
   three callers: the on-device Offline menu item, `wifi_start_boot_connect()`'s
   stay-off-at-boot path, and `transcribe_process_pending()`'s post-
@@ -489,11 +492,11 @@ may touch it.
   everything else (orphan `.txt`, `_error.txt` logs, files copied in over USB) with
   view/download/delete (no browser upload) — backed by `/api/files`, `/api/download`, `/api/delete`,
   `/api/transcript-key`, `/api/transcript`; and a `/settings` page
-  (WiFi/clock status, SD capacity, Reconnect WiFi, Delete WiFi Setup, an
-  idle-sleep-timeout slider, and the AI provider's API key field, labeled
+  (language, WiFi/clock status, SD capacity, the saved WiFi networks list
+  with add/edit/remove, Reconnect WiFi, an idle-sleep-timeout slider, and the AI provider's API key field, labeled
   dynamically from `aiProviderName` in the JSON below), backed by
   `/api/settings` (GET, a status snapshot) and `/api/settings/reconnect`,
-  `/api/settings/forget`, `/api/settings/ai-key`,
+  `/api/settings/ai-key`, `/api/wifi/networks` (+ `/update`, `/remove`),
   `/api/settings/idle-timeout` (POST, minutes — see `sleep.cpp/h` above),
   `/api/settings/language` (POST, see `i18n.cpp/h` above); and a static
   `/about` page (what Annota is, plus credits for third-party icons/fonts —

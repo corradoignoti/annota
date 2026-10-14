@@ -2,15 +2,19 @@
 
 Firmware for two Waveshare ESP32-S3 e-paper boards — the
 ESP32-S3-ePaper-1.54 (1.54" 200x200 panel, 2 buttons) and the
-ESP32-S3-ePaper-3.97 (3.97" 800x480 panel used in portrait, rotary switch + BOOT) — each
-with an onboard ES8311 speaker/mic codec. It turns the board into a standalone MP3/WAV browser and
-recorder companion: it scans an SD card's root for audio files, lists them
-on a small button-driven LVGL UI, can play them back or record a new voice
-memo from the onboard mic, and can send any of them off to an AI provider
-for transcription, saving the result as a sibling `.txt` file. A WiFi
-connection manager handles onboarding via a captive portal, and a small
-HTTP file manager mirrors the on-device UI so the SD card's contents are
-reachable from a browser on the same network.
+ESP32-S3-ePaper-3.97 (3.97" 800x480 panel used in portrait, rotary switch +
+BOOT) — each with an onboard ES8311 speaker/mic codec. It turns the board
+into a pocket voice-note recorder: record memos from the onboard mic, browse
+and play the SD card's MP3/WAV notes on a button-driven LVGL UI, and send any
+of them to an AI provider for transcription, saved as a sibling `.txt` with an
+AI title and abstract on top. A web file manager mirrors the device's Notes
+list from any browser on the network, and the whole SD card can be mounted on
+a computer as a USB drive.
+
+User documentation: [docs/user-manual.md](docs/user-manual.md) (also
+published as `user-manual.html` on the project site, alongside the browser
+flasher). Architecture notes for contributors live in
+[CLAUDE.md](CLAUDE.md).
 
 Built with PlatformIO (Arduino framework, C++), against the
 [pioarduino](https://github.com/pioarduino/platform-espressif32) fork
@@ -40,33 +44,47 @@ wake from idle sleep.
 
 ## Features
 
-- **Audio browser** — lists every `.mp3`/`.wav` in the SD card's root as a
-  scrollable list, skipping directories and dotfiles (macOS FAT litter
-  like `._x.mp3`, `.DS_Store`).
-- **Playback & recording** — select a file to play it back through the
-  onboard speaker, or start a new voice memo from the onboard mic,
-  written straight to the card as uncompressed PCM WAV.
-- **WiFi onboarding** — first boot (or after credentials are forgotten)
-  opens an open captive-portal access point, `Annota-Setup`, so a phone
-  or laptop can configure a network without touching the device's own
-  small screen. Once a network is saved, the device reconnects to it
-  directly on subsequent boots.
-- **AI transcription** — select an audio file's Transcribe action to send
-  it to a configurable AI provider's transcription API; the result is
-  saved next to the file as `<name>.txt` and appears in the file list.
-  The provider is a compile-time choice (OpenAI Whisper or Google Gemini
-  — see [AI transcription provider](#ai-transcription-provider)), with
-  its API key entered either on-device or via the web UI and stored in
-  NVS.
-- **Per-file transfer** — select a file's File transfer action to connect
-  to WiFi and show just that file's download link, as text plus a QR
-  code, without opening the full web file manager.
-- **Web file manager** — once WiFi is up, an HTTP server on port 80
-  serves a file manager (list/upload/download/delete against the SD
-  root) and a settings page (WiFi status, SD capacity, reconnect/forget
-  WiFi, AI provider API key).
+- **Notes list** — every `.mp3`/`.wav` in the SD card's root (directories
+  and dotfiles skipped), untranscribed first, then by transcript date, each
+  shown under its transcript's AI title.
+- **Playback & recording** — play a note through the onboard speaker, or
+  record a new one (`RECnnnn.wav`, 16-bit PCM). 3.97: Low/Medium/High
+  volume menu during playback.
+- **AI transcription** — on-device (OpenAI Whisper by default, Gemini as a
+  compile-time alternative), with step-by-step progress and a
+  `<name>_error.txt` diagnostic log on failure. The OpenAI provider adds a
+  `gpt-4o-mini` title and abstract above the transcript and verifies
+  api.openai.com's certificate against embedded root CAs. On-device uploads
+  are capped at 2 MB (1.54) / 4 MB (3.97); the web UI has no cap.
+- **Web file manager** — Notes table with transcripts folded in (play,
+  transcribe, view, download, delete, batch actions, a Sync button that
+  transcribes everything still pending — browser-side, straight to the AI
+  provider), an Other files table, a Settings page (language, WiFi
+  networks, idle timeout, API key) and an About page. No browser upload.
+- **USB drive mode** — Home → USB drive exposes the whole SD card as USB
+  mass storage; ejecting it reboots the device.
+- **WiFi on demand** — captive-portal setup (`Annota-Setup`) on first
+  boot, up to 5 saved networks, radio off by default and only brought up
+  for a transcription, File transfer, or a manual Online. On-device
+  scan-and-join and a standalone `Annota-AP` access point when no saved
+  network is in range.
+- **Idle deep sleep** — 1–180 min (default 30), logo sleep screen (3.97:
+  plus notes/battery/SD summary), peripherals powered down first.
+- **English, Italian, French** — one device-wide language for the e-paper
+  UI and the web pages.
+- **Reboot gesture** — hold both buttons 5 s (1.54: Next + Select; 3.97:
+  Press + BOOT), handled on core 0 so it works even when the UI is stuck.
 
 ## Getting started
+
+### Flash a release from the browser
+
+Each GitHub release ships `firmware.bin` (1.54) and
+`firmware-epaper397.bin`, plus ESP Web Tools manifests and the
+bootloader/partition images `tools/package_release.sh` packages for the
+project site's browser flasher (`flash.html`, desktop Chrome or Edge).
+
+### Build from source
 
 Requires [PlatformIO](https://platformio.org/) (CLI or the VS Code
 extension).
@@ -82,174 +100,23 @@ pio run -e esp32-s3-epaper154 -t upload
 pio device monitor
 ```
 
-There's no test
-suite yet (`test/` is the stock PlatformIO placeholder).
+Build both envs after touching shared code. There's no test suite yet
+(`test/` is the stock PlatformIO placeholder).
 
 ### First run
 
-1. Put some `.mp3`/`.wav` files in the root of a FAT-formatted SD card
-   and insert it (or boot without one — the UI shows an "insert an SD
-   card" prompt instead of the file list).
-2. Power on. If no WiFi network is saved, the device opens the
-   `Annota-Setup` access point (no password) and shows an on-screen
-   dialog; connect to it from a phone or laptop and use the captive
-   portal to pick a network.
-3. Once connected, the on-screen WiFi status label updates and the web
-   file manager comes up on the device's IP, port 80.
-4. Use Next/Select to browse the file list, play/record/transcribe/delete
-   an entry. To use transcription, open `/settings` in the browser and
-   enter an API key for whichever provider is compiled in.
+1. Put some `.mp3`/`.wav` files in the root of a FAT32 SD card and insert
+   it (without one the UI shows an "insert an SD card" prompt).
+2. Power on. With no WiFi network saved, the device opens the
+   `Annota-Setup` access point (no password); connect from a phone or
+   laptop and pick a network in the captive portal — or skip it to work
+   offline.
+3. From then on WiFi stays off until needed. Home → File transfer
+   connects and shows the web file manager's address (text + QR code).
+4. Open `/settings` there and enter the AI provider's API key, then
+   Transcribe from a note's action menu on the device or from the web page.
 
-## Architecture
-
-`src/main.cpp` wires everything together in `setup()`. `loop()` runs
-`lv_timer_handler()` first, then `ui_process_input()` (the button-driven
-nav below), then — only after `lv_timer_handler()` returns — the
-deferred-work pumps that a nested LVGL click handler can't safely trigger
-directly (`wifi_process_pending_reconnect()` and
-`transcribe_process_pending()`), then `web_server_handle()`.
-
-### `display_epaper.cpp` / `display_epaper397.cpp` / `display.h`
-
-Bridges the e-paper panel into LVGL v9 — one driver file per board, each
-wrapped in its `BOARD_*` flag; buttons are polled in
-`display_buttons.cpp`. `display_init_panel()` brings up the raw panel only.
-`display_init_input()` brings up the buttons and creates the LVGL display
-(no LVGL input device — button events are polled directly, see
-`ui_epaper.cpp` below).
-
-### `storage.cpp` / `storage.h`
-
-`load_mp3_catalog()` scans the SD root into the global `mp3Files` /
-`mp3FileCount` arrays, filtering out directories and dotfiles.
-
-### `ui_epaper.cpp` / `ui.h`
-
-A small explicit state machine (`Screen` enum) driven by
-`display.h`'s `display_button_poll()`: Next cycles the current
-selection/menu option, Select opens/confirms it (short press) or backs
-out of it (long press). WiFi status, a scrollable file list, and
-per-file Play/Record/Transcribe/Delete/File transfer (a one-file
-download link plus QR code, connecting to WiFi on demand) — deliberately
-no on-screen Settings or WiFi credential entry; those stay on the web UI
-(see `web_server.cpp`). Every screen is rebuilt from scratch
-(`lv_obj_clean()` + repopulate) on each state change rather than kept as
-a tree of show/hide-toggled widgets — cheap next to the e-paper refresh
-itself dominating either way. Selecting Transcribe calls `transcribe.h`'s
-`transcribe_request()` directly; selecting Delete calls `storage.h`'s
-`delete_file()` directly — both safe here since `ui_process_input()` runs
-at `loop()`'s top level, not nested inside `lv_timer_handler()`.
-
-### `speaker.cpp` / `speaker.h`
-
-Owns the onboard audio hardware end to end: an ES8311 I2C codec
-(`es8311.cpp`/`.h`) on a shared I2S bus, feeding an NS4150B amp for
-playback and reading the codec's own mic ADC for recording. Playback
-(`speaker_play()`/`speaker_process()`) decodes MP3 via ESP8266Audio or
-streams WAV straight through; recording (`mic_start_recording()`/
-`mic_process()`) writes plain 16-bit PCM WAV — no encoder needed. Both
-share the same I2C/I2S/PA_EN hardware, so recording
-always stops playback first, and both claim the SD card for their whole
-duration, pumped once per `loop()` iteration via `ui_epaper.cpp`.
-
-### `wifi_manager.cpp` / `wifi_manager.h`
-
-`wifi_connect()`, built on tzapu/WiFiManager, has two paths:
-
-- **No network saved** — opens the `Annota-Setup` captive-portal AP (no
-  password, no timeout) and shows the on-screen dialog, blocking until
-  a network is configured from a phone or laptop.
-- **Network saved** — reconnects directly (no portal), for up to 30
-  seconds.
-
-WiFiManager's "saved" check reads ESP-IDF's own NVS station config,
-which can be stale — left over from a different sketch ever flashed to
-the board — rather than something actually set up here. A timeout on
-that path wipes the saved credentials and falls back to the same setup
-portal, instead of stranding the device offline with no way back to
-configuring an AP. Only if *that* fallback portal is itself exited
-without connecting does it show a warning dialog with a Close button
-and let the device run offline; that dialog only dismisses itself.
-Reconnecting again from there is a separate, explicit action — the
-`/settings` page's "Reconnect WiFi" button, which only calls
-`wifi_request_reconnect()` (it fires from an LVGL click handler already
-nested inside `lv_timer_handler()`, which refuses to run itself again
-while it's running, so the actual retry can't happen there). `loop()`
-picks up the request via `wifi_process_pending_reconnect()`, called
-right after `lv_timer_handler()` returns, never nested inside it.
-
-Must be called after `build_main_screen()` so it has a screen to paint
-status onto.
-
-### `transcribe.cpp` / `transcribe.h` + `transcribe_<provider>.cpp`
-
-AI transcription, split into a provider-agnostic half and a
-provider-specific half so adding a future provider is a new file plus
-a new build flag, not a rewrite.
-
-- `transcribe.h` declares the whole public surface with generic names
-  only (`ai_provider_name()`, `ai_provider_has_api_key()` /
-  `..._get_api_key()` / `..._set_api_key()`, `ai_transcribe_file()`).
-  `ui_epaper.cpp` and `web_server.cpp` only ever call those, never
-  anything provider-specific.
-- `transcribe.cpp` implements the provider-agnostic part:
-  `transcribe_request()` / `transcribe_process_pending()` mirror
-  `wifi_manager.cpp`'s `wifi_request_reconnect()` /
-  `wifi_process_pending_reconnect()` pair, splitting "ask for it" (from
-  `ui_epaper.cpp`'s button handler) from "actually block and repaint"
-  (from `main.cpp`'s `loop()`, after `lv_timer_handler()` returns), for
-  the same reentrancy reason. It `#error`s at compile time if no
-  `AI_PROVIDER_*` build flag is defined, so a missing one fails loudly
-  here instead of as a confusing link error.
-- Exactly one `transcribe_<provider>.cpp` implements the rest
-  (`ai_provider_name()` and `ai_transcribe_file()`). Each file's entire
-  body is wrapped in `#ifdef AI_PROVIDER_<NAME>`, so every provider
-  file can sit in `src/` at once and only the one selected by
-  `platformio.ini`'s build flags compiles to anything.
-- NVS keys are namespaced per provider (e.g. `openaiKey`) so switching
-  the compiled-in provider doesn't feed it a stale key saved for a
-  different one.
-
-Two providers exist today:
-
-- **`transcribe_openai.cpp`** (OpenAI Whisper, `whisper-1`, via
-  `/v1/audio/transcriptions`) streams the upload straight off the SD
-  card through a custom `Stream` subclass wrapping the multipart
-  preamble/file/trailer — the ESP32 doesn't have enough RAM to buffer a
-  whole audio file first — and skips TLS certificate validation
-  (`WiFiClientSecure::setInsecure()`); no root-CA bundle exists in this
-  project.
-- **`transcribe_gemini.cpp`** (Google Gemini) implements the same
-  interface for that provider.
-
-`ai_transcribe_file()` claims the SD card itself (`storage.h`'s
-`sd_begin()` / `sd_end()`); `transcribe_process_pending()` brackets the
-whole blocking call the same way `web_server.cpp`'s handlers do (see
-below).
-
-### `web_server.cpp` / `web_server.h`
-
-`web_server_start()` / `web_server_handle()` run an ESP32-core
-`WebServer` on port 80, started only once `wifi_connect()` succeeds.
-Two pages, in the same dark palette as `ui_epaper.cpp`:
-
-- **`/`** — a file manager (list/download/upload/delete against the SD
-  root), backed by `/api/files`, `/api/download`, `/api/upload`,
-  `/api/delete`.
-- **`/settings`** — WiFi and clock status, SD capacity, Reconnect WiFi,
-  Delete WiFi Setup, and the AI provider's API key field, labeled
-  dynamically from `aiProviderName`; backed by `/api/settings` (GET, a
-  status snapshot), `/api/settings/reconnect`, `/api/settings/forget`,
-  and `/api/settings/ai-key` (POST).
-
-Every handler that touches the card calls `display_suspend_touch()`
-plus `storage.h`'s `sd_begin()` (releasing both afterward) — no-ops on
-this board (there's no shared SPI peripheral to hand off), kept so a
-future board with one wouldn't need new call sites. `/api/settings`
-reports only whether a key is saved, never the key itself — the web
-page can clear or overwrite it but never displays the current value.
-Uploads and deletes don't refresh the on-screen MP3 list; that only
-happens on reboot.
+See the [user manual](docs/user-manual.md) for every screen and control.
 
 ## Configuration
 
@@ -264,64 +131,98 @@ one `AI_PROVIDER_*` flag must be defined:
 -D AI_PROVIDER_GEMINI=1
 ```
 
-Swap the flag for a different provider instead of adding a second one.
-The API key is entered afterward, at runtime, from `/settings` — it's
-stored in NVS under a key namespaced per provider (e.g. `openaiKey`) so
-switching providers doesn't feed the new one a stale key saved for the
-old one.
+Swap the flag instead of adding a second one. The API key is entered at
+runtime from `/settings` and stored in NVS under a key namespaced per
+provider (e.g. `openaiKey`), so switching providers doesn't feed the new
+one a stale key.
+
+### On-device transcription cap
+
+`TRANSCRIBE_MAX_FILE_BYTES`, set per env in `platformio.ini` (2 MB on the
+1.54, 4 MB on the 3.97). Bigger notes are refused on the device with a
+pointer to the web UI's Transcribe button.
 
 ### LVGL
 
 `include/lv_conf.h` is pulled in via `-D LV_CONF_INCLUDE_SIMPLE=1`
 (`include/` is added to the search path explicitly, since PlatformIO
-doesn't do that automatically for `lib_deps` sources like lvgl
-itself). The pinned lvgl version (9.2.2) is a config-compatible match
-for this v9.2.0-format `lv_conf.h` — don't bump it without checking
-that.
+doesn't do that for `lib_deps` sources like lvgl itself). The pinned lvgl
+version (9.2.2) is a config-compatible match for this v9.2.0-format
+`lv_conf.h` — don't bump it without checking that. `src/fonts/` holds
+Montserrat rebuilds with Latin-1 accents (the built-in LVGL fonts are
+ASCII only).
+
+## Translations
+
+Every user-visible string lives in `src/i18n_strings.def` with English,
+Italian and French columns (`TR` rows for the e-paper UI, `TRW` rows for
+the web pages). Run `python3 tools/check_i18n.py` before committing; CI
+runs it too.
+
+## Releases
+
+Fully automated by semantic-release on every merge to `main`: Conventional
+Commit messages pick the version, `include/version.h` is bumped, both envs
+are built, and a GitHub Release is published with one firmware image per
+board plus the browser-flasher assets. Never bump versions or tags by hand.
 
 ## Dependencies
 
 Declared in `platformio.ini`:
 
 - `bblanchon/ArduinoJson @ 7.4.1`
-- `tzapu/WiFiManager @ 2.0.17`
-- `lvgl/lvgl @ 9.2.2` — the registry mirrors lvgl's git tags, which
-  jump from `9.2.2` straight to `9.3.0`; `9.2.2` is what's
-  config-compatible with `lv_conf.h`
-- `earlephilhower/ESP8266Audio @ 2.4.1` — MP3/WAV decode for onboard
-  speaker playback
+- `tzapu/WiFiManager @ 2.0.17` — captive-portal setup
+- `lvgl/lvgl @ 9.2.2` — the registry mirrors lvgl's git tags, which jump
+  from `9.2.2` straight to `9.3.0`; `9.2.2` is what's config-compatible
+  with `lv_conf.h`
+- `earlephilhower/ESP8266Audio @ 2.4.1` — MP3/WAV decode for playback
+- `ricmoo/QRCode @ 0.0.1` — on-screen QR codes
+- `lewisxhe/XPowersLib @ 0.3.3` — AXP2101 PMIC (3.97 only)
 
-The platform itself is the `pioarduino` fork of `espressif32`, tracking
-newer `arduino-esp32` core releases than the stock PlatformIO platform.
+The platform is the `pioarduino` fork of `espressif32`, tracking newer
+`arduino-esp32` core releases than the stock PlatformIO platform.
 
 ## Known gotcha: case-insensitive filesystems
 
-This repo is developed on macOS's default case-insensitive filesystem.
-`#include <WiFi.h>` (the Arduino core header) will silently resolve to
-a project file named `wifi.h` / `wifi.cpp` sitting in `-Isrc`, breaking
-the build in confusing ways. That's why the WiFi module here is named
-`wifi_manager.*`, not `wifi.*` — keep that naming if you touch it.
+On macOS's default case-insensitive filesystem, `#include <WiFi.h>` (the
+Arduino core header) silently resolves to a project file named `wifi.h`
+in `-Isrc`. That's why the WiFi module is named `wifi_manager.*` — keep
+that naming if you touch it.
 
 ## Repository layout
 
 ```
 include/
-  lv_conf.h              LVGL v9.2.0-format configuration
+  lv_conf.h               LVGL v9.2.0-format configuration
+  version.h               FW_VERSION, bumped by semantic-release
+  fonts_it.h              declarations for src/fonts/
 src/
   main.cpp                setup()/loop(), wires every module together
   board.h                 per-board pins and capabilities (BOARD_* flags)
-  display_epaper.cpp/.h   1.54 e-paper panel driver → LVGL bridge
-  display_epaper397.cpp   3.97 e-paper panel driver → LVGL bridge
-  display_buttons.cpp     button polling (both boards)
-  storage.cpp/.h          SD card catalog scan
-  ui_epaper.cpp            LVGL screens: file list, dialogs, button nav
-  speaker.cpp/.h           ES8311 codec: onboard playback + mic recording
-  es8311.cpp/.h            ES8311 codec I2C register driver
-  wifi_manager.cpp/.h     WiFiManager-based onboarding/reconnect
-  transcribe.cpp/.h       provider-agnostic transcription request/dispatch
-  transcribe_openai.cpp   OpenAI Whisper provider
+  display.h               panel + button interface shared by both boards
+  display_epaper.cpp      1.54 e-paper panel driver -> LVGL bridge
+  display_epaper397.cpp   3.97 e-paper panel driver -> LVGL bridge
+  display_buttons.cpp     button/rotary polling (both boards)
+  ui_epaper.cpp, ui.h     LVGL screens and button-driven state machine
+  storage.cpp/.h          SD card mount, Notes catalog, file helpers
+  speaker.cpp/.h          ES8311 codec: playback + mic recording
+  es8311.cpp/.h           ES8311 I2C register driver
+  battery.cpp/.h          battery ADC (1.54) / AXP2101 PMIC (3.97)
+  sleep.cpp/.h            idle deep sleep and its timeout setting
+  reboot_combo.cpp/.h     hold-both-buttons reboot task
+  usb_drive.cpp/.h        SD card as USB mass storage
+  wifi_manager.cpp/.h     WiFi setup portal, saved networks, on-demand connect
+  transcribe.cpp/.h       provider-agnostic transcription request/progress
+  transcribe_openai.cpp   OpenAI Whisper + title/abstract provider
+  openai_ca.h             embedded root CAs for api.openai.com
   transcribe_gemini.cpp   Google Gemini provider
-  web_server.cpp/.h       HTTP file manager + settings page
-test/                     stock PlatformIO placeholder, unused
-platformio.ini            build environments (one per board), dependencies, build flags
+  web_server.cpp/.h       HTTP file manager, settings and about pages
+  i18n.cpp/.h             language setting and lookups
+  i18n_strings.def        EN/IT/FR string table
+  fonts/                  Montserrat with Latin-1 accents
+docs/                     project site pages and user manual
+tools/
+  check_i18n.py           translation checker (also run in CI)
+  package_release.sh      browser-flasher assets for each release
+platformio.ini            one env per board, dependencies, build flags
 ```

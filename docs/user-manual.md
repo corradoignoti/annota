@@ -1,348 +1,352 @@
 # Annota User Manual
 
-Annota turns a Waveshare ESP32-S3-ePaper-1.54 board into a pocket voice
-recorder and audio file browser: a 1.54" 200x200 black-and-white e-paper
-screen, two buttons, an onboard microphone/speaker, and an SD card slot.
-It records voice memos, plays back and organizes audio files on the SD
-card, transcribes them to text using an AI provider (OpenAI by default),
-and exposes a WiFi-based web file manager for the same SD card from any
-browser on the same network.
+Annota turns a Waveshare ESP32-S3 e-paper board into a pocket voice
+recorder: record voice notes on the device, play them back, and turn them
+into text with AI transcription (OpenAI by default) — each transcript
+saved next to its audio file with an AI-written title and abstract on top.
+A web file manager reaches the same SD card from any browser on your
+network, and the whole card can also be mounted on a computer as a USB
+drive.
 
-This manual covers the on-device screen, the two-button controls, and the
-web interface, as they exist in this version of the firmware.
+Two boards are supported, running the same app:
+
+- **ESP32-S3-ePaper-1.54** — 1.54" 200×200 e-paper screen, two buttons.
+- **ESP32-S3-ePaper-3.97** — 3.97" 800×480 e-paper screen used upright
+  (portrait), a 3-way rotary switch (Up / Press / Down) plus a BOOT
+  button.
+
+Where the two differ, this manual says so. The device UI and the web
+pages are available in English, Italian and French (see
+[Settings](#settings)).
 
 ## What you need
 
 - The device, powered on (USB or its battery).
-- A microSD card inserted, formatted FAT32, with audio files in the root
-  folder (subfolders and hidden/dot files are ignored).
-- Optionally, a WiFi network, to use the web file manager and AI
-  transcription.
+- A microSD card, formatted FAT32. Audio files (`.mp3`, `.wav`) go in the
+  root folder; subfolders and hidden/dot files are ignored.
+- Optionally, a WiFi network and an AI provider API key, for
+  transcription and the web file manager. Recording, playback, deleting,
+  reading transcripts and USB drive mode all work offline.
 
-## The two buttons
+## Controls
 
-The device has exactly two physical controls:
+### 1.54 (two buttons)
 
-- **Next** (labeled BOOT on the board) — moves the selection or highlighted
-  menu option forward.
-- **Select** (labeled PWR on the board) — opens/confirms with a **short
-  press**, backs out/cancels with a **long press** (about 0.7 seconds).
+- **Next** (labeled BOOT) — moves the highlight forward.
+- **Select** (labeled PWR) — **short press** opens/confirms, **long
+  press** (about 0.7 s) backs out or cancels.
 
-A few gestures build on top of that:
+### 3.97 (rotary switch + BOOT)
 
-- **Long press Next** on the file list — opens the **Home screen** (see
-  below), a small carousel for switching to the Audio Files list, the Text
-  Files list, or starting a WiFi file transfer.
-- **Long press Select** on the file list — opens the on-device Menu
-  (Refresh / Offline↔Online / Reboot / Close).
-- **Double-press Select quickly** (within about a third of a second) on any
-  row but the first — instead of opening that file's action menu, jumps the
-  selection straight back to the top "Record new" row. A single press still
-  opens the action menu as usual; the device briefly waits to see if a
-  second press is coming before acting.
-- **Hold both buttons together for 5 seconds** — from anywhere, stops any
-  recording/playback in progress and jumps straight to the on-device
-  **WiFi management** screen (join a saved network, or create a standalone
-  access point — see "WiFi setup" below). This is the fastest way to reach
-  WiFi options without going through the file list or Home screen, and the
-  main recovery path when the device is offline and the web UI isn't
-  reachable.
+- **Down** — moves the highlight forward (same as Next on the 1.54).
+- **Up** — moves the highlight back.
+- **Press** — the Select button: short press opens/confirms, long press
+  backs out.
+- **BOOT** — goes back (same as a long Select). On the Notes list it opens
+  the Home screen.
+
+### On both boards
+
+- The bottom line of every screen is a hint showing what the buttons do
+  right now.
+- **Hold both buttons for 5 seconds to reboot** — Next + Select on the
+  1.54, Press + BOOT on the 3.97. Works even if the device seems frozen.
 
 ## Status bar
 
-The black bar at the top of the screen is always visible, regardless of
-which screen is showing below it:
+The black bar at the top is always visible:
 
-- Left side: WiFi/status text (e.g. connection status, or a temporary
-  message).
-- Right side: battery percentage with a battery icon, and — if a card is
-  inserted — an SD card icon.
+- Left: WiFi status — the device's IP address when connected, blank when
+  WiFi is off, or a short message while connecting.
+- Right: battery percentage and, when a card is inserted, an SD card
+  icon.
 
-Battery percentage is a voltage-based estimate (0–100%), not a precise fuel
-gauge; expect it to dip during playback/recording and recover at rest.
+On the 1.54 the battery percentage is estimated from the battery voltage
+and dips during playback/recording. The 3.97 reads it from its power
+management chip; with no battery fitted it shows 100%.
 
-## No SD card
+## Notes list
 
-If no SD card is detected, the screen shows "Insert an SD card to see your
-audio files" and no navigation is available. Insert a card and reboot the
-device (or use the on-device Menu's Refresh once the device recognizes it)
-to load it.
+The main screen lists every audio file on the card — your **notes**. A
+**Record new** row is always at the top. Under each note's filename, the
+AI title of its transcript is shown once it has been transcribed.
 
-## The file list
+Notes not yet transcribed come first, then transcribed ones, newest
+transcript first.
 
-The main screen lists files from the SD card root, one of two modes at a
-time:
+- **Next** / **Down** — move down (wraps around). **Up** (3.97) — move up.
+- **Select** on **Record new** — starts recording straight away.
+- **Select** on a note — opens its **action menu**.
+- **Long press Select** — opens the device **Menu**.
+- **Long press Next** (1.54) or **BOOT** (3.97) — opens the **Home**
+  screen.
+- Jump back to the top: **double-press Select** quickly on the 1.54;
+  **hold Up** on the 3.97.
 
-- **Audio Files** — playable audio (mp3/wav and other configured audio
-  extensions). This view also shows a **"Record new"** row pinned above the
-  real files.
-- **Text Files** — the `.txt` transcripts saved by transcription (see
-  below). No "Record new" row here.
-
-Long-press **Next** to open the Home screen, then pick **Audio** or
-**Text** there to switch modes (see "Home screen" below). The header row
-above the list shows which mode you're in and how many files it holds; a
-small down-arrow appears if there are more rows than fit on screen at once
-(the list wraps around with **Next**, it doesn't stop at the last item).
-
-- **Next** (short press) — move the highlighted row down one (wraps to the
-  top).
-- **Select** (short press) on a file — opens that file's **action menu**.
-- **Select** (short press) on the "Record new" row — starts recording
-  immediately (no action menu, since there's nothing else to choose there).
-- **Select** (long press) — opens the on-device **Menu** (Refresh /
-  Offline↔Online / Reboot / Close).
+If no card is detected, the screen shows "Insert an SD card to see your
+audio files" instead. Insert one and reboot.
 
 ### Recording
 
-Selecting "Record new" starts recording a new voice memo straight to the SD
-card (plain 16-bit PCM WAV, no encoding). The screen shows "Recording
-<filename>..."; press **Select** (short or long) to stop. The new file
-appears in the Audio Files list immediately afterward. If the microphone
-fails partway through, the screen shows the error message instead and
-recording stops automatically.
+Recording writes a new `RECnnnn.wav` file (uncompressed 16-bit WAV) to the
+card. The screen shows "Recording RECnnnn.wav..."; press **Select** to
+stop. The new note appears at the top of the list. If the microphone or
+the card fails, an error message replaces the recording screen.
 
-Recording and playback share the same audio hardware and never run at the
-same time; starting one stops the other.
+Recording and playback share the audio hardware, so starting one stops
+the other.
 
-### Action menu (per file)
+### Action menu
 
-Opened with a short **Select** press on a file row. **Next** cycles the
-highlighted option, **Select** (short) chooses it, **Select** (long) backs
-out to the list.
+Opened with **Select** on a note:
 
-For audio files:
-- **Play** — plays the file through the onboard speaker. Press **Select**
-  to stop; the screen returns to the list when playback finishes on its
-  own too.
-- **Transcribe** — sends the file to the configured AI provider (see
-  "Transcription" below) and saves the result as a `.txt` file with the
-  same name.
-- **Details** — shows the file's name, size, and playing time (minutes
-  and seconds). Press **Select** to go back to the menu.
-- **Delete** — asks to confirm, then deletes the file.
-- **File transfer** — connects to WiFi and shows this one file's download
-  link as text plus a QR code, so you can grab just that file from a
-  phone or laptop without opening the full web file manager. Press
-  **Select** to close it and turn WiFi back off.
+- **Play** — plays the note through the speaker. **Select** stops; the
+  list comes back by itself when the track ends.
+- **Transcribe** — sends the note to the AI provider (see
+  [Transcription](#transcription)). Once a note has a transcript, this
+  item becomes **View transcription** instead.
+- **View transcription** — opens the transcript for reading. On the 1.54,
+  **Select** scrolls down, **Next** scrolls up, **long press Select**
+  closes. On the 3.97, **Down**/**Up** scroll and **BOOT** closes.
+- **Details** — name, size and playing time, plus the transcript's size
+  and date when there is one. **Select** goes back.
+- **Delete** — asks to confirm, then deletes the note. If the note has a
+  transcript, the confirmation warns you and deletes both the audio and
+  its `.txt`.
 - **Cancel** — closes the menu.
 
-For text files (transcripts) — no Play/Transcribe, since there's nothing
-to play or re-transcribe:
-- **View** — opens the transcript to read on-device. **Select** (short)
-  scrolls down, **Next** scrolls up, **Select** (long) closes back to the
-  list.
-- **Details** — shows the file's name, size, and creation date. Press
-  **Select** to go back to the menu.
-- **Delete** — asks to confirm, then deletes the file.
-- **File transfer** — same as above, for this transcript file.
-- **Cancel** — closes the menu.
+### Volume (3.97 only)
 
-### On-device Menu
+While a note is playing, **hold Up or Down for 3 seconds** to open the
+Volume menu: **Low**, **Medium** or **High**. **Up**/**Down** move,
+**Press** applies the level immediately (playback keeps going, so you can
+try them), **BOOT** closes. The level is remembered.
 
-Opened with a long **Select** press from the file list:
+### Menu
 
-- **Refresh** — re-scans the SD card and returns to the (current-mode)
-  file list.
-- **Offline** / **Online** — toggles WiFi. The label always reflects the
-  live connection state. Choosing **Offline** disconnects and powers down
-  the WiFi radio (saved network credentials are kept); choosing **Online**
-  reconnects using the saved networks (see "Reconnecting" under "WiFi
-  setup" below). This does not erase any saved WiFi setup.
+Opened with a long **Select** press on the Notes list:
+
+- **Refresh** — re-scans the SD card.
+- **Offline** / **Online** — turns WiFi off, or connects to a saved
+  network. The label shows the action available right now. Saved networks
+  are never erased from here.
 - **Reboot** — asks to confirm, then restarts the device.
-- **Close** — closes the menu with no action.
+- **Close** — closes the menu.
 
 ## Home screen
 
-Reached with a **long press of Next** from the file list. A 3-item
-carousel — **Audio**, **Text**, **File transfer** — shown one at a time;
-the hint line at the bottom shows your position (e.g. "(1/3)").
+A three-item carousel, one item at a time:
 
-- **Next** (short press) — cycles to the next item, wrapping around.
-- **Select** (short press) — chooses the highlighted item.
-- **Select** (long press) — backs out to the file list with no change.
+- **Notes** — re-scans the card and shows the Notes list.
+- **File transfer** — connects to WiFi and shows the web file manager's
+  address as text and a QR code to scan with a phone. **Select** closes
+  the screen and turns WiFi off again. If no saved network is in range,
+  it opens [WiFi management](#on-device-wifi-management) instead.
+- **USB drive** — exposes the whole SD card to a computer as a USB drive
+  (see [USB drive mode](#usb-drive-mode)).
 
-What each item does:
-
-- **Audio** — loads and shows the Audio Files list.
-- **Text** — loads and shows the Text Files (transcripts) list.
-- **File transfer** — connects to WiFi (trying the most recently joined
-  network first) and, once connected, shows a QR code plus the device's
-  web address so you can reach its file manager from a phone or laptop. If
-  no saved network is in range, it opens the WiFi management screen
-  instead so you can join one or create a standalone access point (see
-  "WiFi setup" below).
+**Next**/**Down** (and **Up** on the 3.97) cycle, **Select** chooses,
+long **Select** or **BOOT** goes back to the Notes list.
 
 ## Transcription
 
-Selecting **Transcribe** on an audio file uploads it to the configured AI
-provider's speech-to-text API and saves the returned text as a sibling
-`.txt` file (e.g. `memo1.wav` → `memo1.txt`). This version is built for
-OpenAI's Whisper API by default (`whisper-1`); switching providers is a
-compile-time choice.
+**Transcribe** uploads the note to the AI provider and saves the result as
+a `.txt` file with the same name (`REC0007.wav` → `REC0007.txt`). With
+OpenAI (the default build), the text file contains:
 
-- If the device is offline, it makes one attempt to reconnect to a saved
-  network first (see "Reconnecting" under "WiFi setup" below). If that
-  fails too, you'll see "No WiFi connection." instead of a transcript.
-- An AI provider API key must already be set — from the web UI's Settings
-  page (see below). Transcription fails with an error if no key is saved.
-- The screen shows "Transcribing <filename>..." while the request is in
-  flight (this blocks the device — no button input — since it's a network
-  round-trip), then a result screen ("Transcription saved." or an error
-  message). Press **Select** to close.
-- The resulting `.txt` file shows up under the Text Files view (long-press
-  **Next** from the list to switch there).
+1. a short AI-written **title**,
+2. an **abstract** of the note,
+3. the full **transcript**,
 
-## WiFi setup
+in the language that was spoken. If the title/abstract step fails, the
+plain transcript is still saved.
 
-**First time / no network saved:** the device opens its own WiFi access
-point named **"Annota-Setup"** (no password) and shows an on-screen prompt.
-From a phone or laptop, join that network — a captive portal (or
-`http://192.168.4.1`) lets you pick your home WiFi network and enter its
-password. Once submitted, the device connects and remembers the network
-for every future boot. This screen can also be **skipped**: hold **Select**
-long to cancel setup and continue straight to the file list with WiFi off
-— useful if you don't want to set up WiFi yet, or at all.
+What happens when you choose Transcribe:
 
-**The device remembers up to 5 networks**, not just one — add, edit, or
-remove them from the web Settings page's WiFi Networks card (see "Web file
-manager" below), or add one on-device by joining it directly (below).
+- WiFi is off by default, so the device connects to a saved network first
+  and turns WiFi off again when done (unless you had already switched it
+  on yourself).
+- If no saved network is reachable, the device scans and lists your saved
+  networks that are in range; pick one to join and the transcription
+  carries on. Back out to cancel.
+- The progress screen shows each step — *1/5 Connecting WiFi*, *2/5
+  Uploading* (with a progress bar), *3/5 Waiting for transcription*, *4/5
+  Writing title & abstract*, *5/5 Saving* — then "Transcription saved." or
+  an error. **Select** closes it. The device can't be used while this runs.
+- On failure, a diagnostic log is saved next to the note as
+  `<name>_error.txt` and named on the result screen. It is deleted again by
+  the next successful transcription of that note.
 
-**Reconnecting** (at boot, from the on-device Menu's Offline↔Online
-toggle, the Settings page's **Reconnect WiFi** button, or before a
-transcription) always follows the same order: try whichever network was
-most recently joined by hand first (a quick ~5 second attempt), then, if
-that fails or wasn't set, sweep every other saved network for up to 10
-seconds and connect to whichever is in range with the best signal. If
-nothing is reachable, the device just continues offline — nothing modal
-interrupts whatever's on screen, only the status bar reflects it. Recording,
-playback, deleting, and browsing all work fine offline — only transcription
-and the web file manager need a network.
+Notes larger than **2 MB on the 1.54** or **4 MB on the 3.97** are too big
+for the device to upload itself; the screen tells you to use the web file
+manager's **Transcribe** button instead, which has no such limit.
 
-Every ~15 minutes, if the radio is on but the network has become
-unreachable (not just a one-time reconnect failure), the device
-automatically drops to offline mode on its own to save battery, rather
-than burning power retrying against a network that's gone.
+An API key must be saved on the web [Settings](#settings) page first.
+
+## WiFi
+
+### First setup
+
+With no network saved, the device opens its own open access point,
+**Annota-Setup**, and shows a prompt. Join it from a phone or laptop; a
+captive portal (or `http://192.168.4.1`) lets you pick your WiFi network
+and enter its password. To skip setup and work offline, **long press
+Select** (1.54) or press **BOOT** (3.97).
+
+### Saved networks and reconnecting
+
+The device remembers **up to 5 networks**; manage them on the web
+Settings page. It never connects on its own at boot — WiFi stays off to
+save battery until something needs it: a transcription, **File
+transfer**, or **Online** in the Menu.
+
+When connecting, it first tries the network you joined most recently by
+hand, then any other saved network in range, strongest signal first. If
+none is reachable it simply stays offline; only the status bar changes.
+
+If WiFi has been left on but the network disappears, the device turns
+WiFi off by itself after about 15 minutes.
 
 ### On-device WiFi management
 
-Reach this screen either by choosing **File transfer** on the Home screen
-when no saved network is in range, or by **holding both buttons for 5
-seconds** from anywhere. Two options:
+Shown by **File transfer** when no saved network is in range:
 
-- **Join an access point** — scans for nearby networks, then lists only
-  your *saved* networks that were actually found in range (strongest
-  signal first); pick one to connect. If none of your saved networks are
-  nearby, it says so instead of listing anything.
-- **Create an AP** — starts a standalone access point named **"Annota-AP"**
-  (open, no password) alongside a QR code you can scan to join it directly
-  from a phone. Use this to reach the device's web UI with no router
-  around — e.g. to add or fix a saved network. Press **Select** to stop
-  the AP and return to the list.
+- **Join an access point** — scans and lists the saved networks that are
+  in range, strongest first. Pick one to connect. Networks you haven't
+  saved are not listed — add them on the Settings page.
+- **Create an AP** — starts an open access point named **Annota-AP** and
+  shows how to reach the web UI through it, with no router needed. On the
+  3.97 two QR codes appear together: scan the first to join Annota-AP,
+  then the second to open the web page. **Select** stops the access point.
 
-Once connected — either by joining a network here, or via the Home
-screen's File transfer shortcut — the device shows a "Connected" screen
-with a QR code encoding its own web address (`http://<ip>`), plus the
-address as text. Pressing **Select** on this screen turns WiFi back off
-and returns to the list.
+Once connected, a screen shows the device's web address as text and a QR
+code. **Select** closes it and turns WiFi off.
 
-**Forgetting saved networks:** this is deliberately hard to trigger by
-accident, since it's irreversible, and only available from the web UI now:
-Settings → **Delete WiFi Setup** (with a confirmation) erases *every*
-saved network and reboots straight into the first-time setup portal. (The
-old on-device 5-second button-hold for this has been repurposed — it now
-opens WiFi management, above, instead of erasing anything.) To remove or
-fix a single network without wiping the rest, use the Settings page's WiFi
-Networks card instead.
+### Starting over
+
+To get back to the **Annota-Setup** portal, remove every saved network on
+the Settings page and reboot.
+
+## USB drive mode
+
+**Home → USB drive** turns the device into a USB drive: connect it to a
+computer with a USB cable and the SD card shows up like a memory stick.
+Copy notes off, or drop audio files on, then **eject the drive on the
+computer** — the device restarts and re-scans the card by itself.
+
+- WiFi is turned off while the drive is mounted.
+- Pulling the cable also ends the mode (the device restarts).
+- To leave without a computer: **long press Select** (1.54) or **BOOT**
+  (3.97). Eject the drive on the computer first if it was mounted, or
+  files being copied may be damaged.
+- Copies are fairly slow, so prefer the web file manager or the card
+  reader for large batches.
 
 ## Web file manager
 
-Once the device is on WiFi, note the IP address shown in its status bar (or
-the web UI's Settings page), and open `http://<that-ip>/` in a browser on
-the same network. Two pages, reachable via the top nav bar:
+When the device is online, open `http://<device-ip>/` in a browser on the
+same network. The address is in the status bar and on the **File
+transfer** screen. Three pages, linked from the top bar: **Files**,
+**Settings**, **About**.
 
-### Files (`/`)
+### Files
 
-A table of every file on the SD card root: name, date (text files only),
-size, and per-row actions. Features:
+A card at the top shows SD card space used/free. Below it:
 
-- **Upload** — drag a file onto the drop area, or use "choose one", to
-  upload it to the SD card root. A progress bar tracks the upload.
-- **Download** — per file, or in bulk via the selection checkboxes.
-- **Play** — streams an audio file in-browser via a small player bar.
-- **Transcribe** — per audio file (or in bulk, via the batch bar). This
-  runs independently of the on-device Transcribe option: your browser
-  fetches the saved API key from the device, downloads the audio file,
-  sends it straight to the AI provider itself, and posts the resulting
-  text back to the device to save — the device's own network stack is only
-  briefly involved, not for the whole transcription. The result is the
-  same sibling `.txt` file either way.
-- **Delete** — per file, or in bulk, with confirmation.
-- **Select all / batch actions** — check multiple rows to download,
-  transcribe, or delete them together.
-- Sortable columns (Name, Date).
+**Notes** — one row per audio file, with its transcript folded in: the
+AI title under the filename, the date and the size. Per-row actions:
 
-Uploads and deletes made here update the SD card immediately, but the
-on-device file list is only refreshed on the device's next reboot or its
-own Menu → Refresh.
+- **Play** — plays the note in the browser.
+- **Transcribe** — transcribes it from your browser (see below). Becomes
+  **View transcription** once a transcript exists.
+- **Download** — downloads the audio and, if present, its transcript.
+- **Delete** — deletes the audio and its transcript, after confirming.
 
-### Settings (`/settings`)
+Tick rows (or **Select all**) to **Download**, **Transcribe** or
+**Delete** several at once. Click **Name** or **Date** to sort; clicking
+again reverses, a third time goes back to the device's own order
+(untranscribed first, then newest transcript).
 
-- **Status** — live WiFi connection state (IP address, or "working
-  offline") and whether the system clock has synced over NTP.
-- **SD card** — capacity, space used (with a usage bar), and a count of
-  audio files vs. text files.
-- **WiFi** — **Reconnect WiFi** button (disabled while already connected).
-- **WiFi Networks** — the up-to-5 saved networks: SSID list with per-row
-  **Edit** (retype the password — never shown, only ever write-only, same
-  as the AI key below) and **Remove** buttons, plus an "Add network" form
-  (SSID + optional password).
-- **Power** — a slider (1–180 minutes) for how long the device stays idle
-  before deep-sleeping to save battery. Takes effect immediately, no
-  reboot needed.
-- **<Provider> API Key** (e.g. "OpenAI API Key") — shows whether a key is
-  currently saved (never the key's actual value, since this page is served
-  over plain HTTP). Enter a new key and **Save API Key**, or **Clear API
-  Key** to remove it. Leaving the field blank and saving does nothing.
-- **Danger zone** — **Delete WiFi Setup**, with a confirmation prompt. See
-  "Forgetting saved networks" above.
+**Sync** transcribes, one after the other, every audio file that has no
+transcript yet. Files that failed before (that only have an
+`_error.txt`) are retried.
+
+**Other files** — everything else on the card (stray `.txt` files, error
+logs, files copied over USB), with view, download and delete.
+
+Uploading from the browser is not supported; copy files with USB drive
+mode or a card reader.
+
+**How browser transcription works:** your browser fetches the API key
+from the device, downloads the audio, sends it to the AI provider itself,
+then sends the finished text back to the device to save. Progress is shown
+step by step at the top of the page (download, upload, waiting, title &
+abstract, saving). Because the device only serves the file and stores the
+result, there is no size limit, and long notes upload more reliably than
+from the device. Keep the page open until it finishes.
+
+Changes made here show up on the device's Notes list by themselves the
+next time it is on the Notes list or Home screen.
+
+### Settings
+
+- **Language** — English, Italiano or Français, for the device screen and
+  the web pages. Applies immediately.
+- **Status** — WiFi connection and whether the clock has synced.
+- **SD card** — capacity, space used, number of audio and text files.
+- **WiFi Networks** — the saved networks (up to 5), each with **Edit**
+  (enter a new password) and **Remove**, plus a form to **Add network**
+  (leave the password blank for an open network). **Reconnect WiFi**
+  retries the connection; the page stops responding for up to 30 seconds
+  while it does.
+- **Power** — **Sleep after idle**, 1 to 180 minutes (default 30).
+  Applies immediately.
+- **API Key** (e.g. "OpenAI API Key") — shows whether a key is saved,
+  never the key itself. Paste a new key and **Save API Key**, or **Clear
+  API Key**. Saving an empty field keeps the current key.
+
+### About
+
+What Annota is, the board it runs on, and credits for the open-source
+software, fonts and icons it uses.
 
 ## Power and sleep
 
-To save battery, the device automatically deep-sleeps after a period of
-no activity (default 30 minutes; adjustable 1–180 minutes on the Settings
-page, see above). "Activity" includes any button press and any request
-served by the web file manager — so actively browsing/uploading/
-downloading over WiFi, or a transcription in progress (on-device or via
-the web UI), keeps it awake. Recording, playing back, or transcribing on
-the device also blocks sleep outright while in progress.
+After a period with no activity (default 30 minutes, set on the Settings
+page) the device goes into deep sleep to save battery. Button presses and
+any use of the web pages count as activity. It never sleeps while
+recording, playing, transcribing (on the device or from the browser) or in
+USB drive mode.
 
-Before sleeping, the screen shows "Sleeping... Hold Select to wake."
+The sleep screen shows the Annota logo and how to wake the device. On the
+3.97 it also shows a summary: number of notes, how many are not yet
+transcribed, battery level, and SD card space used.
 
-**To wake the device:** hold the **Select** button. (Next/BOOT does not
-wake it — this is deliberate, so the on-screen instruction stays accurate.)
-Waking is a full restart: the device boots up the same way it does from a
-cold power-on, including re-scanning the SD card and reconnecting to WiFi.
+**To wake:** hold **Select** on the 1.54 (BOOT/Next does not wake it);
+press the knob on the 3.97. Waking is a full restart, the same as turning
+the device on.
 
 ## Troubleshooting
 
-- **"Insert an SD card..."** — no card detected. Check it's seated
-  correctly and formatted FAT32.
-- **Device seems unresponsive after a long idle period** — it's likely
-  asleep; hold Select to wake it.
-- **Transcription fails with "No WiFi connection."** — the device is
-  offline and couldn't reconnect to the saved network. Check the router,
-  or use the on-device Menu's Online option / the web UI's Reconnect WiFi
-  button.
-- **Transcription fails despite being online** — check that an API key is
-  saved on the Settings page.
-- **Can't reach the web file manager** — confirm the device's WiFi status
-  (status bar, or Settings page once reachable) and that your browser is
-  on the same network. If the device is offline, hold both buttons for 5
-  seconds to open on-device WiFi management: join another saved network in
-  range, or create the standalone "Annota-AP" access point and scan its QR
-  code from a phone to reach the web UI, then use Delete WiFi Setup there
-  for a clean reset if needed.
-- **Stuck in "Annota-Setup" mode after already configuring WiFi once** —
-  this only happens after an explicit web UI "Delete WiFi Setup".
-  Reconfigure a network the same way as first-time setup.
+- **"Insert an SD card..."** — no card detected. Check it is seated and
+  formatted FAT32, then reboot.
+- **Screen frozen or device unresponsive** — hold both buttons for 5
+  seconds to reboot (Next + Select on the 1.54, Press + BOOT on the 3.97).
+  If it's showing the sleep screen, it's asleep: wake it as above.
+- **"No ... API key set"** — save a key on the Settings page.
+- **"File too large to transcribe on the device"** — use **Transcribe** in
+  the web file manager instead.
+- **Transcription failed** — open the `<name>_error.txt` file named on the
+  result screen (web file manager → Other files) for the details. Long
+  notes on a weak WiFi signal are the most common cause; try again closer
+  to the router, or transcribe from the browser.
+- **"Could not join the WiFi network."** — the network chosen from the
+  list didn't accept the connection. Check its password on the Settings
+  page.
+- **Can't reach the web file manager** — WiFi is off by default: use
+  **Home → File transfer**, or **Menu → Online**, then use the address on
+  screen from a device on the same network. With no router around, use
+  **Create an AP** on the WiFi management screen.
+- **Notes copied in over USB don't show up** — make sure they are in the
+  card's root folder and end in `.mp3` or `.wav`, then use **Menu →
+  Refresh**.

@@ -165,6 +165,7 @@
   .step .t { font-size: 0.85rem; padding-top: 0.15rem; }
   .step .t b { display: block; margin-bottom: 0.1rem; }
   .step .t span { color: var(--ink-soft); font-size: 0.8rem; }
+  .step .t code { overflow-wrap: anywhere; }
 
   .specs { padding: 0.9rem; font-size: 0.85rem; }
   .specs dl { display: grid; grid-template-columns: auto 1fr; gap: 0.4rem 0.9rem; margin: 0; }
@@ -231,17 +232,18 @@
     <div class="eyebrow">Open-source firmware · PlatformIO / Arduino</div>
     <h2>A pocket e-paper recorder that transcribes itself.</h2>
     <p>
-      Annota turns a Waveshare ESP32-S3 1.54" e-paper board into a standalone
-      voice-note device: record straight from the onboard mic, browse the SD
-      card on a two-button e-paper UI, and send any clip off to an AI
-      provider for transcription — on-device or from the built-in web file
-      manager. No app, no cloud dashboard, just a card full of MP3/WAV files
-      and their .txt siblings.
+      Annota turns a Waveshare ESP32-S3 e-paper board — the 1.54" or the
+      3.97" — into a standalone voice-note device: record straight from the
+      onboard mic, browse your notes on a button-driven e-paper UI, and send
+      any clip off to an AI provider for a transcript with its own title and
+      abstract — from the device or from the built-in web file manager. No
+      app, no cloud dashboard, just a card full of MP3/WAV files and their
+      .txt siblings.
     </p>
     <div class="hero-actions">
-      <a class="btn accent" href="https://github.com/corradoignoti/annota" target="_blank" rel="noopener">★ View on GitHub</a>
-      <a class="btn" href="#setup">Build it</a>
+      <a class="btn accent" href="flash.html">⚡ Flash from the browser</a>
       <a class="btn" href="user-manual.html">Read the manual</a>
+      <a class="btn" href="https://github.com/corradoignoti/annota" target="_blank" rel="noopener">★ View on GitHub</a>
     </div>
   </div>
 
@@ -249,17 +251,18 @@
     <div class="card-header">Device</div>
     <div class="device-mock">
       <div class="screen">
-        <div class="bar"><span>WiFi ●</span><span>82%</span></div>
+        <div class="bar"><span></span><span>▮ 82%</span></div>
         <ul>
-          <li class="sel">▶ memo_014.wav</li>
-          <li>voice_note_9.mp3</li>
-          <li>meeting_recap.wav</li>
-          <li>idea_dump.mp3</li>
-          <li>+ Record new</li>
+          <li><b>♪ Notes (4)</b></li>
+          <li>● Record new</li>
+          <li class="sel">REC0014.wav</li>
+          <li>REC0013.wav · Budget review</li>
+          <li>REC0012.wav · Gift ideas</li>
+          <li>meeting_recap.mp3 · Q3 kickoff</li>
         </ul>
       </div>
     </div>
-    <div class="caption">200×200 mono e-paper · Next / Select buttons only</div>
+    <div class="caption">Untranscribed notes first, then each note under its AI title</div>
   </div>
 
   <div class="card" id="features">
@@ -268,32 +271,42 @@
       <div class="feature">
         <span class="icon">🎙️</span>
         <h3>Record on-device</h3>
-        <p>ES8311 codec mic straight to 16-bit PCM WAV on the SD card, no working set to allocate.</p>
+        <p>Onboard mic straight to 16-bit WAV on the SD card; play notes back through the speaker.</p>
       </div>
       <div class="feature">
         <span class="icon">📝</span>
         <h3>AI transcription</h3>
-        <p>Send a clip to OpenAI Whisper (or Gemini) and get a sibling .txt file back — from the device or the browser.</p>
+        <p>OpenAI Whisper (or Gemini) writes a sibling .txt with an AI title and abstract on top — from the device or the browser.</p>
       </div>
       <div class="feature">
         <span class="icon">🌐</span>
         <h3>Web file manager</h3>
-        <p>Browse, play, upload, download, delete, and transcribe SD files from any browser on the network.</p>
+        <p>Play, transcribe, download and delete notes from any browser; one Sync button transcribes everything still pending.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">🔌</span>
+        <h3>USB drive mode</h3>
+        <p>Plug into a computer and the whole SD card mounts as a USB drive. Eject it and the device picks up the changes.</p>
       </div>
       <div class="feature">
         <span class="icon">📶</span>
-        <h3>WiFi captive setup</h3>
-        <p>First boot opens a setup AP; after that it reconnects quietly and stays usable offline for everything but transcription.</p>
+        <h3>WiFi only when needed</h3>
+        <p>Captive-portal setup, up to 5 saved networks, radio off by default — everything but transcription works offline.</p>
       </div>
       <div class="feature">
         <span class="icon">🔋</span>
         <h3>Deep-sleep idle</h3>
-        <p>Configurable idle timeout drops into deep sleep, woken by a long press on Select.</p>
+        <p>Configurable idle timeout drops into deep sleep behind a logo screen (with a notes and battery summary on the 3.97).</p>
       </div>
       <div class="feature">
         <span class="icon">🔘</span>
-        <h3>Two-button UI</h3>
-        <p>Next cycles, Select opens/confirms/backs out — an entire file browser and menu tree on two buttons.</p>
+        <h3>Button UI</h3>
+        <p>Two buttons on the 1.54, a rotary switch plus BOOT on the 3.97 — a whole note browser with no touchscreen.</p>
+      </div>
+      <div class="feature">
+        <span class="icon">🌍</span>
+        <h3>English, Italiano, Français</h3>
+        <p>Device screen and web pages switch language together from the web Settings page.</p>
       </div>
     </div>
   </div>
@@ -303,23 +316,23 @@
     <div class="steps">
       <div class="step">
         <div class="n">1</div>
-        <div class="t"><b>Clone &amp; open in PlatformIO</b><span>Waveshare ESP32-S3-ePaper-1.54 board, one env: esp32-s3-epaper154</span></div>
+        <div class="t"><b>Flash the firmware</b><span>Easiest: the <a href="flash.html">browser flasher</a> (desktop Chrome or Edge, USB cable). Or build it yourself: <code>pio run -e esp32-s3-epaper154 -t upload</code> (or <code>esp32-s3-epaper397</code>)</span></div>
       </div>
       <div class="step">
         <div class="n">2</div>
-        <div class="t"><b>Pick a transcription provider</b><span>Set the AI_PROVIDER_* build flag in platformio.ini (OpenAI by default)</span></div>
+        <div class="t"><b>Drop in an SD card</b><span>FAT32; MP3/WAV files at the root show up as notes</span></div>
       </div>
       <div class="step">
         <div class="n">3</div>
-        <div class="t"><b>Flash</b><span><code>pio run -e esp32-s3-epaper154 -t upload</code></span></div>
+        <div class="t"><b>Join the setup AP</b><span>First boot opens "Annota-Setup" — connect from a phone and pick your WiFi network</span></div>
       </div>
       <div class="step">
         <div class="n">4</div>
-        <div class="t"><b>Join the setup AP</b><span>First boot opens "Annota-Setup" — connect and enter your WiFi credentials</span></div>
+        <div class="t"><b>Add an API key</b><span>Home → File transfer shows the device's address; open it, go to Settings and paste your OpenAI API key</span></div>
       </div>
       <div class="step">
         <div class="n">5</div>
-        <div class="t"><b>Drop in an SD card</b><span>MP3/WAV files at the root show up in the file list and the web UI</span></div>
+        <div class="t"><b>Record and transcribe</b><span>Select "Record new", then Transcribe from the note's menu</span></div>
       </div>
     </div>
   </div>
@@ -328,11 +341,12 @@
     <div class="card-header">Hardware</div>
     <div class="specs">
       <dl>
-        <dt>Board</dt><dd>Waveshare ESP32-S3-ePaper-1.54</dd>
-        <dt>Display</dt><dd>1.54" 200×200 mono e-paper, SSD1681-class</dd>
-        <dt>Input</dt><dd>2 onboard buttons (no touch)</dd>
-        <dt>Audio</dt><dd>ES8311 codec + NS4150B amp, onboard mic</dd>
-        <dt>Storage</dt><dd>SD card over SDMMC (1-bit)</dd>
+        <dt>Boards</dt><dd>Waveshare ESP32-S3-ePaper-1.54 or ESP32-S3-ePaper-3.97</dd>
+        <dt>Display</dt><dd>1.54" 200×200 or 3.97" 800×480 (used in portrait) mono e-paper</dd>
+        <dt>Input</dt><dd>1.54: 2 buttons · 3.97: rotary switch (Up/Press/Down) + BOOT; no touch</dd>
+        <dt>Audio</dt><dd>ES8311 codec + NS4150B amp, onboard mic and speaker</dd>
+        <dt>Power</dt><dd>Battery; 3.97 adds an AXP2101 power management chip</dd>
+        <dt>Storage</dt><dd>microSD over SDMMC (1-bit on the 1.54, 4-bit on the 3.97)</dd>
         <dt>UI</dt><dd>LVGL v9.2.2</dd>
       </dl>
     </div>
@@ -343,10 +357,11 @@
     <div class="credits">
       Built by <b>Corrado Ignoti</b>.
       <ul>
-        <li>Display driver ported from Waveshare's own <a href="https://github.com/waveshareteam/ESP32-S3-ePaper-1.54" target="_blank" rel="noopener">ESP32-S3-ePaper-1.54</a> example repo.</li>
+        <li>Display drivers ported from Waveshare's own <a href="https://github.com/waveshareteam/ESP32-S3-ePaper-1.54" target="_blank" rel="noopener">ESP32-S3-ePaper-1.54</a> and <a href="https://github.com/waveshareteam/ESP32-S3-ePaper-3.97" target="_blank" rel="noopener">ESP32-S3-ePaper-3.97</a> example repos.</li>
         <li>WiFi provisioning via <a href="https://github.com/tzapu/WiFiManager" target="_blank" rel="noopener">tzapu/WiFiManager</a>.</li>
         <li>UI powered by <a href="https://lvgl.io" target="_blank" rel="noopener">LVGL</a>.</li>
-        <li>MP3 decode via <a href="https://github.com/schreibfaul1/ESP32-audioI2S" target="_blank" rel="noopener">ESP8266Audio</a>.</li>
+        <li>MP3 decode via <a href="https://github.com/earlephilhower/ESP8266Audio" target="_blank" rel="noopener">ESP8266Audio</a>.</li>
+        <li>QR codes via <a href="https://github.com/ricmoo/QRCode" target="_blank" rel="noopener">ricmoo/QRCode</a>; 3.97 battery gauge via <a href="https://github.com/lewisxhe/XPowersLib" target="_blank" rel="noopener">XPowersLib</a>.</li>
         <li>Sleep/battery approach ported from a sibling project on the same board family, pala_note.</li>
       </ul>
     </div>
