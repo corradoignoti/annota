@@ -5,7 +5,7 @@
     "@semantic-release/release-notes-generator",
     "@semantic-release/changelog",
     ["@semantic-release/exec", {
-      "prepareCmd": "sed -i.bak \"s/^#define FW_VERSION .*/#define FW_VERSION \\\"${nextRelease.version}\\\"/\" include/version.h && rm -f include/version.h.bak && pio run -e esp32-s3-epaper154 && pio run -e esp32-s3-epaper397"
+      "prepareCmd": "sed -i.bak \"s/^#define FW_VERSION .*/#define FW_VERSION \\\"${nextRelease.version}\\\"/\" include/version.h && rm -f include/version.h.bak && pio run -e esp32-s3-epaper154 && pio run -e esp32-s3-epaper397 && tools/package_release.sh"
     }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "include/version.h", "package.json"],
@@ -14,7 +14,14 @@
     ["@semantic-release/github", {
       "assets": [
         { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "name": "firmware.bin", "label": "firmware.bin" },
-        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "name": "firmware-epaper397.bin", "label": "firmware-epaper397.bin" }
+        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "name": "firmware-epaper397.bin", "label": "firmware-epaper397.bin" },
+        { "path": "dist/manifest-epaper154.json", "label": "manifest-epaper154.json (web flasher, 1.54)" },
+        { "path": "dist/bootloader-epaper154.bin", "label": "bootloader-epaper154.bin (0x0)" },
+        { "path": "dist/partitions-epaper154.bin", "label": "partitions-epaper154.bin (0x8000)" },
+        { "path": "dist/manifest-epaper397.json", "label": "manifest-epaper397.json (web flasher, 3.97)" },
+        { "path": "dist/bootloader-epaper397.bin", "label": "bootloader-epaper397.bin (0x0)" },
+        { "path": "dist/partitions-epaper397.bin", "label": "partitions-epaper397.bin (0x8000)" },
+        { "path": "dist/boot_app0.bin", "label": "boot_app0.bin (0xe000)" }
       ]
     }]
   ]
