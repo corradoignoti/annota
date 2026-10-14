@@ -41,7 +41,16 @@ Flash to a connected board:
 pio run -e esp32-s3-epaper154 -t upload
 ```
 `.releaserc.json` builds both and attaches `firmware.bin` (1.54) and
-`firmware-epaper397.bin`.
+`firmware-epaper397.bin`, plus what `tools/package_release.sh` writes to
+`dist/` for browser flashing: one ESP Web Tools `manifest-<board>.json` per
+board (both are ESP32-S3, and ESP Web Tools picks a build by chip family
+only, so they can't share one manifest), per-board `bootloader-<board>.bin`
+and `partitions-<board>.bin`, and a shared `boot_app0.bin`. Manifest part
+paths are flat release-asset names, so the annota-ws site mirrors the assets
+and serves the manifests unmodified. The script checks each part against
+pioarduino's merged `firmware.factory.bin`, so it fails the release if the
+hardcoded offsets (ESP32-S3 bootloader at 0x0, `huge_app.csv`) drift. Never
+rename those assets without updating annota-ws's `tools/sync_firmware.sh`.
 Serial monitor (115200 baud, set in platformio.ini):
 ```
 pio device monitor
