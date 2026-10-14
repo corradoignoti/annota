@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/corradoignoti/annota/compare/v1.17.1...v1.18.0) (2026-10-14)
+
+
+### Features
+
+* publish esp web tools manifests with releases ([f4357b5](https://github.com/corradoignoti/annota/commit/f4357b5a7d5af422268ef077d20d51ac00e13be9))
+
 ## [1.17.1](https://github.com/corradoignoti/annota/compare/v1.17.0...v1.17.1) (2026-10-09)
 
 
