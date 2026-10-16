@@ -18,6 +18,7 @@
 #include "storage.h"
 #include "transcribe.h"
 #include "usb_drive.h"
+#include "version.h"
 #include "wifi_manager.h"
 
 // -----------------------------------------------------------------------
@@ -598,8 +599,9 @@ static void format_gb(uint64_t bytes, char *out, size_t outLen) {
 
 // 3.97 only: a bordered summary box under the wake hint - stored notes,
 // how many still lack a transcript (mp3Files, as last scanned), battery
-// charge, and SD space used/total. Read once here, as the device goes to
-// sleep; the box then stays on the unpowered panel as-is.
+// charge, SD space used/total, and the firmware version. Read once here,
+// as the device goes to sleep; the box then stays on the unpowered panel
+// as-is.
 static void add_sleep_stats(lv_obj_t *parent) {
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_style_all(box);
@@ -634,6 +636,7 @@ static void add_sleep_stats(lv_obj_t *parent) {
         snprintf(value, sizeof(value), "-");
     }
     add_sleep_stat_row(box, tr(Str::SLEEP_STAT_SD), value);
+    add_sleep_stat_row(box, tr(Str::SLEEP_STAT_FIRMWARE), FW_VERSION);
 }
 #endif
 
