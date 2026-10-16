@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/corradoignoti/annota/compare/v1.19.0...v1.20.0) (2026-10-16)
+
+
+### Features
+
+* **154:** add usage tile to home carousel ([00383e0](https://github.com/corradoignoti/annota/commit/00383e0caa5615f63e8a8dcd15c6545535c7c7b8))
+
 # [1.19.0](https://github.com/corradoignoti/annota/compare/v1.18.1...v1.19.0) (2026-10-16)
 
 
