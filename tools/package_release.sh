@@ -7,15 +7,19 @@
 #       ESP Web Tools manifest for one board. ESP Web Tools picks a build by
 #       chip family only, and both boards are ESP32-S3, so each board needs
 #       its own manifest rather than two builds in one.
+#   firmware-<board>-<version>.bin
+#       per-board application image (0x10000). The version is in the name so
+#       a web flasher host never pairs a fresh manifest with a stale, cached
+#       app image from the previous release under the same URL (Aurigae-cyd
+#       hit exactly that: a cached older image overflowed the app partition
+#       and the board boot-looped)
 #   bootloader-<board>.bin, partitions-<board>.bin
 #       per-board parts (the bootloader header carries the flash size, which
 #       differs: 8MB on the 1.54, 16MB on the 3.97)
 #   boot_app0.bin
 #       shared by both boards
 #
-# The application images themselves are the release's existing firmware.bin
-# (1.54) and firmware-epaper397.bin assets, uploaded straight from .pio/build;
-# the manifests reference them by those asset names. Every manifest part path
+# Every manifest part path
 # is a flat asset name, so a site mirroring the release assets into one folder
 # (annota-ws's tools/sync_firmware.sh) can serve the manifests unmodified.
 #
@@ -70,10 +74,11 @@ check_part() {
   fi
 }
 
-# package <env> <board key> <app asset name> <display name>
+# package <env> <board key> <display name>
 package() {
-  local env="$1" board="$2" app="$3" name="$4"
+  local env="$1" board="$2" name="$3"
   local build=".pio/build/$env"
+  local app="firmware-$board-$VERSION.bin"
 
   for f in bootloader.bin partitions.bin firmware.bin firmware.factory.bin; do
     if [[ ! -f "$build/$f" ]]; then
@@ -88,6 +93,7 @@ package() {
 
   cp "$build/bootloader.bin" "$OUT_DIR/bootloader-$board.bin"
   cp "$build/partitions.bin" "$OUT_DIR/partitions-$board.bin"
+  cp "$build/firmware.bin" "$OUT_DIR/$app"
 
   # new_install_improv_wait_time 0: the firmware doesn't speak Improv Serial
   # (WiFi is set up through WiFiManager's AP), so don't make the user wait
@@ -117,8 +123,8 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 cp "$BOOT_APP0" "$OUT_DIR/boot_app0.bin"
 
-package esp32-s3-epaper154 epaper154 firmware.bin "Annota (ESP32-S3-ePaper-1.54)"
-package esp32-s3-epaper397 epaper397 firmware-epaper397.bin "Annota (ESP32-S3-ePaper-3.97)"
+package esp32-s3-epaper154 epaper154 "Annota (ESP32-S3-ePaper-1.54)"
+package esp32-s3-epaper397 epaper397 "Annota (ESP32-S3-ePaper-3.97)"
 
 echo "Packaged Annota $VERSION into $OUT_DIR/:"
 ls -l "$OUT_DIR"

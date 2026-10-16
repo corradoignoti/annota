@@ -79,8 +79,8 @@ wake from idle sleep.
 
 ### Flash a release from the browser
 
-Each GitHub release ships `firmware.bin` (1.54) and
-`firmware-epaper397.bin`, plus ESP Web Tools manifests and the
+Each GitHub release ships `firmware-epaper154-<version>.bin` and
+`firmware-epaper397-<version>.bin` (app images, flashed at 0x10000), plus ESP Web Tools manifests and the
 bootloader/partition images `tools/package_release.sh` packages for the
 project site's browser flasher (`flash.html`, desktop Chrome or Edge).
 
