@@ -13,8 +13,8 @@
     }],
     ["@semantic-release/github", {
       "assets": [
-        { "path": ".pio/build/esp32-s3-epaper154/firmware.bin", "name": "firmware.bin", "label": "firmware.bin" },
-        { "path": ".pio/build/esp32-s3-epaper397/firmware.bin", "name": "firmware-epaper397.bin", "label": "firmware-epaper397.bin" },
+        { "path": "dist/firmware-epaper154-*.bin", "label": "App image 1.54 (0x10000)" },
+        { "path": "dist/firmware-epaper397-*.bin", "label": "App image 3.97 (0x10000)" },
         { "path": "dist/manifest-epaper154.json", "label": "manifest-epaper154.json (web flasher, 1.54)" },
         { "path": "dist/bootloader-epaper154.bin", "label": "bootloader-epaper154.bin (0x0)" },
         { "path": "dist/partitions-epaper154.bin", "label": "partitions-epaper154.bin (0x8000)" },
