@@ -135,7 +135,7 @@ Opened with a long **Select** press on the Notes list:
 
 ## Home screen
 
-A three-item carousel, one item at a time:
+A carousel, one item at a time (three items on the 3.97, four on the 1.54):
 
 - **Notes** — re-scans the card and shows the Notes list.
 - **File transfer** — connects to WiFi and shows the web file manager's
@@ -144,6 +144,10 @@ A three-item carousel, one item at a time:
   it opens [WiFi management](#on-device-wifi-management) instead.
 - **USB drive** — exposes the whole SD card to a computer as a USB drive
   (see [USB drive mode](#usb-drive-mode)).
+- **Usage** (1.54 only) — shows the same summary the 3.97 shows on its
+  sleep screen: number of notes, how many are not yet transcribed, battery
+  level, SD card space used/total, and firmware version. **Select** goes
+  back to Home.
 
 **Next**/**Down** (and **Up** on the 3.97) cycle, **Select** chooses,
 long **Select** or **BOOT** goes back to the Notes list.
@@ -320,7 +324,8 @@ USB drive mode.
 
 The sleep screen shows the Annota logo and how to wake the device. On the
 3.97 it also shows a summary: number of notes, how many are not yet
-transcribed, battery level, and SD card space used.
+transcribed, battery level, SD card space used, and firmware version
+(on the 1.54, see **Home → Usage**).
 
 **To wake:** hold **Select** on the 1.54 (BOOT/Next does not wake it);
 press the knob on the 3.97. Waking is a full restart, the same as turning
