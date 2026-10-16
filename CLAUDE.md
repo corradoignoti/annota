@@ -87,8 +87,9 @@ may touch it.
   `assets/icon_200x200.svg` logo redrawn from LVGL arcs/rects scaled to
   the per-board `LOGO_SIZE`, painted with a full refresh on the 3.97 via
   `display.h`'s `display_request_full_refresh()`; 3.97 only, a summary box
-  below it, `add_sleep_stats()`: notes, untranscribed notes, battery %, SD
-  used/total, firmware version) once
+  below it, `add_usage_stats()`: notes, untranscribed notes, battery %, SD
+  used/total, firmware version — the same box is the 1.54's Home "Usage"
+  card, `Screen::kUsage`, see ui_epaper.cpp below) once
   `sleep_get_idle_timeout_minutes()` (default 30, persisted in NVS,
   clamped to 1–180 — see `IDLE_TIMEOUT_MIN_DEFAULT`/`_MIN`/`_MAX` in
   sleep.cpp) have passed with no activity, unless `ui.h`'s
@@ -248,7 +249,12 @@ may touch it.
   `FONT_BODY`/`FONT_ICON`, `PAD_X`, `CARD_*`, `MENU_*`, ...; the 1.54
   column holds the original values) — never add a raw pixel literal or
   `&lv_font_it_N` at a call site. Hints/strings naming buttons go through
-  `knob_tr(Str::X, Str::X_K)` (see Translations). The 3.97's QR canvas
+  `knob_tr(Str::X, Str::X_K)` (see Translations). The Home carousel
+  (`kHome`, `HOME_ITEM_COUNT` cells) has a 4th, last card on the 1.54 only,
+  "Usage": it opens `Screen::kUsage`, the 3.97 sleep screen's
+  `add_usage_stats()` box (box size from the layout block's `STATS_W`/
+  `STATS_PAD`) under an icon-less header (`render_list_header()` with a
+  null icon), read live on entry; Select goes back to Home. The 3.97's QR canvas
   buffer is PSRAM-allocated on first use. WiFi status, a scrollable
   audio file list ("Notes" — the device no longer lists `.txt` files on
   their own), and per-file Play/Record/Transcribe/Delete/View transcription
