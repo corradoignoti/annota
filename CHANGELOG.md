@@ -1,3 +1,10 @@
+## [1.18.1](https://github.com/corradoignoti/annota/compare/v1.18.0...v1.18.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **release:** give the app images versioned filenames ([3d05c54](https://github.com/corradoignoti/annota/commit/3d05c543638bc4cfa4a2a40b595c08d690e5f2b4))
+
 # [1.18.0](https://github.com/corradoignoti/annota/compare/v1.17.1...v1.18.0) (2026-10-14)
 
 
