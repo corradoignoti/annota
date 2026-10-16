@@ -72,6 +72,7 @@ enum class Screen {
     kUsbDriveError,
     kUsbDriveRestarting,
     kVolumeMenu,
+    kUsage,
 };
 
 // -----------------------------------------------------------------------
@@ -115,6 +116,8 @@ static const int16_t TEXT_PAD = 12;       // kTextView's viewport padding
 static const int16_t STATUS_ICONS_W = 140; // header room kept for battery/SD icons
 static const int16_t LOGO_SIZE = 400;     // kSleeping's logo, see add_sleep_screen()
 static const lv_font_t *const FONT_SLEEP = &lv_font_it_24;
+static const int16_t STATS_W = CARD_W;   // add_usage_stats()'s box
+static const int16_t STATS_PAD = CARD_PAD;
 #else
 static const int16_t HEADER_H = 20;
 static const int16_t ROW_H = 20;
@@ -147,10 +150,22 @@ static const int16_t TEXT_PAD = 4;
 static const int16_t STATUS_ICONS_W = 60;
 static const int16_t LOGO_SIZE = 140;
 static const lv_font_t *const FONT_SLEEP = &lv_font_it_12;
+// Wider and tighter than an info card, so "SD used  x.x GB / yyy.y GB"
+// still fits one line at FONT_SMALL in 200 px.
+static const int16_t STATS_W = SCREEN_W - 2 * LIST_X;
+static const int16_t STATS_PAD = PAD_X;
 #endif
 // kList reserves its own top row (below) for the Notes header,
 // on top of HEADER_H/HINT_H.
 static const int VISIBLE_ROWS = (SCREEN_H - HEADER_H - HINT_H - ROW_H) / ROW_H;
+
+// kHome's carousel cells: Notes, File transfer, USB drive, plus Usage
+// (kUsage) on the 1.54 only.
+#if BOARD_EPAPER_154
+static const int HOME_ITEM_COUNT = 4;
+#else
+static const int HOME_ITEM_COUNT = 3;
+#endif
 
 static lv_obj_t *header_label = nullptr;
 static lv_obj_t *battery_label = nullptr;
@@ -447,7 +462,8 @@ static void add_row(lv_obj_t *parent, int16_t x, int16_t y, int16_t w, const cha
 // around rather than stopping at the last item (see ui_process_input()'s
 // kList case), so the arrow stays fixed rather than tracking top_index/
 // whether the view is currently at the bottom - there's always "more" to
-// scroll to either way. Shared by kList and kWifiJoinList (its own icon/label).
+// scroll to either way. Shared by kList and kWifiJoinList (its own icon/label),
+// plus kHome and kUsage (no icon - icon may be nullptr).
 static void render_list_header(const char *icon, const char *label_text, bool scrollable) {
     lv_obj_t *hdr = lv_obj_create(body);
     lv_obj_remove_style_all(hdr);
@@ -459,7 +475,11 @@ static void render_list_header(const char *icon, const char *label_text, bool sc
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *label = lv_label_create(hdr);
-    lv_label_set_text_fmt(label, "%s  %s", icon, label_text);
+    if (icon) {
+        lv_label_set_text_fmt(label, "%s  %s", icon, label_text);
+    } else {
+        lv_label_set_text(label, label_text);
+    }
     lv_obj_set_style_text_font(label, FONT_BODY, 0);
     lv_obj_set_style_text_color(label, lv_color_black(), 0);
     lv_obj_align(label, LV_ALIGN_LEFT_MID, PAD_X, -1);
@@ -572,8 +592,7 @@ static void add_logo_arc(lv_obj_t *parent, float cx, float cy, float r, int16_t 
     lv_obj_set_style_arc_opa(arc, LV_OPA_TRANSP, LV_PART_INDICATOR);
 }
 
-#if BOARD_EPAPER_397
-// One "label ........ value" line of add_sleep_stats()'s box.
+// One "label ........ value" line of add_usage_stats()'s box.
 static void add_sleep_stat_row(lv_obj_t *box, const char *label, const char *value) {
     lv_obj_t *row = lv_obj_create(box);
     lv_obj_remove_style_all(row);
@@ -597,19 +616,19 @@ static void format_gb(uint64_t bytes, char *out, size_t outLen) {
     snprintf(out, outLen, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
 }
 
-// 3.97 only: a bordered summary box under the wake hint - stored notes,
-// how many still lack a transcript (mp3Files, as last scanned), battery
-// charge, SD space used/total, and the firmware version. Read once here,
-// as the device goes to sleep; the box then stays on the unpowered panel
-// as-is.
-static void add_sleep_stats(lv_obj_t *parent) {
+// A bordered summary box - stored notes, how many still lack a transcript
+// (mp3Files, as last scanned), battery charge, SD space used/total, and the
+// firmware version - read once, when it's built. Shown under the wake hint
+// on the 3.97's sleep screen (where it then stays on the unpowered panel
+// as-is) and as the 1.54's kUsage screen. Returns the box for positioning.
+static lv_obj_t *add_usage_stats(lv_obj_t *parent) {
     lv_obj_t *box = lv_obj_create(parent);
     lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, CARD_W, LV_SIZE_CONTENT);
+    lv_obj_set_size(box, STATS_W, LV_SIZE_CONTENT);
     lv_obj_set_style_border_width(box, CARD_BORDER, 0);
     lv_obj_set_style_border_color(box, lv_color_black(), 0);
     lv_obj_set_style_radius(box, CARD_RADIUS, 0);
-    lv_obj_set_style_pad_all(box, CARD_PAD, 0);
+    lv_obj_set_style_pad_all(box, STATS_PAD, 0);
     lv_obj_set_style_pad_row(box, CARD_GAP, 0);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -637,11 +656,11 @@ static void add_sleep_stats(lv_obj_t *parent) {
     }
     add_sleep_stat_row(box, tr(Str::SLEEP_STAT_SD), value);
     add_sleep_stat_row(box, tr(Str::SLEEP_STAT_FIRMWARE), FW_VERSION);
+    return box;
 }
-#endif
 
 // kSleeping: the logo above the wake hint (plus, on the 3.97, the
-// add_sleep_stats() box below it), filling the whole screen (body
+// add_usage_stats() box below it), filling the whole screen (body
 // is stretched over the header bar - nothing comes after this screen but
 // deep sleep, and waking is a full reset that rebuilds everything).
 static void add_sleep_screen(const char *text) {
@@ -691,7 +710,7 @@ static void add_sleep_screen(const char *text) {
     lv_obj_set_style_text_color(msg, lv_color_black(), 0);
 
 #if BOARD_EPAPER_397
-    add_sleep_stats(col);
+    add_usage_stats(col);
 #endif
 
     // The SVG leaves 26 empty units above the mic; shift up by half that
@@ -938,24 +957,32 @@ static void render_body() {
         }
 
         // Reached from kList via a long Next press (see
-        // ui_process_input()'s kList case) - a horizontal carousel of 3
-        // cells, one full-screen icon+label card shown at a time
+        // ui_process_input()'s kList case) - a horizontal carousel of
+        // HOME_ITEM_COUNT cells, one full-screen icon+label card shown at a time
         // (add_info_card(), same helper kNoCard/kMicError/etc. use),
-        // paged by Next; the hint bar's "(n/3)" is the position indicator
+        // paged by Next; the hint bar's "(n/N)" is the position indicator
         // (this font has no page-dot glyphs baked in, so text stays the
         // safe choice - same idiom as "Audio Files (N)" above). Select
         // confirms: Notes opens kList on the audio files; File
         // transfer hands off to wifi_manager.h's request/process split
         // (see ui_process_input()'s kHome case for why state isn't
         // touched here for that branch); USB drive hands the card to a
-        // USB host (usb_drive.h) and shows kUsbDrive.
+        // USB host (usb_drive.h) and shows kUsbDrive; Usage (1.54 only)
+        // opens kUsage.
         case Screen::kHome: {
+#if BOARD_EPAPER_154
+            static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB, LV_SYMBOL_DRIVE};
+            const char *labels[] = {tr(Str::HOME_NOTES), tr(Str::FILE_TRANSFER), tr(Str::USB_DRIVE),
+                                    tr(Str::HOME_USAGE)};
+#else
             static const char *icons[] = {LV_SYMBOL_AUDIO, LV_SYMBOL_UPLOAD, LV_SYMBOL_USB};
             const char *labels[] = {tr(Str::HOME_NOTES), tr(Str::FILE_TRANSFER), tr(Str::USB_DRIVE)};
+#endif
             render_list_header(LV_SYMBOL_HOME, tr(Str::HOME_TITLE), false);
             add_info_card(icons[menu_index], labels[menu_index]);
             char hint[96];
-            snprintf(hint, sizeof(hint), knob_tr(Str::HINT_HOME, Str::HINT_HOME_K), (int)menu_index + 1);
+            snprintf(hint, sizeof(hint), knob_tr(Str::HINT_HOME, Str::HINT_HOME_K), (int)menu_index + 1,
+                     HOME_ITEM_COUNT);
             add_hint(hint);
             break;
         }
@@ -1029,6 +1056,16 @@ static void render_body() {
             lv_obj_set_y(label, -text_view_scroll_px);
 
             add_hint(knob_tr(Str::HINT_TEXT_VIEW, Str::HINT_TEXT_VIEW_K));
+            break;
+        }
+
+        // Home's Usage card (1.54 only): the same box the 3.97 shows on its
+        // sleep screen. Text only - no icon in the header or the box.
+        case Screen::kUsage: {
+            render_list_header(nullptr, tr(Str::HOME_USAGE), false);
+            lv_obj_t *box = add_usage_stats(body);
+            lv_obj_align(box, LV_ALIGN_CENTER, 0, CARD_DY);
+            add_hint(tr(Str::HINT_SELECT_BACK));
             break;
         }
 
@@ -1427,7 +1464,7 @@ void ui_request_catalog_refresh() {
 
 void ui_show_sleep_screen() {
     // Nothing is playing/recording here (ui_is_sleep_blocked()), so the
-    // SD card is free - re-scan so add_sleep_stats() counts are current.
+    // SD card is free - re-scan so add_usage_stats() counts are current.
     if (catalog_refresh_requested && sd_present) {
         catalog_refresh_requested = false;
         load_mp3_catalog();
@@ -1658,10 +1695,10 @@ void ui_process_input() {
 
         case Screen::kHome:
             if (nextEv == DisplayButtonEvent::kShort) {
-                menu_index = (menu_index + 1) % 3;
+                menu_index = (menu_index + 1) % HOME_ITEM_COUNT;
                 render_body();
             } else if (prevEv == DisplayButtonEvent::kShort) {
-                menu_index = (menu_index + 2) % 3;
+                menu_index = (menu_index + HOME_ITEM_COUNT - 1) % HOME_ITEM_COUNT;
                 render_body();
             } else if (selEv == DisplayButtonEvent::kLong) {
                 state = Screen::kList;
@@ -1680,7 +1717,7 @@ void ui_process_input() {
                     // shows its own status/result screens, same reasoning
                     // as kActionMenu's Transcribe case above.
                     wifi_request_file_transfer();
-                } else {
+                } else if (menu_index == 2) {
                     // The USB host writes raw sectors behind FATFS's back
                     // from here on - take WiFi (and with it the web file
                     // manager's SD handlers) out of the picture first.
@@ -1689,7 +1726,18 @@ void ui_process_input() {
                     }
                     state = usb_drive_start() ? Screen::kUsbDrive : Screen::kUsbDriveError;
                     render_body();
+                } else {
+                    state = Screen::kUsage; // only reachable on the 1.54 (HOME_ITEM_COUNT)
+                    render_body();
                 }
+            }
+            break;
+
+        case Screen::kUsage:
+            // Back to Home, Usage card still showing.
+            if (selEv == DisplayButtonEvent::kShort || selEv == DisplayButtonEvent::kLong) {
+                state = Screen::kHome;
+                render_body();
             }
             break;
 

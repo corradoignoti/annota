@@ -63,6 +63,8 @@ wake from idle sleep.
   networks, idle timeout, API key) and an About page. No browser upload.
 - **USB drive mode** — Home → USB drive exposes the whole SD card as USB
   mass storage; ejecting it reboots the device.
+- **Usage screen (1.54)** — Home → Usage shows notes, untranscribed notes,
+  battery, SD space used/total and firmware version.
 - **WiFi on demand** — captive-portal setup (`Annota-Setup`) on first
   boot, up to 5 saved networks, radio off by default and only brought up
   for a transcription, File transfer, or a manual Online. On-device
