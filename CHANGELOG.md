@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/corradoignoti/annota/compare/v1.18.1...v1.19.0) (2026-10-16)
+
+
+### Features
+
+* **397:** show firmware version on sleep screen ([378d4ad](https://github.com/corradoignoti/annota/commit/378d4ad1d12feeb673b65c80c2a41e3e639b4022))
+
 ## [1.18.1](https://github.com/corradoignoti/annota/compare/v1.18.0...v1.18.1) (2026-10-16)
 
 
