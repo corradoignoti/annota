@@ -445,18 +445,19 @@ static void fold_to_latin1(const char *src, size_t len, char *out, size_t outLen
     out[o] = '\0';
 }
 
-// Reads the transcript's first line into buf and returns its length, or 0
-// if it isn't a title header (see read_transcript_title()'s comment).
+// Reads the transcript's first line into buf and returns its length (0 for
+// an empty file) - see read_transcript_title()'s comment. A first line
+// longer than buf is cut back to a UTF-8 character boundary.
 static size_t read_title_line(File &f, char *buf, size_t bufLen) {
     size_t n = f.readBytes(buf, bufLen - 1);
     buf[n] = '\0';
     char *nl = strchr(buf, '\n');
-    if (!nl) return 0;
-    size_t lineLen = (size_t)(nl - buf);
+    size_t lineLen = nl ? (size_t)(nl - buf) : n;
+    if (!nl && n == bufLen - 1) {
+        // Buffer full mid-line: don't end on half a multi-byte sequence.
+        while (lineLen > 0 && ((unsigned char)buf[lineLen] & 0xC0) == 0x80) lineLen--;
+    }
     if (lineLen > 0 && buf[lineLen - 1] == '\r') lineLen--;
-    const char *next = nl + 1;
-    if (*next == '\r') next++;
-    if (*next != '\n') return 0;
     return lineLen;
 }
 

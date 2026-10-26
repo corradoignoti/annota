@@ -21,11 +21,12 @@ constexpr size_t MAX_MP3_FILES = 64;
 struct Mp3Entry {
     char filename[64];
     uint32_t size;     // bytes, for the on-device Details screen
-    // Audio files only: the AI title from the sibling "<basename>.txt"
-    // transcript's header line (see transcribe_openai.cpp's title/abstract
-    // layout), shown under the filename on the audio list. Empty if there's
-    // no transcript or it has no title header (plain-transcript fallback).
-    // Folded to the Latin-1 the on-device fonts carry - see read_title().
+    // Audio files only: the sibling "<basename>.txt" transcript's first
+    // line - the AI title for transcribe_openai.cpp's title/abstract
+    // layout, the transcript's opening words otherwise - shown under the
+    // filename on the audio list. Empty if there's no transcript (or it's
+    // empty). Folded to the Latin-1 the on-device fonts carry - see
+    // read_title().
     char title[48];
     // Audio files only: whether that sibling transcript exists, and its
     // last-write time (0 if none/unknown) - the audio list's sort key, see
@@ -128,14 +129,15 @@ bool delete_file(const char *filename);
 // on-device Delete flow to warn about, then also remove, the transcript.
 bool find_sibling_transcript(const char *audioFilename, char *out, size_t outLen);
 
-// Reads a transcript's AI title header from `f` (an open .txt file,
-// positioned at its start) into `out` as raw UTF-8, truncated to fit: the
-// first line, but only when a blank line follows it - transcribe_openai.cpp
-// (and the web page's callProvider()) write
-// "title\n\nabstract\n\ntranscript", while the plain-transcript fallback
-// is Whisper's single unbroken paragraph, which has no title. Returns false
-// (out = "") if there's no title. Used by web_server.cpp's /api/files; the
-// on-device list uses the same rule, folded to Latin-1.
+// Reads a transcript's title from `f` (an open .txt file, positioned at its
+// start) into `out` as raw UTF-8, truncated to fit: its first line.
+// transcribe_openai.cpp (and the web page's callProvider()) write
+// "title\n\nabstract\n\ntranscript", so that's the AI title; providers
+// with no title/abstract step (Gemini, Annota) and OpenAI's plain-
+// transcript fallback write just the transcript, so the title is its
+// opening words. Returns false (out = "") for an empty file. Used by
+// web_server.cpp's /api/files; the on-device list uses the same rule,
+// folded to Latin-1.
 bool read_transcript_title(File &f, char *out, size_t outLen);
 
 // Claims the SD card via sd_begin(), writes `text` to a root-level file

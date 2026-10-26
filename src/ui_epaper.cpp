@@ -369,7 +369,7 @@ static size_t list_item_count() {
 }
 
 // kList row i's transcript title (Mp3Entry::title) - "" for an audio file
-// with no titled transcript yet, so its row gets add_row()'s drawn-line
+// with no transcript yet, so its row gets add_row()'s drawn-line
 // placeholder and every audio row stays the same height. nullptr (single-
 // line row) for the Record row.
 static const char *list_item_title(size_t i) {

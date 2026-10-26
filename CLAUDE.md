@@ -239,6 +239,11 @@ may touch it.
   dotfiles (macOS FAT litter like `._x.mp3`, `.DS_Store`). The audio
   list is sorted: files with no sibling `<basename>.txt` first, then by
   that transcript's last-write time, newest first (`audio_before()`).
+  Each audio entry's `Mp3Entry::title` (the kList subtitle) is its
+  transcript's first line (`read_title_line()`): OpenAI's AI title when the
+  file has the title/abstract header, otherwise the transcript's opening
+  words (Gemini, Annota, OpenAI's plain fallback) — same rule as
+  `read_transcript_title()` for the web page.
   `sd_begin()`/
   `sd_end()` mount/unmount the card over the ESP32-S3's dedicated SDMMC
   peripheral (board.h's `SDMMC_*_PIN`/`SD_BUS_WIDTH`: 1-bit on the 1.54,
@@ -453,7 +458,8 @@ may touch it.
   and `ai_transcribe_file()`) — each file's entire body is wrapped in
   `#ifdef AI_PROVIDER_<NAME>`, so every provider file can sit in `src/`
   at once and only the one selected by `platformio.ini`'s build_flags
-  (currently `-D AI_PROVIDER_OPENAI=1`) compiles to anything. NVS keys are
+  (currently `-D AI_PROVIDER_OPENAI=1`; alternatives `AI_PROVIDER_GEMINI`,
+  `AI_PROVIDER_ANNOTA`) compiles to anything. NVS keys are
   namespaced per provider (e.g. `openaiKey`) so switching the compiled-in
   provider doesn't feed it a stale key saved for a different one.
   `transcribe_openai.cpp` (`whisper-1`, `/v1/audio/transcriptions`)
@@ -469,7 +475,23 @@ may touch it.
   verifies api.openai.com's cert against the root CAs embedded in
   `openai_ca.h` (GTS Root R1/R4, ISRG Root X1; `setCACert()`, both the
   Whisper and summary requests — the header lists the live chain and how
-  to re-check it). Other providers still use `setInsecure()`. `WiFiClientSecure` is arduino-esp32's
+  to re-check it). `transcribe_annota.cpp` targets the self-hosted Annota
+  speech-to-text API (`https://annota-api.fizban.net`, `X-API-Key`
+  header, NVS key `annotaKey`), which is asynchronous: `create_job()`
+  uploads the file (`POST /jobs`, same multipart stream/`UploadClient`/
+  6-attempt retry as OpenAI), `wait_for_job()` polls `GET /jobs/{id}`
+  every 3 s (kWaiting, up to 15 min, tolerating a few failed polls; the
+  job's queued/processing state, queue position and elapsed time go to the
+  progress screen's detail line via `transcribe.h`'s
+  `transcribe_report_job()`, repainted on change or every 30 s) until
+  `done`/`failed`, then a best-effort `DELETE /jobs/{id}`; no `language`
+  is sent (server default). It returns only text — no title/abstract, so
+  "4/5" is skipped like Gemini, and the note's title is the transcript's
+  first line (see storage.cpp/h). Certs checked against `annota_ca.h`
+  (ISRG Root X1/X2, GTS Root R1/R4). `MultipartStream`/`UploadClient`/
+  `tls_error_suffix()`/`txt_sibling_path()`/`set_err()` live in
+  `transcribe_upload.cpp/h`, shared by OpenAI and Annota. Gemini still
+  uses `setInsecure()`. `WiFiClientSecure` is arduino-esp32's
   stock mbedTLS client (hardware AES/SHA on the S3; an earlier wolfSSL
   swap was reverted — uploads through it topped out around 30 KB/s). The Whisper upload goes through `UploadClient`, a
   `WiFiClientSecure` subclass that coalesces HTTPClient's 1460-byte body
@@ -491,8 +513,9 @@ may touch it.
   `ui_epaper.cpp`: a file manager at `/` mirroring the device's Notes
   list — a Notes table with one row per audio file (`.mp3`/`.wav`, both
   playable via `/api/play`) and its sibling `<basename>.txt` folded in
-  (`buildNotes()`: the transcript's AI title, from `/api/files`'s `title`
-  field — `storage.h`'s `read_transcript_title()`, raw UTF-8 — under the
+  (`buildNotes()`: the transcript's title — AI title or first line, from
+  `/api/files`'s `title` field — `storage.h`'s `read_transcript_title()`,
+  raw UTF-8 — under the
   filename; View transcription in place of Transcribe once transcribed;
   Delete, Download and their batch versions cover both files; default order is the
   device's, untranscribed first then newest transcript, with Name/Date
@@ -568,9 +591,13 @@ may touch it.
   ref-counted) or on a screen holding `active_file_index` — and
   `ui_show_sleep_screen()` re-scans before its stats. `web_transcribe_in_progress()` tracks the window
   between those two calls (set on the key request, cleared on the final
-  POST, self-clearing on a timeout otherwise) purely so `sleep.cpp` knows
-  not to deep-sleep mid-flight — no request lands here while the browser
-  is talking to the AI provider directly.
+  POST, self-clearing on a timeout otherwise — `WEB_TRANSCRIBE_MAX_MS`, 5
+  min, 20 min under Annota since its queue can be slow) purely so
+  `sleep.cpp` knows not to deep-sleep mid-flight — no request lands here
+  while the browser is talking to the AI provider directly. The Annota
+  `callProvider()` uploads to `/jobs`, polls the job every 3 s (15 min
+  cap) and deletes it after; the API must send CORS headers (device
+  origin, `X-API-Key`, GET/POST/DELETE) for this browser path to work.
 
 ### Translations
 

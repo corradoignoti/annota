@@ -50,11 +50,13 @@ wake from idle sleep.
 - **Playback & recording** — play a note through the onboard speaker, or
   record a new one (`RECnnnn.wav`, 16-bit PCM). 3.97: Low/Medium/High
   volume menu during playback.
-- **AI transcription** — on-device (OpenAI Whisper by default, Gemini as a
-  compile-time alternative), with step-by-step progress and a
-  `<name>_error.txt` diagnostic log on failure. The OpenAI provider adds a
-  `gpt-4o-mini` title and abstract above the transcript and verifies
-  api.openai.com's certificate against embedded root CAs. On-device uploads
+- **AI transcription** — on-device (OpenAI Whisper by default; Gemini and
+  the self-hosted Annota speech-to-text API as compile-time alternatives),
+  with step-by-step progress and a `<name>_error.txt` diagnostic log on
+  failure. The OpenAI provider adds a `gpt-4o-mini` title and abstract
+  above the transcript and verifies api.openai.com's certificate against
+  embedded root CAs; Annota also verifies its server's certificate. A
+  transcript without that header shows its first line as the note's title. On-device uploads
   are capped at 2 MB (1.54) / 4 MB (3.97); the web UI has no cap.
 - **Web file manager** — Notes table with transcripts folded in (play,
   transcribe, view, download, delete, batch actions, a Sync button that
@@ -131,7 +133,15 @@ one `AI_PROVIDER_*` flag must be defined:
 -D AI_PROVIDER_OPENAI=1
 ; or
 -D AI_PROVIDER_GEMINI=1
+; or
+-D AI_PROVIDER_ANNOTA=1
 ```
+
+Annota (`https://annota-api.fizban.net`) transcribes asynchronously: the
+file is uploaded as a job and polled until done (up to 15 minutes). It
+returns the transcript only, no title or abstract. The web UI's
+Transcribe/Sync buttons call it straight from the browser, so the API
+must send CORS headers allowing the device's origin and `X-API-Key`.
 
 Swap the flag instead of adding a second one. The API key is entered at
 runtime from `/settings` and stored in NVS under a key namespaced per
@@ -218,6 +228,9 @@ src/
   transcribe_openai.cpp   OpenAI Whisper + title/abstract provider
   openai_ca.h             embedded root CAs for api.openai.com
   transcribe_gemini.cpp   Google Gemini provider
+  transcribe_annota.cpp   Annota speech-to-text API provider (async jobs)
+  annota_ca.h             embedded root CAs for the Annota API
+  transcribe_upload.cpp/.h  streamed multipart upload helpers (OpenAI, Annota)
   web_server.cpp/.h       HTTP file manager, settings and about pages
   i18n.cpp/.h             language setting and lookups
   i18n_strings.def        EN/IT/FR string table

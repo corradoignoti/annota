@@ -29,7 +29,7 @@
 // missing (or misspelling) its build flag fails at compile time here
 // instead of as a confusing "undefined reference to ai_transcribe_file()"
 // link error.
-#if !defined(AI_PROVIDER_OPENAI) && !defined(AI_PROVIDER_GEMINI)
+#if !defined(AI_PROVIDER_OPENAI) && !defined(AI_PROVIDER_GEMINI) && !defined(AI_PROVIDER_ANNOTA)
 #error "No AI_PROVIDER_* build flag defined - add one (e.g. -D AI_PROVIDER_OPENAI=1) to platformio.ini's build_flags to select a transcription provider."
 #endif
 
@@ -56,6 +56,12 @@ static bool logTruncated = false;
 static TranscribePhase currentPhase = TranscribePhase::kConnecting;
 static int lastReportedStep = -1;    // last 10% step repainted, -1 = none yet
 static int lastReportedAttempt = 0;
+// transcribe_report_job()'s last repaint: state (-1 = none yet), queue
+// position, elapsed seconds.
+static int lastJobState = -1;
+static int lastJobQueuePos = -1;
+static unsigned long lastJobRepaintS = 0;
+static const unsigned long JOB_REPAINT_EVERY_S = 30;
 
 static const char *phase_label(TranscribePhase phase) {
     switch (phase) {
@@ -128,6 +134,26 @@ void transcribe_report_upload(size_t sent, size_t total, int attempt, int maxAtt
     ui_update_transcribe_progress(phase_label(TranscribePhase::kUploading), percent, detail);
 }
 
+void transcribe_report_job(TranscribeJobState state, int queuePosition, unsigned long elapsedSeconds) {
+    if ((int)state == lastJobState && queuePosition == lastJobQueuePos &&
+        elapsedSeconds - lastJobRepaintS < JOB_REPAINT_EVERY_S) {
+        return;
+    }
+    lastJobState = (int)state;
+    lastJobQueuePos = queuePosition;
+    lastJobRepaintS = elapsedSeconds;
+
+    char detail[64];
+    if (state == TranscribeJobState::kProcessing) {
+        snprintf(detail, sizeof(detail), tr(Str::JOB_PROCESSING), elapsedSeconds);
+    } else if (queuePosition > 0) {
+        snprintf(detail, sizeof(detail), tr(Str::JOB_QUEUED_POS), queuePosition, elapsedSeconds);
+    } else {
+        snprintf(detail, sizeof(detail), tr(Str::JOB_QUEUED), elapsedSeconds);
+    }
+    ui_update_transcribe_progress(phase_label(TranscribePhase::kWaiting), -1, detail);
+}
+
 // "song.mp3" -> "song_error.txt" (no leading '/', storage.h's helpers add
 // it). Modeled on transcribe_<provider>.cpp's txt_sibling_path().
 static void error_log_name(const char *filename, char *out, size_t outLen) {
@@ -146,6 +172,9 @@ static void log_header(const char *filename) {
     currentPhase = TranscribePhase::kConnecting;
     lastReportedStep = -1;
     lastReportedAttempt = 0;
+    lastJobState = -1;
+    lastJobQueuePos = -1;
+    lastJobRepaintS = 0;
 
     transcribe_log("Annota transcription log");
     transcribe_log("File: %s", filename);

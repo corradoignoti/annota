@@ -107,6 +107,14 @@ void transcribe_report_phase(TranscribePhase phase);
 // changes, since every e-paper refresh blocks for a noticeable while.
 void transcribe_report_upload(size_t sent, size_t total, int attempt, int maxAttempts);
 
+// Server-side state of an asynchronous provider's job (Annota) while the
+// device polls for its result, shown as kWaiting's detail line ("Queued,
+// position 2 - 15 s" / "Processing - 40 s"). queuePosition < 0 = unknown.
+// Repaints only when the state or queue position changes, or every 30 s
+// of elapsed time, since every e-paper refresh blocks for a while.
+enum class TranscribeJobState { kQueued, kProcessing };
+void transcribe_report_job(TranscribeJobState state, int queuePosition, unsigned long elapsedSeconds);
+
 // Appends one printf-formatted line to the diagnostics log (and echoes it
 // to Serial). On failure transcribe_process_pending() saves the log as
 // <basename>_error.txt next to the audio file. Never pass the API key.
@@ -118,7 +126,9 @@ void transcribe_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 // sibling <basename>.txt file on the SD root, overwriting any existing
 // one there. Providers that support it (currently OpenAI) prepend an
 // AI-generated title and abstract, each followed by a blank line, falling
-// back to the plain transcript if that extra request fails. Requires WiFi already connected and an API key already
+// back to the plain transcript if that extra request fails; the others
+// (Gemini, Annota) write the plain transcript, whose first line then
+// serves as the note's title (storage.h's read_transcript_title()). Requires WiFi already connected and an API key already
 // saved - both are checked internally, and a short reason is copied
 // into errOut/errOutLen on any failure (e.g. "WiFi not connected", "No
 // <provider> API key set (see Settings)", an SD error, or the

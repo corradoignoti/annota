@@ -519,6 +519,52 @@ async function callProvider(key, blob, filename) {
 }
 </script>
 )rawliteral";
+#elif defined(AI_PROVIDER_ANNOTA)
+static const char TRANSCRIBE_PROVIDER_JS[] PROGMEM = R"rawliteral(
+<script>
+// Mirrors transcribe_annota.cpp's requests (POST /jobs multipart upload,
+// then GET /jobs/{id} polled until done/failed, then a best-effort DELETE)
+// - talks to the Annota API directly from the browser instead of routing
+// through the device, which needs the API to send CORS headers allowing
+// this page's origin and the X-API-Key header.
+const ANNOTA_API = "https://annota-api.fizban.net";
+const ANNOTA_POLL_MS = 3000;
+const ANNOTA_TIMEOUT_MS = 15 * 60 * 1000; // same as JOB_TIMEOUT_MS
+// Phase keys (see PHASE_LABELS in INDEX_HTML_TAIL) this provider walks
+// through, in order - no title/abstract step for Annota.
+const PROVIDER_PHASES = ["download", "upload", "wait", "save"];
+async function callProvider(key, blob, filename) {
+  const form = new FormData();
+  form.append("file", blob, filename);
+  const res = await xhrWithUploadProgress("POST", ANNOTA_API + "/jobs", { "X-API-Key": key }, form);
+  const job = res.json || {};
+  if (!res.ok || typeof job.id !== "string") throw new Error(job.detail || t("err_unexpected_response", "Annota"));
+  reportPhase("wait");
+  const url = ANNOTA_API + "/jobs/" + encodeURIComponent(job.id);
+  const start = Date.now();
+  try {
+    while (true) {
+      if (Date.now() - start > ANNOTA_TIMEOUT_MS) throw new Error(t("err_job_timeout"));
+      await new Promise((r) => setTimeout(r, ANNOTA_POLL_MS));
+      let poll;
+      try {
+        poll = await fetch(url, { headers: { "X-API-Key": key } });
+      } catch (e) {
+        throw new Error(t("err_ai_network"));
+      }
+      const json = await poll.json().catch(() => ({}));
+      if (!poll.ok) throw new Error(json.detail || ("HTTP " + poll.status));
+      if (json.status === "done" && typeof json.text === "string") return { text: json.text.trim() };
+      if (json.status === "failed") throw new Error(json.error || t("err_unexpected_response", "Annota"));
+    }
+  } finally {
+    // Best effort, same as the device: don't leave the audio on the server
+    // any longer than needed (a job still processing answers 409).
+    fetch(url, { method: "DELETE", headers: { "X-API-Key": key } }).catch(() => {});
+  }
+}
+</script>
+)rawliteral";
 #endif
 
 static const char INDEX_HTML_TAIL[] PROGMEM = R"rawliteral(
@@ -2012,7 +2058,13 @@ static void handle_wifi_remove() {
 // upload), this is what lets the device fall asleep again eventually
 // instead of staying pinned awake forever. Generous on purpose - a real
 // transcription of a longer recording can legitimately take minutes.
+// Annota queues jobs server-side and the page polls for up to 15 minutes
+// (ANNOTA_TIMEOUT_MS), so it gets a longer cap.
+#if defined(AI_PROVIDER_ANNOTA)
+static const uint32_t WEB_TRANSCRIBE_MAX_MS = 1200000UL;
+#else
 static const uint32_t WEB_TRANSCRIBE_MAX_MS = 300000UL;
+#endif
 static uint32_t webTranscribeDeadlineMs = 0; // 0 = no transcription in flight
 
 bool web_transcribe_in_progress() {
