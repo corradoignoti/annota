@@ -199,7 +199,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
   th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable:hover { color: var(--ink); }
   .arrow { color: var(--ink); }
-  td.size, th.size { text-align: right; white-space: nowrap; }
+  td.size, th.size, td.duration, th.duration { text-align: right; white-space: nowrap; }
   td.date, th.date { white-space: nowrap; color: var(--ink-soft); font-size: 0.85rem; }
   td.actions { text-align: right; white-space: nowrap; }
   /* Name takes whatever width the other columns leave; a long AI title
@@ -380,6 +380,7 @@ static const char INDEX_HTML_HEAD[] PROGMEM = R"rawliteral(
       <th class="check"><input type="checkbox" id="selectAll" data-i18n-title="select_all"></th>
       <th class="sortable" data-sort="name"><span data-i18n="col_name"></span><span class="arrow"></span></th>
       <th class="sortable date" data-sort="mtime"><span data-i18n="col_date"></span><span class="arrow"></span></th>
+      <th class="duration" data-i18n="col_duration"></th>
       <th class="size" data-i18n="col_size"></th>
       <th class="actions"></th>
     </tr></thead>
@@ -577,6 +578,15 @@ function fmtSize(n) {
   return (n / (1024 * 1024)).toFixed(1) + " MB";
 }
 
+// Seconds -> "m:ss" or "h:mm:ss"; "" when the device couldn't read the
+// file's header (no "duration" in /api/files).
+function fmtDuration(secs) {
+  if (secs === undefined) return "";
+  const h = Math.floor(secs / 3600), m = Math.floor(secs / 60) % 60, s = secs % 60;
+  const ss = String(s).padStart(2, "0");
+  return h > 0 ? h + ":" + String(m).padStart(2, "0") + ":" + ss : m + ":" + ss;
+}
+
 function fmtDate(mtime) {
   if (!mtime) return t("unknown_date");
   const d = new Date(mtime * 1000);
@@ -673,7 +683,7 @@ function buildNotes(files) {
     if (!isAudio(f.name)) continue;
     const transcript = byName.get(txtSibling(f.name).toLowerCase()) || null;
     if (transcript) paired.add(transcript.name);
-    notes.push({ name: f.name, size: f.size, transcript });
+    notes.push({ name: f.name, size: f.size, duration: f.duration, transcript });
   }
   const others = files.filter((f) => !isAudio(f.name) && !paired.has(f.name));
   return { notes, others };
@@ -800,6 +810,7 @@ function render() {
     tr.appendChild(n.transcript ? nameCell("♪", n.name, n.transcript.title || "", false)
                                 : nameCell("♪", n.name, t("no_transcript"), true));
     tr.appendChild(textCell("date", n.transcript ? fmtDate(n.transcript.mtime) : ""));
+    tr.appendChild(textCell("duration", fmtDuration(n.duration)));
     tr.appendChild(textCell("size", fmtSize(n.size)));
 
     const actions = document.createElement("td");
@@ -2159,6 +2170,10 @@ static void handle_list() {
                     char title[128];
                     if (read_transcript_title(entry, title, sizeof(title))) o["title"] = title;
                 }
+                // An audio file's playing time in whole seconds, for the
+                // Notes table's Duration column (only a few header reads).
+                uint32_t secs;
+                if (read_audio_duration(entry, base, secs)) o["duration"] = secs;
             }
             entry.close();
             entry = root.openNextFile();

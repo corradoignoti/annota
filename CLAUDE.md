@@ -516,7 +516,8 @@ may touch it.
   (`buildNotes()`: the transcript's title — AI title or first line, from
   `/api/files`'s `title` field — `storage.h`'s `read_transcript_title()`,
   raw UTF-8 — under the
-  filename; View transcription in place of Transcribe once transcribed;
+  filename; a Duration column from `/api/files`'s `duration` seconds,
+  `storage.h`'s `read_audio_duration()`; View transcription in place of Transcribe once transcribed;
   Delete, Download and their batch versions cover both files; default order is the
   device's, untranscribed first then newest transcript, with Name/Date
   headers cycling asc/desc/default), plus an "Other files" table for

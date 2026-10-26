@@ -107,6 +107,12 @@ bool read_text_file_preview(const char *filename, char *out, size_t outLen);
 // above.
 bool get_audio_duration_seconds(const char *filename, uint32_t &secs);
 
+// get_audio_duration_seconds()'s parsing on an already-open file (`f`
+// positioned at its start, card already claimed by the caller); `name`
+// picks the format by extension. Returns false for anything not .wav/.mp3.
+// Used by web_server.cpp's /api/files while it walks the root directory.
+bool read_audio_duration(File &f, const char *name, uint32_t &secs);
+
 // Claims the SD card via sd_begin() just long enough to read a root-level
 // file's size and last-write time (formatted like Mp3Entry::created), then
 // releases it via sd_end(). Used by the on-device audio Details screen for

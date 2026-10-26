@@ -289,6 +289,13 @@ static bool mp3_duration(File &f, uint32_t &secs) {
     return true;
 }
 
+bool read_audio_duration(File &f, const char *name, uint32_t &secs) {
+    secs = 0;
+    if (has_ext(name, ".wav")) return wav_duration(f, secs);
+    if (has_ext(name, ".mp3")) return mp3_duration(f, secs);
+    return false;
+}
+
 bool get_audio_duration_seconds(const char *filename, uint32_t &secs) {
     secs = 0;
     bool sdOk = sd_begin();
@@ -301,7 +308,7 @@ bool get_audio_duration_seconds(const char *filename, uint32_t &secs) {
         sd_end();
         return false;
     }
-    bool ok = has_ext(filename, ".wav") ? wav_duration(f, secs) : mp3_duration(f, secs);
+    bool ok = read_audio_duration(f, filename, secs);
     f.close();
     sd_end();
     return ok;
